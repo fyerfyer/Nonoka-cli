@@ -113,6 +113,25 @@ class TestConfigLoader:
     with pytest.raises(ConfigError, match="top-level object"):
       ConfigLoader.load(temp_config_file)
 
+  def test_validation_error_includes_location_and_suggestion(self, temp_config_file):
+    temp_config_file.write_text("model: gpt-4o\ncli:\n  max_history: not_a_number\n")
+    with pytest.raises(ConfigError) as exc_info:
+      ConfigLoader.load(temp_config_file)
+
+    message = str(exc_info.value)
+    assert "Config validation failed" in message
+    assert "cli.max_history" in message
+    assert "integer" in message.lower() or "int_parsing" in message
+
+  def test_validation_error_suggests_fix_for_missing_field(self, temp_config_file):
+    # Trigger a missing-field error on a required nested field
+    temp_config_file.write_text("mcp_servers:\n  fs:\n    command: npx\n")
+    with pytest.raises(ConfigError) as exc_info:
+      ConfigLoader.load(temp_config_file)
+
+    message = str(exc_info.value)
+    assert "mcp_servers.fs.transport" in message or "transport" in message
+
 
 class TestCLIConfigModel:
   """Tests for CLIConfig pydantic model."""

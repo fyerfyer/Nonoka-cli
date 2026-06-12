@@ -26,7 +26,8 @@ class TestAgentFactory:
     agent = factory.build()
     assert isinstance(agent, Agent)
     assert agent.model == "gpt-4o"
-    assert agent.system_prompt == "You are a test assistant."
+    assert "You are a test assistant." in agent.system_prompt
+    assert "Your current model is: gpt-4o" in agent.system_prompt
 
   def test_build_raises_when_model_missing(self):
     config = CLIConfig(model="")
@@ -185,6 +186,83 @@ class TestOrchestrator:
     assert orchestrator._initialized is True
     await orchestrator.shutdown()
     assert orchestrator._initialized is False
+
+  @pytest.mark.asyncio
+  async def test_switch_model_rebuilds_agent_and_keeps_session(self, orchestrator):
+    await orchestrator.initialize()
+    old_session_id = orchestrator.session_id
+    old_agent = orchestrator._agent_factory.get_agent()
+
+    await orchestrator.switch_model("deepseek-chat")
+
+    new_agent = orchestrator._agent_factory.get_agent()
+    assert new_agent is not old_agent
+    assert new_agent.model == "deepseek-chat"
+    assert orchestrator.session_id == old_session_id
+    assert orchestrator.config.model == "deepseek-chat"
+
+  @pytest.mark.asyncio
+  async def test_switch_model_empty_raises(self, orchestrator):
+    await orchestrator.initialize()
+    with pytest.raises(ConfigError, match="empty"):
+      await orchestrator.switch_model("")
+
+  @pytest.mark.asyncio
+  async def test_switch_model_rollback_on_build_failure(self, orchestrator):
+    await orchestrator.initialize()
+    original_model = orchestrator.config.model
+
+    # Patch AgentFactory.rebuild to fail
+    with patch.object(
+      orchestrator._agent_factory,
+      "rebuild",
+      side_effect=RuntimeError("build failed"),
+    ):
+      with pytest.raises(OrchestratorError, match="Failed to switch model"):
+        await orchestrator.switch_model("some-model")
+
+    assert orchestrator.config.model == original_model
+
+  @pytest.mark.asyncio
+  async def test_reload_config_updates_agent(self, orchestrator, tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("model: gpt-4o\nsystem_prompt: Old\n")
+
+    orch = Orchestrator()
+    await orch.initialize(config_path=config_file)
+    old_session_id = orch.session_id
+
+    config_file.write_text("model: gpt-4o-mini\nsystem_prompt: New\n")
+    new_config = await orch.reload_config()
+
+    assert new_config.model == "gpt-4o-mini"
+    assert orch.config.model == "gpt-4o-mini"
+    assert orch.session_id == old_session_id
+    assert orch._agent_factory.get_agent().model == "gpt-4o-mini"
+
+  @pytest.mark.asyncio
+  async def test_reload_config_failure_keeps_current_config(self, orchestrator, tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("model: gpt-4o\nsystem_prompt: Old\n")
+
+    orch = Orchestrator()
+    await orch.initialize(config_path=config_file)
+
+    config_file.write_text("model: gpt-4o\ncli:\n  max_history: not_a_number\n")
+    with pytest.raises(ConfigError, match="Config validation failed"):
+      await orch.reload_config()
+
+    assert orch.config.model == "gpt-4o"
+    assert orch._agent_factory.get_agent().model == "gpt-4o"
+
+  @pytest.mark.asyncio
+  async def test_config_manager_available_after_initialize(self, tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("model: gpt-4o\n")
+    orch = Orchestrator()
+    await orch.initialize(config_path=config_file)
+    assert orch.config_manager is not None
+    assert orch.config_manager.config_path == config_file
 
 
 async def async_event_iter(events):

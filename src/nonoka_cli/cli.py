@@ -8,14 +8,21 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
+
+# LiteLLM tries to fetch a remote price map on import, which causes a
+# noticeable startup delay and warning spam. Force local-only mode before
+# any downstream import pulls it in.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import structlog
 
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.shell.repl import REPL
+from nonoka_cli.ui.presenter import UIPresenter
 from nonoka_cli.ui.renderer import Renderer
 from nonoka_cli.utils.logging import setup_logging
 
@@ -62,9 +69,10 @@ async def _run_repl(args: argparse.Namespace) -> int:
   Returns:
     Exit code (0 for success).
   """
+  presenter = UIPresenter()
   orchestrator = Orchestrator()
   renderer = Renderer()
-  repl = REPL(orchestrator, renderer)
+  repl = REPL(orchestrator, renderer, presenter)
 
   # Handle Ctrl+C by interrupting the current execution
   loop = asyncio.get_event_loop()
@@ -78,19 +86,28 @@ async def _run_repl(args: argparse.Namespace) -> int:
   try:
     await orchestrator.initialize(config_path=args.config)
   except Exception as exc:
-    print(f"Failed to initialize: {exc}", file=sys.stderr)
+    presenter.error(f"Failed to initialize:\n{exc}")
     logger.error("initialization_failed", error=str(exc))
     return 1
 
   # Apply model override if provided
   if args.model:
-    orchestrator.config.model = args.model
-    orchestrator._agent_factory.rebuild()
+    try:
+      await orchestrator.switch_model(args.model)
+    except Exception as exc:
+      presenter.error(f"Failed to apply --model override:\n{exc}")
+      logger.error("model_override_failed", error=str(exc))
+      return 1
     logger.info("model_overridden", model=args.model)
 
-  print(f"nonoka-cli initialized. Model: {orchestrator.config.model}")
-  print("Type /help for commands, /exit to quit.")
-  print()
+  config_path = None
+  if orchestrator.config_manager is not None:
+    config_path = str(orchestrator.config_manager.config_path) if orchestrator.config_manager.config_path else None
+
+  presenter.show_banner(
+    model=orchestrator.config.model,
+    config_path=config_path,
+  )
 
   try:
     await repl.run()

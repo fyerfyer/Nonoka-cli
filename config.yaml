@@ -1,0 +1,40 @@
+# nonoka-cli configuration example — Deepseek API
+# Copy to ~/.config/nonoka/config.yaml to use
+
+model: "deepseek-chat"
+
+system_prompt: |
+  You are nonoka, a helpful AI assistant running in a terminal.
+  Be concise but thorough in your responses.
+
+# TODO: MCP server configuration (enabled in Phase 5)
+# mcp_servers:
+#   filesystem:
+#     transport: stdio
+#     command: npx
+#     args:
+#       - "-y"
+#       - "@modelcontextprotocol/server-filesystem"
+#       - "~"
+
+# TODO: Local tool scan paths (enabled in Phase 6)
+# tool_paths:
+#   - ~/.config/nonoka/tools/
+
+# TODO: Enabled skills (enabled in Phase 6)
+# skills:
+#   - code-review
+
+cli:
+  theme: dark
+  auto_approve: false
+  editor: "${EDITOR:-nano}"
+  max_history: 1000
+
+hitl:
+  policy: interactive
+  dangerous_tools:
+    - write_file
+    - edit_file
+    - delete_file
+    - execute_command

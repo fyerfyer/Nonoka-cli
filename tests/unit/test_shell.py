@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from io import StringIO
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nonoka_cli.config.manager import ConfigManager
+from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.shell.repl import REPL
 from nonoka_cli.ui.renderer import Renderer
@@ -18,10 +21,18 @@ class TestREPLCommandHandling:
 
   @pytest.fixture
   def mock_orchestrator(self):
+    config = CLIConfig(model="gpt-4o", system_prompt="Test.")
+    config_manager = MagicMock(spec=ConfigManager)
+    config_manager.config_path = Path("/tmp/config.yaml")
+
     orch = MagicMock(spec=Orchestrator)
     orch.session_id = "test-session"
+    orch.config = config
+    orch.config_manager = config_manager
     orch.new_session.return_value = "new-session-id"
-    orch.execute = AsyncMock(return_value=async_event_iter([]))
+    orch.execute = MagicMock(return_value=async_event_iter([]))
+    orch.switch_model = AsyncMock()
+    orch.reload_config = AsyncMock(return_value=config)
     return orch
 
   @pytest.fixture
@@ -55,7 +66,7 @@ class TestREPLCommandHandling:
   async def test_help_command_prints_help(self, repl, capsys):
     await repl._handle_command("/help")
     captured = capsys.readouterr()
-    assert "Available commands" in captured.out
+    assert "Available Commands" in captured.out
     assert "/exit" in captured.out
     assert "/new" in captured.out
 
@@ -72,14 +83,53 @@ class TestREPLCommandHandling:
     await repl._handle_command("/exit now")
     assert repl._running is False
 
+  @pytest.mark.asyncio
+  async def test_model_command_switches_model(self, repl, mock_orchestrator, capsys):
+    await repl._handle_command("/model gpt-4o-mini")
+    mock_orchestrator.switch_model.assert_awaited_once_with("gpt-4o-mini")
+    captured = capsys.readouterr()
+    assert "gpt-4o-mini" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_model_command_without_args_shows_current(self, repl, mock_orchestrator, capsys):
+    await repl._handle_command("/model")
+    mock_orchestrator.switch_model.assert_not_awaited()
+    captured = capsys.readouterr()
+    assert "Current model: gpt-4o" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_config_reload_command(self, repl, mock_orchestrator, capsys):
+    await repl._handle_command("/config reload")
+    mock_orchestrator.reload_config.assert_awaited_once()
+    captured = capsys.readouterr()
+    assert "Config reloaded" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_help_for_specific_command(self, repl, capsys):
+    await repl._handle_command("/help model")
+    captured = capsys.readouterr()
+    assert "/model <model>" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_help_for_unknown_command(self, repl, capsys):
+    await repl._handle_command("/help missing")
+    captured = capsys.readouterr()
+    assert "Unknown command" in captured.out
+
 
 class TestREPLPromptHandling:
   """Tests for REPL prompt execution."""
 
   @pytest.fixture
   def mock_orchestrator(self):
+    config = CLIConfig(model="gpt-4o", system_prompt="Test.")
+    config_manager = MagicMock(spec=ConfigManager)
+    config_manager.config_path = Path("/tmp/config.yaml")
+
     orch = MagicMock(spec=Orchestrator)
-    orch.execute = AsyncMock(return_value=async_event_iter([]))
+    orch.config = config
+    orch.config_manager = config_manager
+    orch.execute = MagicMock(return_value=async_event_iter([]))
     return orch
 
   @pytest.fixture
@@ -102,7 +152,13 @@ class TestREPLInputReading:
 
   @pytest.fixture
   def repl(self):
+    config = CLIConfig(model="gpt-4o", system_prompt="Test.")
+    config_manager = MagicMock(spec=ConfigManager)
+    config_manager.config_path = Path("/tmp/config.yaml")
+
     orch = MagicMock(spec=Orchestrator)
+    orch.config = config
+    orch.config_manager = config_manager
     return REPL(orch)
 
   @pytest.mark.asyncio
@@ -129,7 +185,13 @@ class TestREPLInterrupt:
 
   @pytest.fixture
   def repl(self):
+    config = CLIConfig(model="gpt-4o", system_prompt="Test.")
+    config_manager = MagicMock(spec=ConfigManager)
+    config_manager.config_path = Path("/tmp/config.yaml")
+
     orch = MagicMock(spec=Orchestrator)
+    orch.config = config
+    orch.config_manager = config_manager
     renderer = MagicMock(spec=Renderer)
     return REPL(orch, renderer)
 

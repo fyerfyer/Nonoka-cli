@@ -32,6 +32,9 @@ class AgentFactory:
   def build(self) -> Agent:
     """Build (or rebuild) an Agent from the current configuration.
 
+    Injects the current model identifier into the system prompt so the
+    model can accurately answer questions about its own identity.
+
     Returns:
       A nonoka Agent instance.
 
@@ -41,20 +44,34 @@ class AgentFactory:
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
+    system_prompt = self._build_system_prompt()
+
     logger.info(
       "building_agent",
       model=self._config.model,
-      system_prompt_length=len(self._config.system_prompt),
+      system_prompt_length=len(system_prompt),
     )
 
     self._agent = (
       AgentBuilder()
       .model(self._config.model)
-      .system_prompt(self._config.system_prompt)
+      .system_prompt(system_prompt)
       .max_turns(20)
       .build()
     )
     return self._agent
+
+  def _build_system_prompt(self) -> str:
+    """Build the effective system prompt, injecting the current model name."""
+    base = self._config.system_prompt or "You are a helpful AI assistant."
+    model = self._config.model.strip()
+
+    # Avoid injecting the identity line twice if the user already wrote one.
+    if f"Your current model is: {model}" in base:
+      return base
+
+    identity_line = f"\n\nYour current model is: {model}."
+    return base.rstrip() + identity_line
 
   def rebuild(self, config_patch: dict[str, Any] | None = None) -> Agent:
     """Rebuild Agent with an optional configuration patch.

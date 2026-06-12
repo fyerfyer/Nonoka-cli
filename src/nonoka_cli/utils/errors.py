@@ -26,3 +26,11 @@ class AgentBuildError(CLIError):
 class OrchestratorError(CLIError):
   """Orchestrator execution error."""
   pass
+
+
+class UnknownCommandError(CLIError):
+  """Unknown / invalid CLI command."""
+
+  def __init__(self, command: str):
+    self.command = command
+    super().__init__(f"Unknown command: /{command}. Type /help for available commands.")
