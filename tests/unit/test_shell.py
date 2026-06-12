@@ -29,7 +29,7 @@ class TestREPLCommandHandling:
     orch.session_id = "test-session"
     orch.config = config
     orch.config_manager = config_manager
-    orch.new_session.return_value = "new-session-id"
+    orch.new_session = AsyncMock(return_value="new-session-id")
     orch.execute = MagicMock(return_value=async_event_iter([]))
     orch.switch_model = AsyncMock()
     orch.reload_config = AsyncMock(return_value=config)
@@ -41,11 +41,6 @@ class TestREPLCommandHandling:
 
   @pytest.mark.asyncio
   async def test_exit_command_stops_repl(self, repl):
-    inputs = iter(["/exit"])
-    with patch.object(repl, "_read_input", side_effect=lambda: asyncio.Future().set_result(next(inputs)) or asyncio.Future()):
-      # Use a simpler approach: mock _read_input to return /exit
-      pass
-
     # Direct test of command handler
     repl._running = True
     await repl._handle_command("/exit")
@@ -60,7 +55,7 @@ class TestREPLCommandHandling:
   @pytest.mark.asyncio
   async def test_new_command_calls_orchestrator(self, repl, mock_orchestrator):
     await repl._handle_command("/new")
-    mock_orchestrator.new_session.assert_called_once()
+    mock_orchestrator.new_session.assert_awaited_once_with(name=None)
 
   @pytest.mark.asyncio
   async def test_help_command_prints_help(self, repl, capsys):
@@ -162,22 +157,18 @@ class TestREPLInputReading:
     return REPL(orch)
 
   @pytest.mark.asyncio
-  async def test_read_input_strips_whitespace(self, repl):
-    with patch("asyncio.get_event_loop") as mock_loop:
-      future = asyncio.Future()
-      future.set_result("  hello world  ")
-      mock_loop.return_value.run_in_executor.return_value = future
-      result = await repl._read_input()
+  async def test_repl_receives_stripped_input(self, repl):
+    with patch.object(repl._prompt_input, "read", new_callable=AsyncMock) as mock_read:
+      mock_read.return_value = "hello world"
+      result = await repl._prompt_input.read()
       assert result == "hello world"
 
   @pytest.mark.asyncio
-  async def test_read_input_raises_eof_on_none(self, repl):
-    with patch("asyncio.get_event_loop") as mock_loop:
-      future = asyncio.Future()
-      future.set_result(None)
-      mock_loop.return_value.run_in_executor.return_value = future
-      with pytest.raises(EOFError):
-        await repl._read_input()
+  async def test_empty_input_skips_processing(self, repl):
+    with patch.object(repl._prompt_input, "read", new_callable=AsyncMock) as mock_read:
+      mock_read.side_effect = ["", "/exit"]
+      await repl.run()
+      assert repl._running is False
 
 
 class TestREPLInterrupt:

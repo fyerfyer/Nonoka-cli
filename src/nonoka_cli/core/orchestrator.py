@@ -8,6 +8,7 @@ from pathlib import Path
 
 import structlog
 from nonoka import Runner
+from nonoka.backends.checkpoint.sqlite import SQLiteCheckpointStore
 from nonoka.core.runner import StreamEvent
 
 from nonoka_cli.config.loader import ConfigLoader
@@ -15,7 +16,9 @@ from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.context import CLIContext
-from nonoka_cli.utils.errors import ConfigError, OrchestratorError
+from nonoka_cli.sessions.manager import SessionManager
+from nonoka_cli.sessions.models import SessionInfo
+from nonoka_cli.utils.errors import ConfigError, OrchestratorError, SessionError, SessionNotFoundError
 
 logger = structlog.get_logger("nonoka_cli.core")
 
@@ -27,25 +30,34 @@ class Orchestrator:
   - Load configuration
   - Build Agent and Runner
   - Execute prompts via nonoka's streaming ReAct API
-  - Manage a single session_id
+  - Manage sessions (create, switch, list, rename, delete)
+  - Persist session metadata and reuse nonoka checkpoint store
   - Support model switching and config hot-reload while preserving context
 
-  TODO: Add MCP, Skill, session management, HITL.
+  TODO: Add MCP, Skill, HITL.
   """
 
   def __init__(
     self,
     config: CLIConfig | None = None,
     config_manager: ConfigManager | None = None,
+    session_manager: SessionManager | None = None,
+    db_path: Path | str | None = None,
   ):
     """Initialize the orchestrator.
 
     Args:
       config: Pre-loaded configuration. If None, will be loaded on initialize().
       config_manager: Optional ConfigManager for hot-reload support.
+      session_manager: Optional SessionManager for persistence. If None, one
+        will be created using db_path during initialize().
+      db_path: Path to the SQLite database used for sessions and nonoka
+        checkpoints. Defaults to ~/.local/share/nonoka/nonoka.db.
     """
     self._config = config
     self._config_manager = config_manager
+    self._session_manager = session_manager
+    self._db_path = db_path
     self._agent_factory: AgentFactory | None = None
     self._runner: Runner | None = None
     self._session_id: str = str(uuid.uuid4())
@@ -67,6 +79,25 @@ class Orchestrator:
   def session_id(self) -> str:
     """Current session identifier."""
     return self._session_id
+
+  async def get_current_session(self) -> SessionInfo:
+    """Return metadata for the current active session.
+
+    Raises:
+      OrchestratorError: If not initialized or the session is not found.
+    """
+    if not self._initialized or self._session_manager is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+
+    info = await self._session_manager.get(self._session_id)
+    if info is None:
+      raise OrchestratorError(f"Current session not found: {self._session_id}")
+    return info
+
+  @property
+  def session_manager(self) -> SessionManager | None:
+    """Current session manager, if initialized."""
+    return self._session_manager
 
   @property
   def agent_factory(self) -> AgentFactory | None:
@@ -96,7 +127,20 @@ class Orchestrator:
     self._agent_factory = AgentFactory(self._config)
     agent = self._agent_factory.build()
 
-    self._runner = Runner()
+    # Use a persistent checkpoint store shared with the session index.
+    if self._session_manager is None:
+      self._session_manager = SessionManager(db_path=self._db_path)
+
+    db_path = self._session_manager.db_path
+    self._runner = Runner(checkpoint=SQLiteCheckpointStore(db_path=str(db_path)))
+
+    # Ensure the current session exists in the index.
+    existing = await self._session_manager.get(self._session_id)
+    if existing is None:
+      await self._session_manager.create(
+        session_id=self._session_id,
+        model=self._config.model,
+      )
 
     # Subscribe to config changes so system_prompt etc. take effect
     # on the next Agent rebuild (model changes are handled explicitly).
@@ -107,6 +151,7 @@ class Orchestrator:
       "orchestrator_initialized",
       model=self._config.model,
       session_id=self._session_id,
+      db_path=str(db_path),
     )
     self._initialized = True
 
@@ -159,16 +204,100 @@ class Orchestrator:
     except Exception as exc:
       logger.error("execution_failed", error=str(exc))
       raise OrchestratorError(f"Execution failed: {exc}") from exc
+    finally:
+      # Update last_active and message count even if the stream errors.
+      if self._session_manager is not None:
+        try:
+          await self._session_manager.touch(self._session_id)
+        except Exception as touch_exc:
+          logger.warning("session_touch_failed", error=str(touch_exc))
 
-  def new_session(self) -> str:
+  async def new_session(self, name: str | None = None) -> str:
     """Create a new session, discarding the old one.
+
+    Args:
+      name: Optional human-readable name for the session.
 
     Returns:
       The new session_id.
     """
     self._session_id = str(uuid.uuid4())
-    logger.info("new_session_created", session_id=self._session_id)
+
+    if self._initialized and self._session_manager is not None:
+      await self._session_manager.create(
+        session_id=self._session_id,
+        model=self._config.model,
+        name=name,
+      )
+
+    logger.info("new_session_created", session_id=self._session_id, name=name)
     return self._session_id
+
+  async def switch_session(self, session_id: str) -> SessionInfo:
+    """Switch to an existing session and resume its context.
+
+    Args:
+      session_id: Session identifier to switch to.
+
+    Returns:
+      The session metadata.
+
+    Raises:
+      SessionNotFoundError: If the session does not exist.
+      OrchestratorError: If not initialized.
+    """
+    if not self._initialized or self._session_manager is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+
+    info = await self._session_manager.get(session_id)
+    if info is None:
+      raise SessionNotFoundError(f"Session not found: {session_id}")
+
+    self._session_id = session_id
+    logger.info("session_switched", session_id=session_id)
+    return info
+
+  async def rename_session(self, name: str) -> SessionInfo:
+    """Rename the current session.
+
+    Args:
+      name: New human-readable name.
+
+    Returns:
+      Updated session metadata.
+    """
+    if not self._initialized or self._session_manager is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+
+    return await self._session_manager.rename(self._session_id, name)
+
+  async def delete_session(self, session_id: str) -> None:
+    """Delete a session and its persisted data.
+
+    Args:
+      session_id: Session identifier to delete.
+
+    Raises:
+      SessionError: If trying to delete the active session.
+      SessionNotFoundError: If the session does not exist.
+      OrchestratorError: If not initialized.
+    """
+    if not self._initialized or self._session_manager is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+
+    if session_id == self._session_id:
+      raise SessionError(
+        "Cannot delete the active session. Switch to another session first."
+      )
+
+    await self._session_manager.delete(session_id)
+
+  async def list_sessions(self) -> list[SessionInfo]:
+    """Return all sessions ordered by last activity descending."""
+    if not self._initialized or self._session_manager is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+
+    return await self._session_manager.list()
 
   async def switch_model(self, model: str) -> None:
     """Switch the active model, rebuild Agent, and keep the session context.
@@ -251,5 +380,7 @@ class Orchestrator:
     """Graceful shutdown — clean up resources."""
     if self._config_manager is not None:
       self._config_manager.remove_listener(self._on_config_changed)
+    if self._session_manager is not None:
+      await self._session_manager.close()
     logger.info("orchestrator_shutdown")
     self._initialized = False

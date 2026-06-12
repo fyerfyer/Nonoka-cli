@@ -14,6 +14,7 @@ from rich.text import Text
 
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.shell.commands import CommandInfo, CommandRegistry
+from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.ui.console import get_console
 
 
@@ -70,6 +71,79 @@ class UIPresenter:
   def show_goodbye(self) -> None:
     """Show the goodbye message."""
     self.console.print("\n[dim]Goodbye![/dim]")
+
+  # ------------------------------------------------------------------ #
+  # Sessions
+  # ------------------------------------------------------------------ #
+
+  def show_session_info(self, info: SessionInfo) -> None:
+    """Show current session details."""
+    table = Table(
+      title="Current Session",
+      box=ROUNDED,
+      border_style="cyan",
+      show_header=True,
+      header_style="bold",
+    )
+    table.add_column("Field", style="green", no_wrap=True)
+    table.add_column("Value", style="white", ratio=1)
+
+    name = info.name or "(unnamed)"
+    table.add_row("Session ID", info.session_id)
+    table.add_row("Name", name)
+    table.add_row("Model", info.model)
+    table.add_row("Created", str(info.created_at))
+    table.add_row("Last active", str(info.last_active))
+    table.add_row("Messages", str(info.message_count))
+
+    self.console.print()
+    self.console.print(table)
+    self.console.print()
+
+  def show_session_list(self, sessions: list[SessionInfo]) -> None:
+    """Show a table of all sessions ordered by last activity."""
+    table = Table(
+      title="Sessions",
+      box=ROUNDED,
+      border_style="cyan",
+      show_header=True,
+      header_style="bold",
+      expand=True,
+    )
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Name", style="green")
+    table.add_column("Model", style="yellow", no_wrap=True)
+    table.add_column("Created", style="dim", no_wrap=True)
+    table.add_column("Last active", style="dim", no_wrap=True)
+    table.add_column("Messages", style="cyan", justify="right", no_wrap=True)
+
+    for info in sessions:
+      short_id = info.session_id[:8]
+      name = info.name or "(unnamed)"
+      table.add_row(
+        short_id,
+        name,
+        info.model,
+        str(info.created_at),
+        str(info.last_active),
+        str(info.message_count),
+      )
+
+    self.console.print()
+    self.console.print(table)
+    self.console.print()
+
+  def show_session_switched(self, session_id: str) -> None:
+    """Show session switch confirmation."""
+    self.success(f"Switched to session [bold]{session_id[:8]}[/bold]")
+
+  def show_session_renamed(self, name: str) -> None:
+    """Show session rename confirmation."""
+    self.success(f"Session renamed to [bold]'{name}'[/bold]")
+
+  def show_session_deleted(self, session_id: str) -> None:
+    """Show session deletion confirmation."""
+    self.success(f"Session [bold]{session_id[:8]}[/bold] deleted")
 
   # ------------------------------------------------------------------ #
   # Commands
@@ -151,15 +225,3 @@ class UIPresenter:
       f"[red]Unknown command:[/red] /{command}. "
       "Type [bold]/help[/bold] for available commands."
     )
-
-  # ------------------------------------------------------------------ #
-  # Prompt
-  # ------------------------------------------------------------------ #
-
-  def prompt_text(self) -> str:
-    """Return the styled prompt string.
-
-    The actual input reading is still done by the REPL so it can run in
-    an executor without blocking the event loop.
-    """
-    return "[bold green]nonoka[/bold green][dim]>[/dim] "

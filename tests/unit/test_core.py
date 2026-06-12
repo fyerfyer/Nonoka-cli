@@ -105,9 +105,10 @@ class TestOrchestrator:
     import uuid
     uuid.UUID(orchestrator.session_id)  # raises ValueError if invalid
 
-  def test_new_session_changes_session_id(self, orchestrator):
+  @pytest.mark.asyncio
+  async def test_new_session_changes_session_id(self, orchestrator):
     old_id = orchestrator.session_id
-    new_id = orchestrator.new_session()
+    new_id = await orchestrator.new_session()
     assert new_id != old_id
     assert orchestrator.session_id == new_id
 

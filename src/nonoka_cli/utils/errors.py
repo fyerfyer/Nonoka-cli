@@ -34,3 +34,13 @@ class UnknownCommandError(CLIError):
   def __init__(self, command: str):
     self.command = command
     super().__init__(f"Unknown command: /{command}. Type /help for available commands.")
+
+
+class SessionError(CLIError):
+  """Session management error."""
+  pass
+
+
+class SessionNotFoundError(SessionError):
+  """Session ID not found in store."""
+  pass

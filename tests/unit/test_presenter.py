@@ -134,12 +134,3 @@ class TestUIPresenterHelp:
     assert "Unknown command" in output
     assert "/missing" in output
     assert "/help" in output
-
-
-class TestUIPresenterPrompt:
-  """Tests for prompt text generation."""
-
-  def test_prompt_text_contains_nonoka(self, presenter):
-    text = presenter.prompt_text()
-    assert "nonoka" in text
-    assert ">" in text

@@ -70,7 +70,11 @@ async def _run_repl(args: argparse.Namespace) -> int:
     Exit code (0 for success).
   """
   presenter = UIPresenter()
-  orchestrator = Orchestrator()
+
+  # Default shared database for sessions and nonoka checkpoints.
+  db_path = Path.home() / ".local" / "share" / "nonoka" / "nonoka.db"
+  orchestrator = Orchestrator(db_path=db_path)
+
   renderer = Renderer()
   repl = REPL(orchestrator, renderer, presenter)
 

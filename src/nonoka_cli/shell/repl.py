@@ -16,10 +16,10 @@ import structlog
 
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.shell.commands import CommandContext, CommandRegistry, CommandRouter
-from nonoka_cli.shell.completer import setup_completion
+from nonoka_cli.shell.prompt_input import PromptInput
 from nonoka_cli.ui.presenter import UIPresenter
 from nonoka_cli.ui.renderer import Renderer
-from nonoka_cli.utils.errors import CLIError, ConfigError, OrchestratorError, UnknownCommandError
+from nonoka_cli.utils.errors import CLIError, ConfigError, OrchestratorError, SessionError, SessionNotFoundError, UnknownCommandError
 
 logger = structlog.get_logger("nonoka_cli.shell")
 
@@ -40,6 +40,7 @@ class REPL:
     orchestrator: Orchestrator,
     renderer: Renderer | None = None,
     presenter: UIPresenter | None = None,
+    prompt_input: PromptInput | None = None,
   ):
     self._orchestrator = orchestrator
     self._renderer = renderer or Renderer()
@@ -50,6 +51,7 @@ class REPL:
     self._registry = CommandRegistry()
     self._register_commands()
     self._router = CommandRouter(self._registry)
+    self._prompt_input = prompt_input or PromptInput(self._registry)
 
   @property
   def registry(self) -> CommandRegistry:
@@ -68,6 +70,13 @@ class REPL:
       "new",
       partial(self._cmd_new),
       description="Start a new conversation session",
+      usage="[name]",
+    )
+    self._registry.register(
+      "session",
+      partial(self._cmd_session),
+      description="Manage conversation sessions",
+      usage="[list | switch <id> | rename <name> | delete <id>]",
     )
     self._registry.register(
       "model",
@@ -98,9 +107,71 @@ class REPL:
     self._presenter.show_goodbye()
 
   async def _cmd_new(self, ctx: CommandContext, args: list[str]) -> None:
-    """Handle /new — create a new session."""
-    session_id = self._orchestrator.new_session()
+    """Handle /new [name] — create a new session."""
+    name = " ".join(args) if args else None
+    session_id = await self._orchestrator.new_session(name=name)
     self._presenter.show_new_session(session_id)
+
+  async def _cmd_session(self, ctx: CommandContext, args: list[str]) -> None:
+    """Handle /session sub-commands."""
+    if not args:
+      try:
+        info = await self._orchestrator.get_current_session()
+      except OrchestratorError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_session_info(info)
+      return
+
+    subcommand = args[0].lower()
+    sub_args = args[1:]
+
+    if subcommand == "list":
+      try:
+        sessions = await self._orchestrator.list_sessions()
+      except OrchestratorError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_session_list(sessions)
+
+    elif subcommand == "switch":
+      if not sub_args:
+        self._presenter.error("Usage: /session switch <session_id>")
+        return
+      session_id = sub_args[0]
+      try:
+        await self._orchestrator.switch_session(session_id)
+      except SessionNotFoundError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_session_switched(session_id)
+
+    elif subcommand == "rename":
+      if not sub_args:
+        self._presenter.error("Usage: /session rename <name>")
+        return
+      name = " ".join(sub_args)
+      try:
+        await self._orchestrator.rename_session(name)
+      except (OrchestratorError, SessionNotFoundError) as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_session_renamed(name)
+
+    elif subcommand == "delete":
+      if not sub_args:
+        self._presenter.error("Usage: /session delete <session_id>")
+        return
+      session_id = sub_args[0]
+      try:
+        await self._orchestrator.delete_session(session_id)
+      except (SessionError, SessionNotFoundError, OrchestratorError) as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_session_deleted(session_id)
+
+    else:
+      self._presenter.error(f"Unknown /session subcommand: {subcommand}")
 
   async def _cmd_model(self, ctx: CommandContext, args: list[str]) -> None:
     """Handle /model <model> — switch model and rebuild Agent."""
@@ -181,11 +252,9 @@ class REPL:
     self._running = True
     logger.info("repl_started")
 
-    setup_completion(self._registry)
-
     while self._running:
       try:
-        user_input = await self._read_input()
+        user_input = await self._prompt_input.read()
       except EOFError:
         self._running = False
         self._presenter.show_goodbye()
@@ -203,27 +272,6 @@ class REPL:
         await self._handle_prompt(user_input)
 
     logger.info("repl_stopped")
-
-  async def _read_input(self) -> str:
-    """Read a line of input from stdin asynchronously.
-
-    Uses the rich console so the prompt can be styled, while keeping the
-    read operation out of the event loop via run_in_executor.
-
-    Returns:
-      Stripped user input string.
-
-    Raises:
-      EOFError: On Ctrl+D (empty read).
-    """
-    loop = asyncio.get_event_loop()
-    prompt = self._presenter.prompt_text()
-    raw = await loop.run_in_executor(
-      None, self._presenter.console.input, prompt
-    )
-    if raw is None:
-      raise EOFError()
-    return raw.strip()
 
   async def _handle_command(self, raw: str) -> None:
     """Handle a /-prefixed CLI command.
