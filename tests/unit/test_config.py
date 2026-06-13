@@ -85,7 +85,7 @@ class TestConfigLoader:
     temp_config_file.write_text("")
     config = ConfigLoader.load(temp_config_file)
     assert config.model == "gpt-4o"  # default
-    assert config.system_prompt == "You are a helpful AI assistant."  # default
+    assert config.system_prompt == ""  # default; AgentFactory supplies coding prompt
 
   def test_load_with_env_substitution(self, temp_config_file, config_with_env_vars, monkeypatch):
     temp_config_file.write_text(config_with_env_vars)
@@ -139,7 +139,7 @@ class TestCLIConfigModel:
   def test_default_values(self):
     config = CLIConfig()
     assert config.model == "gpt-4o"
-    assert config.system_prompt == "You are a helpful AI assistant."
+    assert config.system_prompt == ""
     assert config.mcp_servers == {}
     assert config.tool_paths == []
     assert config.skills == []

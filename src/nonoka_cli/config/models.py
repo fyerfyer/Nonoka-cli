@@ -36,7 +36,7 @@ class CLIConfig(BaseModel):
   Matches the expected structure of ~/.config/nonoka/config.yaml.
   """
   model: str = "gpt-4o"
-  system_prompt: str = "You are a helpful AI assistant."
+  system_prompt: str = ""
   mcp_servers: dict[str, MCPServerConfigModel] = Field(default_factory=dict)
   tool_paths: list[Path] = Field(default_factory=list)
   skills: list[str] = Field(default_factory=list)

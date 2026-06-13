@@ -3,11 +3,14 @@
 
 model: "deepseek-chat"
 
-system_prompt: |
-  You are nonoka, a helpful AI assistant running in a terminal.
-  Be concise but thorough in your responses.
+# Optional: override the default system prompt.
+# If omitted, nonoka-cli uses a built-in coding-assistant prompt that
+# explains the available tools and encourages autonomous tool use.
+# system_prompt: |
+#   You are nonoka, a helpful AI assistant running in a terminal.
+#   Be concise but thorough in your responses.
 
-# TODO: MCP server configuration (enabled in Phase 5)
+# TODO: MCP server configuration 
 # mcp_servers:
 #   filesystem:
 #     transport: stdio
@@ -17,11 +20,11 @@ system_prompt: |
 #       - "@modelcontextprotocol/server-filesystem"
 #       - "~"
 
-# TODO: Local tool scan paths (enabled in Phase 6)
+# Local tool scan paths
 # tool_paths:
 #   - ~/.config/nonoka/tools/
 
-# TODO: Enabled skills (enabled in Phase 6)
+# Enabled skills 
 # skills:
 #   - code-review
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import structlog
 from nonoka import Runner
@@ -20,10 +21,10 @@ from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.mcp.models import MCPStatus
 from nonoka_cli.sessions.manager import SessionManager
 from nonoka_cli.sessions.models import SessionInfo
+from nonoka_cli.skills.manager import SkillManager
+from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import (
   ConfigError,
-  MCPConnectionError,
-  MCPError,
   MCPRestartExhaustedError,
   OrchestratorError,
   SessionError,
@@ -52,6 +53,8 @@ class Orchestrator:
     config_manager: ConfigManager | None = None,
     session_manager: SessionManager | None = None,
     mcp_manager: MCPManager | None = None,
+    tool_loader: ToolLoader | None = None,
+    skill_manager: SkillManager | None = None,
     db_path: Path | str | None = None,
   ):
     """Initialize the orchestrator.
@@ -63,6 +66,8 @@ class Orchestrator:
         will be created using db_path during initialize().
       mcp_manager: Optional MCPManager. If None, one is created during
         initialize().
+      tool_loader: Optional ToolLoader for local / built-in tools.
+      skill_manager: Optional SkillManager for loading configured skills.
       db_path: Path to the SQLite database used for sessions and nonoka
         checkpoints. Defaults to ~/.local/share/nonoka/nonoka.db.
     """
@@ -70,6 +75,8 @@ class Orchestrator:
     self._config_manager = config_manager
     self._session_manager = session_manager
     self._mcp_manager = mcp_manager or MCPManager()
+    self._tool_loader = tool_loader
+    self._skill_manager = skill_manager
     self._db_path = db_path
     self._agent_factory: AgentFactory | None = None
     self._runner: Runner | None = None
@@ -150,8 +157,18 @@ class Orchestrator:
         # Log and continue; failed servers are tracked as unhealthy.
         logger.error("mcp_startup_partial_failure", error=str(exc))
 
-    self._agent_factory = AgentFactory(self._config, mcp_manager=self._mcp_manager)
-    agent = self._agent_factory.build()
+    if self._tool_loader is None:
+      self._tool_loader = ToolLoader(self._config.tool_paths)
+    if self._skill_manager is None:
+      self._skill_manager = SkillManager()
+
+    self._agent_factory = AgentFactory(
+      self._config,
+      mcp_manager=self._mcp_manager,
+      tool_loader=self._tool_loader,
+      skill_manager=self._skill_manager,
+    )
+    self._agent_factory.build()
 
     # Use a persistent checkpoint store shared with the session index.
     if self._session_manager is None:
@@ -173,6 +190,7 @@ class Orchestrator:
     if self._config_manager is not None:
       self._config_manager.on_change(self._on_config_changed)
 
+    local_tool_count = len(self._tool_loader.get_loaded()) if self._tool_loader else 0
     logger.info(
       "orchestrator_initialized",
       model=self._config.model,
@@ -180,6 +198,8 @@ class Orchestrator:
       db_path=str(db_path),
       mcp_servers=list(self._config.mcp_servers.keys()),
       mcp_tool_count=len(self._mcp_manager.get_tools()),
+      local_tool_count=local_tool_count,
+      skills=self._config.skills,
     )
     self._initialized = True
 
@@ -386,6 +406,15 @@ class Orchestrator:
 
     self._config = new_config
 
+    # Refresh local tools and skills when paths / names change.
+    if self._tool_loader is not None:
+      self._tool_loader.search_paths = [
+        Path(p).expanduser() for p in new_config.tool_paths
+      ]
+      self._tool_loader.reload()
+    if self._skill_manager is not None:
+      self._skill_manager.reload(new_config.skills)
+
     # Rebuild Agent with new configuration
     if self._agent_factory is not None:
       try:
@@ -403,6 +432,41 @@ class Orchestrator:
       session_id=self._session_id,
     )
     return new_config
+
+  # ------------------------------------------------------------------ #
+  # Tool operations
+  # ------------------------------------------------------------------ #
+
+  def list_tools(self) -> list[Any]:
+    """Return all tools available to the current Agent.
+
+    Includes built-ins, local tools, and MCP tools.
+    """
+    if self._agent_factory is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+    return self._agent_factory.list_all_tools()
+
+  def get_tool_info(self, name: str) -> dict[str, Any] | None:
+    """Return the JSON schema for a named tool, or None if not found."""
+    if self._agent_factory is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+    tool = self._agent_factory.get_tool(name)
+    if tool is None:
+      return None
+    return tool.to_json_schema()
+
+  def reload_tools(self) -> list[Any]:
+    """Reload local tools and rebuild the Agent.
+
+    Returns:
+      The updated tool list.
+    """
+    if not self._initialized or self._agent_factory is None:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+    if self._tool_loader is not None:
+      self._tool_loader.reload()
+    self._agent_factory.rebuild()
+    return self.list_tools()
 
   # ------------------------------------------------------------------ #
   # MCP operations

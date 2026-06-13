@@ -121,6 +121,12 @@ class REPL:
       usage="[list | restart <name> | add <name> <command> [args...]]",
     )
     self._registry.register(
+      "tool",
+      partial(self._cmd_tool),
+      description="List and inspect available tools",
+      usage="[list | info <name> | reload]",
+    )
+    self._registry.register(
       "help",
       partial(self._cmd_help),
       description="Show help for commands",
@@ -256,6 +262,50 @@ class REPL:
       self._presenter.error(f"Editor not found: {editor}")
     except Exception as exc:
       self._presenter.error(f"Failed to open config: {exc}")
+
+  async def _cmd_tool(self, ctx: CommandContext, args: list[str]) -> None:
+    """Handle /tool list, /tool info <name>, and /tool reload."""
+    if not args:
+      try:
+        tools = self._orchestrator.list_tools()
+      except OrchestratorError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_tool_list(tools)
+      return
+
+    subcommand = args[0].lower()
+    sub_args = args[1:]
+
+    if subcommand == "list":
+      try:
+        tools = self._orchestrator.list_tools()
+      except OrchestratorError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_tool_list(tools)
+
+    elif subcommand == "info":
+      if not sub_args:
+        self._presenter.error("Usage: /tool info <tool_name>")
+        return
+      name = sub_args[0]
+      schema = self._orchestrator.get_tool_info(name)
+      if schema is None:
+        self._presenter.show_tool_not_found(name)
+        return
+      self._presenter.show_tool_info(name, schema)
+
+    elif subcommand == "reload":
+      try:
+        tools = await self._orchestrator.reload_tools()
+      except OrchestratorError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_tool_reload_summary(len(tools))
+
+    else:
+      self._presenter.error(f"Unknown /tool subcommand: {subcommand}")
 
   async def _cmd_mcp(self, ctx: CommandContext, args: list[str]) -> None:
     """Handle /mcp list and /mcp restart <name>."""

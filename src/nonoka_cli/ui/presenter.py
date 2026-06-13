@@ -7,6 +7,9 @@ Agent StreamEvents.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from rich.box import ROUNDED
 from rich.panel import Panel
 from rich.table import Table
@@ -14,8 +17,8 @@ from rich.text import Text
 
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.mcp.models import MCPStatus
-from nonoka_cli.shell.commands import CommandInfo, CommandRegistry
 from nonoka_cli.sessions.models import SessionInfo
+from nonoka_cli.shell.commands import CommandInfo, CommandRegistry
 from nonoka_cli.ui.console import get_console
 
 
@@ -226,6 +229,72 @@ class UIPresenter:
       f"[red]Unknown command:[/red] /{command}. "
       "Type [bold]/help[/bold] for available commands."
     )
+
+  # ------------------------------------------------------------------ #
+  # Tools
+  # ------------------------------------------------------------------ #
+
+  def show_tool_list(self, tools: list[Any]) -> None:
+    """Show a table of all available tools."""
+    table = Table(
+      title="Available Tools",
+      box=ROUNDED,
+      border_style="cyan",
+      show_header=True,
+      header_style="bold",
+      expand=True,
+    )
+    table.add_column("Name", style="green", no_wrap=True)
+    table.add_column("Type", style="yellow", no_wrap=True)
+    table.add_column("Description", style="white", ratio=1)
+
+    if not tools:
+      table.add_row("(none)", "", "")
+
+    for tool in tools:
+      tool_type = "builtin" if self._is_builtin_tool(tool) else "mcp/local"
+      description = getattr(tool, "description", "") or ""
+      # Truncate long descriptions for the table view.
+      if len(description) > 120:
+        description = description[:117] + "..."
+      table.add_row(tool.name, tool_type, description)
+
+    self.console.print()
+    self.console.print(table)
+    self.console.print()
+
+  def show_tool_info(self, name: str, schema: dict[str, Any]) -> None:
+    """Show the JSON schema for a single tool."""
+    schema_text = json.dumps(schema, indent=2, ensure_ascii=False)
+    self.console.print()
+    self.console.print(Panel(
+      schema_text,
+      title=f"[bold cyan]{name}[/bold cyan]",
+      border_style="cyan",
+      box=ROUNDED,
+    ))
+    self.console.print()
+
+  def show_tool_not_found(self, name: str) -> None:
+    """Show a message when a requested tool does not exist."""
+    self.console.print(
+      f"[red]Tool not found:[/red] {name}. "
+      "Type [bold]/tool list[/bold] to see available tools."
+    )
+
+  def show_tool_reload_summary(self, count: int) -> None:
+    """Show confirmation after reloading tools."""
+    self.success(f"Tools reloaded. {count} tool(s) available.")
+
+  @staticmethod
+  def _is_builtin_tool(tool: Any) -> bool:
+    """Heuristic to identify built-in nonoka-cli tools by module."""
+    module = getattr(tool, "_func", None)
+    if module is not None:
+      module = getattr(module, "__module__", "")
+    else:
+      module = getattr(tool, "__module__", "")
+    return isinstance(module, str) and module.startswith("nonoka_cli.tools.builtins")
 
   # ------------------------------------------------------------------ #
   # MCP

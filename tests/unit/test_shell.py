@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -179,6 +178,55 @@ class TestREPLCommandHandling:
     await repl._handle_command("/mcp add fetch")
     captured = capsys.readouterr()
     assert "Usage" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_tool_list_command(self, repl, mock_orchestrator, capsys):
+    mock_tool = MagicMock()
+    mock_tool.name = "read_file"
+    mock_tool.description = "Read a file."
+    mock_orchestrator.list_tools.return_value = [mock_tool]
+
+    await repl._handle_command("/tool list")
+    mock_orchestrator.list_tools.assert_called_once()
+    captured = capsys.readouterr()
+    assert "Available Tools" in captured.out
+    assert "read_file" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_tool_info_command(self, repl, mock_orchestrator, capsys):
+    mock_orchestrator.get_tool_info.return_value = {
+      "type": "function",
+      "function": {"name": "read_file"},
+    }
+
+    await repl._handle_command("/tool info read_file")
+    mock_orchestrator.get_tool_info.assert_called_once_with("read_file")
+    captured = capsys.readouterr()
+    assert "read_file" in captured.out
+    assert "function" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_tool_info_not_found(self, repl, mock_orchestrator, capsys):
+    mock_orchestrator.get_tool_info.return_value = None
+
+    await repl._handle_command("/tool info missing")
+    captured = capsys.readouterr()
+    assert "Tool not found" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_tool_info_without_name_shows_error(self, repl, capsys):
+    await repl._handle_command("/tool info")
+    captured = capsys.readouterr()
+    assert "Usage" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_tool_reload_command(self, repl, mock_orchestrator, capsys):
+    mock_orchestrator.reload_tools = AsyncMock(return_value=[MagicMock(name="read_file")])
+
+    await repl._handle_command("/tool reload")
+    mock_orchestrator.reload_tools.assert_awaited_once()
+    captured = capsys.readouterr()
+    assert "reloaded" in captured.out.lower()
 
 
 class TestREPLPromptHandling:
