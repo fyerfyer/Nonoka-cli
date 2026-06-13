@@ -8,6 +8,7 @@ import structlog
 
 from nonoka import Agent, AgentBuilder
 from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.utils.errors import AgentBuildError
 
 logger = structlog.get_logger("nonoka_cli.core")
@@ -16,12 +17,26 @@ logger = structlog.get_logger("nonoka_cli.core")
 class AgentFactory:
   """Builds nonoka Agent instances from CLI configuration.
 
-  TODO: Integrate MCP tools, local tools, and skills.
-  Currently supports model and system_prompt only.
+  Supports integrating tools from:
+  - MCP servers (via ``MCPManager``)
+  - Local tool directories (future)
+  - Skills (future)
+
+  Currently assembles model, system_prompt, max_turns and all available tools.
   """
 
-  def __init__(self, config: CLIConfig):
+  def __init__(
+    self,
+    config: CLIConfig,
+    mcp_manager: MCPManager | None = None,
+  ):
+    """Args:
+      config: Validated CLI configuration.
+      mcp_manager: Optional MCP manager whose discovered tools are registered
+        with the Agent.
+    """
     self._config = config
+    self._mcp_manager = mcp_manager
     self._agent: Agent | None = None
 
   @property
@@ -45,20 +60,25 @@ class AgentFactory:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
     system_prompt = self._build_system_prompt()
+    tools = self._collect_tools()
 
     logger.info(
       "building_agent",
       model=self._config.model,
       system_prompt_length=len(system_prompt),
+      tool_count=len(tools),
     )
 
-    self._agent = (
+    builder = (
       AgentBuilder()
       .model(self._config.model)
       .system_prompt(system_prompt)
       .max_turns(20)
-      .build()
     )
+    if tools:
+      builder = builder.tools(*tools)
+
+    self._agent = builder.build()
     return self._agent
 
   def _build_system_prompt(self) -> str:
@@ -72,6 +92,15 @@ class AgentFactory:
 
     identity_line = f"\n\nYour current model is: {model}."
     return base.rstrip() + identity_line
+
+  def _collect_tools(self) -> list[Any]:
+    """Collect tools from all configured sources."""
+    tools: list[Any] = []
+    if self._mcp_manager is not None:
+      mcp_tools = self._mcp_manager.get_tools()
+      tools.extend(mcp_tools)
+      logger.debug("agent_factory_mcp_tools", count=len(mcp_tools))
+    return tools
 
   def rebuild(self, config_patch: dict[str, Any] | None = None) -> Agent:
     """Rebuild Agent with an optional configuration patch.

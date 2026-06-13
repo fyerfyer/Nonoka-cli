@@ -168,3 +168,44 @@ class TestLoadConfigConvenience:
     config = load_config(temp_config_file)
     assert isinstance(config, CLIConfig)
     assert config.model == "custom-model"
+
+
+class TestMCPServersSidecar:
+  """Tests for the optional mcp_servers.yaml side-car file."""
+
+  @pytest.fixture
+  def temp_mcp_file(self, tmp_path, monkeypatch):
+    """Patch the MCP side-car path to a temp file."""
+    path = tmp_path / "mcp_servers.yaml"
+    monkeypatch.setattr(ConfigLoader, "MCP_SERVERS_PATH", path)
+    return path
+
+  def test_sidecar_merges_into_main_config(self, temp_config_file, temp_mcp_file):
+    temp_config_file.write_text(
+      "model: gpt-4o\nmcp_servers:\n  main:\n    transport: stdio\n    command: echo\n"
+    )
+    temp_mcp_file.write_text(
+      "mcp_servers:\n  sidecar:\n    transport: stdio\n    command: cat\n"
+    )
+    config = ConfigLoader.load(temp_config_file)
+    assert "main" in config.mcp_servers
+    assert "sidecar" in config.mcp_servers
+    assert config.mcp_servers["sidecar"].command == "cat"
+
+  def test_sidecar_overrides_main_config(self, temp_config_file, temp_mcp_file):
+    temp_config_file.write_text(
+      "model: gpt-4o\nmcp_servers:\n  shared:\n    transport: stdio\n    command: echo\n"
+    )
+    temp_mcp_file.write_text(
+      "mcp_servers:\n  shared:\n    transport: stdio\n    command: cat\n"
+    )
+    config = ConfigLoader.load(temp_config_file)
+    assert config.mcp_servers["shared"].command == "cat"
+
+  def test_save_and_load_mcp_servers(self, temp_mcp_file):
+    ConfigLoader.save_mcp_servers({
+      "fetch": {"transport": "stdio", "command": "uvx", "args": ["mcp-server-fetch"]},
+    })
+    loaded = ConfigLoader.load_mcp_servers()
+    assert "fetch" in loaded
+    assert loaded["fetch"]["command"] == "uvx"

@@ -1621,7 +1621,7 @@ wheels = [
 
 [[package]]
 name = "nonoka"
-version = "1.1.7"
+version = "1.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1635,9 +1635,9 @@ dependencies = [
     { name = "structlog" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/38/d1bd2bb611d8dccdefe76650fcf002d90076a0099f9efd69e86dd162edec/nonoka-1.1.7.tar.gz", hash = "sha256:a6c9ea8f350c3ab2d02c7fc37528a9c9a9b7f155f3c3733707d7e5ca9065b9ae", size = 134679, upload-time = "2026-06-11T10:32:28.8Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/33/f649ed73f3b8dc0951f97cdbbc8f39d12e1fe2c10d9ab757f57aad5feec4/nonoka-1.1.9.tar.gz", hash = "sha256:bac4252c3dc1083ff75d0eebc70139ca045f311b728d335234944cb4120685f8", size = 135039, upload-time = "2026-06-13T08:11:46.628Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/c8/1a024db60ef37413cab965521f423f96724152b917ffb5dfe3a688f590d3/nonoka-1.1.7-py3-none-any.whl", hash = "sha256:87a523794e636179ccd2ca59159e5a5ba425117d1d9a6cbfd69724ca9487af9f", size = 99456, upload-time = "2026-06-11T10:32:27.063Z" },
+    { url = "https://files.pythonhosted.org/packages/80/74/7d8420d78c1364fd708016c2a0b853ad8d2ff81b281ba1078324a5983b1e/nonoka-1.1.9-py3-none-any.whl", hash = "sha256:ffa378070346b5536f495ca3c1eb6baf51aca6852d7a0b48adbbef5043b9f8f2", size = 99814, upload-time = "2026-06-13T08:11:44.951Z" },
 ]
 
 [[package]]
@@ -1660,7 +1660,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "nonoka", specifier = ">=1.1.7" },
+    { name = "nonoka", specifier = ">=1.1.9" },
     { name = "prompt-toolkit", specifier = ">=3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },

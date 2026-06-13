@@ -13,6 +13,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.mcp.models import MCPStatus
 from nonoka_cli.shell.commands import CommandInfo, CommandRegistry
 from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.ui.console import get_console
@@ -224,4 +225,68 @@ class UIPresenter:
     self.console.print(
       f"[red]Unknown command:[/red] /{command}. "
       "Type [bold]/help[/bold] for available commands."
+    )
+
+  # ------------------------------------------------------------------ #
+  # MCP
+  # ------------------------------------------------------------------ #
+
+  def show_mcp_list(self, statuses: dict[str, MCPStatus]) -> None:
+    """Show a table of all MCP server statuses."""
+    table = Table(
+      title="MCP Servers",
+      box=ROUNDED,
+      border_style="cyan",
+      show_header=True,
+      header_style="bold",
+      expand=True,
+    )
+    table.add_column("Name", style="green", no_wrap=True)
+    table.add_column("Status", style="yellow", no_wrap=True)
+    table.add_column("Transport", style="dim", no_wrap=True)
+    table.add_column("Tools", style="cyan", justify="right", no_wrap=True)
+    table.add_column("Restarts", style="dim", justify="right", no_wrap=True)
+    table.add_column("Last ping", style="dim", no_wrap=True)
+    table.add_column("Error", style="red", ratio=1)
+
+    if not statuses:
+      table.add_row("(none)", "", "", "", "", "", "")
+
+    for name, status in statuses.items():
+      status_style = {
+        "connected": "[green]connected[/green]",
+        "connecting": "[yellow]connecting[/yellow]",
+        "restarting": "[yellow]restarting[/yellow]",
+        "error": "[red]error[/red]",
+        "stopped": "[dim]stopped[/dim]",
+      }.get(status.status, status.status)
+      last_ping = str(status.last_ping) if status.last_ping else "-"
+      error = status.error or ""
+      table.add_row(
+        name,
+        status_style,
+        status.transport,
+        str(status.tool_count),
+        str(status.restart_count),
+        last_ping,
+        error,
+      )
+
+    self.console.print()
+    self.console.print(table)
+    self.console.print()
+
+  def show_mcp_restarted(self, status: MCPStatus) -> None:
+    """Show MCP restart confirmation."""
+    self.success(
+      f"MCP server [bold]{status.name}[/bold] restarted. "
+      f"Status: [green]{status.status}[/green], "
+      f"Tools: [cyan]{status.tool_count}[/cyan]"
+    )
+
+  def show_mcp_added(self, status: MCPStatus) -> None:
+    """Show MCP add confirmation."""
+    self.success(
+      f"MCP server [bold]{status.name}[/bold] added and connected. "
+      f"Tools: [cyan]{status.tool_count}[/cyan]"
     )

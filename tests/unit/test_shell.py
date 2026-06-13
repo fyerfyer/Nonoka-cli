@@ -111,6 +111,75 @@ class TestREPLCommandHandling:
     captured = capsys.readouterr()
     assert "Unknown command" in captured.out
 
+  @pytest.mark.asyncio
+  async def test_mcp_list_command(self, repl, mock_orchestrator, capsys):
+    from nonoka_cli.mcp.models import MCPStatus
+    mock_orchestrator.list_mcp_status.return_value = {
+      "fetch": MCPStatus(
+        name="fetch",
+        status="connected",
+        transport="stdio",
+        tool_count=3,
+        last_ping=None,
+        restart_count=0,
+        error=None,
+      ),
+    }
+    await repl._handle_command("/mcp list")
+    mock_orchestrator.list_mcp_status.assert_called_once()
+    captured = capsys.readouterr()
+    assert "MCP Servers" in captured.out
+    assert "fetch" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_mcp_restart_command(self, repl, mock_orchestrator, capsys):
+    from nonoka_cli.mcp.models import MCPStatus
+    status = MCPStatus(
+      name="fetch",
+      status="connected",
+      transport="stdio",
+      tool_count=3,
+      last_ping=None,
+      restart_count=1,
+      error=None,
+    )
+    mock_orchestrator.restart_mcp = AsyncMock(return_value=status)
+    await repl._handle_command("/mcp restart fetch")
+    mock_orchestrator.restart_mcp.assert_awaited_once_with("fetch")
+    captured = capsys.readouterr()
+    assert "fetch" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_mcp_restart_without_name_shows_error(self, repl, capsys):
+    await repl._handle_command("/mcp restart")
+    captured = capsys.readouterr()
+    assert "Usage" in captured.out
+
+  @pytest.mark.asyncio
+  async def test_mcp_add_command(self, repl, mock_orchestrator, capsys):
+    from nonoka_cli.mcp.models import MCPStatus
+    status = MCPStatus(
+      name="fetch",
+      status="connected",
+      transport="stdio",
+      tool_count=3,
+      last_ping=None,
+      restart_count=0,
+      error=None,
+    )
+    mock_orchestrator.add_mcp_server = AsyncMock(return_value=status)
+    await repl._handle_command("/mcp add fetch uvx mcp-server-fetch")
+    mock_orchestrator.add_mcp_server.assert_awaited_once()
+    captured = capsys.readouterr()
+    assert "fetch" in captured.out
+    assert "added" in captured.out.lower()
+
+  @pytest.mark.asyncio
+  async def test_mcp_add_without_enough_args_shows_error(self, repl, capsys):
+    await repl._handle_command("/mcp add fetch")
+    captured = capsys.readouterr()
+    assert "Usage" in captured.out
+
 
 class TestREPLPromptHandling:
   """Tests for REPL prompt execution."""

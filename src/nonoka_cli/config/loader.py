@@ -91,10 +91,17 @@ def _substitute_env_vars(value: Any) -> Any:
 
 
 class ConfigLoader:
-  """Loads and validates CLI configuration from YAML files."""
+  """Loads and validates CLI configuration from YAML files.
+
+  Supports a main ``config.yaml`` plus an optional ``mcp_servers.yaml``
+  side-car file. The side-car file is merged into the main config under
+  the ``mcp_servers`` key, with side-car entries taking precedence over
+  main-config entries of the same name.
+  """
 
   DEFAULT_PATH = Path.home() / ".config" / "nonoka" / "config.yaml"
   FALLBACK_PATH = Path.cwd() / "nonoka.yaml"
+  MCP_SERVERS_PATH = Path.home() / ".config" / "nonoka" / "mcp_servers.yaml"
 
   @classmethod
   def find_config_file(
@@ -122,6 +129,28 @@ class ConfigLoader:
     )
 
   @classmethod
+  def _load_yaml(cls, path: Path) -> dict[str, Any]:
+    """Load a YAML file and return a dict (empty if file missing)."""
+    import yaml
+
+    if not path.exists():
+      return {}
+
+    try:
+      raw = path.read_text(encoding="utf-8")
+      data = yaml.safe_load(raw)
+    except Exception as exc:
+      raise ConfigError(f"Failed to parse YAML from {path}: {exc}") from exc
+
+    if data is None:
+      return {}
+    if not isinstance(data, dict):
+      raise ConfigError(
+        f"Config file must contain a top-level object, got {type(data).__name__}: {path}"
+      )
+    return data
+
+  @classmethod
   def load(
     cls,
     path: Path | str | None = None,
@@ -146,18 +175,14 @@ class ConfigLoader:
     except ImportError as exc:
       raise ConfigError("PyYAML is required. Install: pip install pyyaml") from exc
 
-    try:
-      raw = config_path.read_text(encoding="utf-8")
-      data = yaml.safe_load(raw)
-    except Exception as exc:
-      raise ConfigError(f"Failed to parse YAML: {exc}") from exc
+    data = cls._load_yaml(config_path)
 
-    if data is None:
-      data = {}
-    if not isinstance(data, dict):
-      raise ConfigError(
-        f"Config file must contain a top-level object, got {type(data).__name__}"
-      )
+    # Merge optional side-car MCP servers file.
+    mcp_data = cls._load_yaml(cls.MCP_SERVERS_PATH)
+    if "mcp_servers" in mcp_data:
+      data.setdefault("mcp_servers", {})
+      data["mcp_servers"].update(mcp_data["mcp_servers"])
+      logger.info("merged_mcp_servers", path=str(cls.MCP_SERVERS_PATH))
 
     # Substitute env vars before validation
     try:
@@ -179,6 +204,37 @@ class ConfigLoader:
 
     logger.info("config_loaded", model=config.model)
     return config
+
+  @classmethod
+  def save_mcp_servers(cls, mcp_servers: dict[str, Any]) -> Path:
+    """Save the MCP servers dictionary to the side-car file.
+
+    Args:
+      mcp_servers: Mapping from server name to server configuration dict.
+
+    Returns:
+      Path to the written file.
+    """
+    import yaml
+
+    cls.MCP_SERVERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {"mcp_servers": mcp_servers}
+    cls.MCP_SERVERS_PATH.write_text(
+      yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+      encoding="utf-8",
+    )
+    logger.info("saved_mcp_servers", path=str(cls.MCP_SERVERS_PATH))
+    return cls.MCP_SERVERS_PATH
+
+  @classmethod
+  def load_mcp_servers(cls) -> dict[str, Any]:
+    """Load only the MCP servers side-car configuration.
+
+    Returns:
+      The ``mcp_servers`` dict, or an empty dict if the file does not exist.
+    """
+    data = cls._load_yaml(cls.MCP_SERVERS_PATH)
+    return data.get("mcp_servers", {})
 
 
 def load_config(path: Path | str | None = None) -> CLIConfig:

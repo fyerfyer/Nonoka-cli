@@ -44,3 +44,18 @@ class SessionError(CLIError):
 class SessionNotFoundError(SessionError):
   """Session ID not found in store."""
   pass
+
+
+class MCPError(CLIError):
+  """Base exception for MCP-related errors."""
+  pass
+
+
+class MCPConnectionError(MCPError):
+  """Failed to connect to an MCP server."""
+  pass
+
+
+class MCPRestartExhaustedError(MCPError):
+  """MCP server restart attempts exhausted."""
+  pass

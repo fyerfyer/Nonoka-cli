@@ -19,7 +19,15 @@ from nonoka_cli.shell.commands import CommandContext, CommandRegistry, CommandRo
 from nonoka_cli.shell.prompt_input import PromptInput
 from nonoka_cli.ui.presenter import UIPresenter
 from nonoka_cli.ui.renderer import Renderer
-from nonoka_cli.utils.errors import CLIError, ConfigError, OrchestratorError, SessionError, SessionNotFoundError, UnknownCommandError
+from nonoka_cli.utils.errors import (
+  CLIError,
+  ConfigError,
+  MCPError,
+  OrchestratorError,
+  SessionError,
+  SessionNotFoundError,
+  UnknownCommandError,
+)
 
 logger = structlog.get_logger("nonoka_cli.shell")
 
@@ -51,12 +59,28 @@ class REPL:
     self._registry = CommandRegistry()
     self._register_commands()
     self._router = CommandRouter(self._registry)
-    self._prompt_input = prompt_input or PromptInput(self._registry)
+    self._prompt_input_instance: PromptInput | None = prompt_input
 
   @property
   def registry(self) -> CommandRegistry:
     """Command registry (exposed for completion / external use)."""
     return self._registry
+
+  @property
+  def _prompt_input(self) -> PromptInput:
+    """Lazy prompt input backed by current config."""
+    if self._prompt_input_instance is None:
+      self._prompt_input_instance = self._create_prompt_input()
+    return self._prompt_input_instance
+
+  def _create_prompt_input(self) -> PromptInput:
+    """Create the prompt input using current config settings."""
+    config = self._orchestrator.config
+    return PromptInput(
+      self._registry,
+      max_history=config.cli.max_history,
+      multi_line_trigger=config.cli.multi_line_trigger,
+    )
 
   def _register_commands(self) -> None:
     """Register all internal CLI command handlers."""
@@ -89,6 +113,12 @@ class REPL:
       partial(self._cmd_config),
       description="Open config in $EDITOR or reload it",
       usage="[reload]",
+    )
+    self._registry.register(
+      "mcp",
+      partial(self._cmd_mcp),
+      description="Manage MCP servers",
+      usage="[list | restart <name> | add <name> <command> [args...]]",
     )
     self._registry.register(
       "help",
@@ -203,6 +233,8 @@ class REPL:
         return
 
       self._presenter.show_config_reloaded(self._orchestrator.config)
+      # Rebuild prompt input so new max_history / multi_line_trigger take effect.
+      self._prompt_input = self._create_prompt_input()
       return
 
     # Open config in $EDITOR
@@ -224,6 +256,51 @@ class REPL:
       self._presenter.error(f"Editor not found: {editor}")
     except Exception as exc:
       self._presenter.error(f"Failed to open config: {exc}")
+
+  async def _cmd_mcp(self, ctx: CommandContext, args: list[str]) -> None:
+    """Handle /mcp list and /mcp restart <name>."""
+    if not args:
+      statuses = self._orchestrator.list_mcp_status()
+      self._presenter.show_mcp_list(statuses)
+      return
+
+    subcommand = args[0].lower()
+    sub_args = args[1:]
+
+    if subcommand == "list":
+      statuses = self._orchestrator.list_mcp_status()
+      self._presenter.show_mcp_list(statuses)
+
+    elif subcommand == "restart":
+      if not sub_args:
+        self._presenter.error("Usage: /mcp restart <server_name>")
+        return
+      name = sub_args[0]
+      try:
+        status = await self._orchestrator.restart_mcp(name)
+      except MCPError as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_mcp_restarted(status)
+
+    elif subcommand == "add":
+      if len(sub_args) < 2:
+        self._presenter.error("Usage: /mcp add <name> <command> [args...]")
+        return
+      name = sub_args[0]
+      command = sub_args[1]
+      args = sub_args[2:]
+      from nonoka_cli.config.models import MCPServerConfigModel
+      config = MCPServerConfigModel(transport="stdio", command=command, args=args)
+      try:
+        status = await self._orchestrator.add_mcp_server(name, config)
+      except (MCPError, ConfigError) as exc:
+        self._presenter.error(str(exc))
+        return
+      self._presenter.show_mcp_added(status)
+
+    else:
+      self._presenter.error(f"Unknown /mcp subcommand: {subcommand}")
 
   async def _cmd_help(self, ctx: CommandContext, args: list[str]) -> None:
     """Handle /help [command]."""

@@ -20,7 +20,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "nonoka>=1.1.7",
+  "nonoka>=1.1.9",
   "rich>=13.0.0",
   "structlog>=24.0.0",
   "prompt-toolkit>=3.0.0",

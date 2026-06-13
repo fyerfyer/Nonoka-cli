@@ -1,4 +1,4 @@
-"""Orchestrator — coordinates config, agent, runner, and execution."""
+"""Orchestrator — coordinates config, agent, runner, MCP, and execution."""
 
 from __future__ import annotations
 
@@ -13,12 +13,22 @@ from nonoka.core.runner import StreamEvent
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.manager import ConfigManager
-from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.context import CLIContext
+from nonoka_cli.mcp.manager import MCPManager
+from nonoka_cli.mcp.models import MCPStatus
 from nonoka_cli.sessions.manager import SessionManager
 from nonoka_cli.sessions.models import SessionInfo
-from nonoka_cli.utils.errors import ConfigError, OrchestratorError, SessionError, SessionNotFoundError
+from nonoka_cli.utils.errors import (
+  ConfigError,
+  MCPConnectionError,
+  MCPError,
+  MCPRestartExhaustedError,
+  OrchestratorError,
+  SessionError,
+  SessionNotFoundError,
+)
 
 logger = structlog.get_logger("nonoka_cli.core")
 
@@ -29,12 +39,11 @@ class Orchestrator:
   Responsibilities:
   - Load configuration
   - Build Agent and Runner
+  - Start and manage MCP servers
   - Execute prompts via nonoka's streaming ReAct API
   - Manage sessions (create, switch, list, rename, delete)
   - Persist session metadata and reuse nonoka checkpoint store
   - Support model switching and config hot-reload while preserving context
-
-  TODO: Add MCP, Skill, HITL.
   """
 
   def __init__(
@@ -42,6 +51,7 @@ class Orchestrator:
     config: CLIConfig | None = None,
     config_manager: ConfigManager | None = None,
     session_manager: SessionManager | None = None,
+    mcp_manager: MCPManager | None = None,
     db_path: Path | str | None = None,
   ):
     """Initialize the orchestrator.
@@ -51,12 +61,15 @@ class Orchestrator:
       config_manager: Optional ConfigManager for hot-reload support.
       session_manager: Optional SessionManager for persistence. If None, one
         will be created using db_path during initialize().
+      mcp_manager: Optional MCPManager. If None, one is created during
+        initialize().
       db_path: Path to the SQLite database used for sessions and nonoka
         checkpoints. Defaults to ~/.local/share/nonoka/nonoka.db.
     """
     self._config = config
     self._config_manager = config_manager
     self._session_manager = session_manager
+    self._mcp_manager = mcp_manager or MCPManager()
     self._db_path = db_path
     self._agent_factory: AgentFactory | None = None
     self._runner: Runner | None = None
@@ -79,6 +92,11 @@ class Orchestrator:
   def session_id(self) -> str:
     """Current session identifier."""
     return self._session_id
+
+  @property
+  def mcp_manager(self) -> MCPManager:
+    """Current MCP manager."""
+    return self._mcp_manager
 
   async def get_current_session(self) -> SessionInfo:
     """Return metadata for the current active session.
@@ -105,7 +123,7 @@ class Orchestrator:
     return self._agent_factory
 
   async def initialize(self, config_path: Path | str | None = None) -> None:
-    """Load config, build agent, and create runner.
+    """Load config, start MCP servers, build agent, and create runner.
 
     Args:
       config_path: Optional explicit path to config file.
@@ -124,7 +142,15 @@ class Orchestrator:
       except Exception as exc:
         raise ConfigError(f"Failed to load configuration: {exc}") from exc
 
-    self._agent_factory = AgentFactory(self._config)
+    # Start MCP servers before building the Agent so tools are available.
+    if self._config.mcp_servers:
+      try:
+        await self._mcp_manager.start_all(self._config.mcp_servers)
+      except MCPRestartExhaustedError as exc:
+        # Log and continue; failed servers are tracked as unhealthy.
+        logger.error("mcp_startup_partial_failure", error=str(exc))
+
+    self._agent_factory = AgentFactory(self._config, mcp_manager=self._mcp_manager)
     agent = self._agent_factory.build()
 
     # Use a persistent checkpoint store shared with the session index.
@@ -152,6 +178,8 @@ class Orchestrator:
       model=self._config.model,
       session_id=self._session_id,
       db_path=str(db_path),
+      mcp_servers=list(self._config.mcp_servers.keys()),
+      mcp_tool_count=len(self._mcp_manager.get_tools()),
     )
     self._initialized = True
 
@@ -376,11 +404,80 @@ class Orchestrator:
     )
     return new_config
 
+  # ------------------------------------------------------------------ #
+  # MCP operations
+  # ------------------------------------------------------------------ #
+
+  def list_mcp_status(self) -> dict[str, MCPStatus]:
+    """Return the status of all configured MCP servers."""
+    return self._mcp_manager.list_status()
+
+  async def restart_mcp(self, name: str) -> MCPStatus:
+    """Restart a configured MCP server.
+
+    Args:
+      name: Server name as declared in configuration.
+
+    Returns:
+      The updated server status.
+
+    Raises:
+      MCPConnectionError: If the server is not configured.
+      MCPRestartExhaustedError: If restart attempts are exhausted.
+    """
+    await self._mcp_manager.restart(name)
+    return self._mcp_manager.get_status(name)
+
+  async def add_mcp_server(
+    self,
+    name: str,
+    config: MCPServerConfigModel,
+  ) -> MCPStatus:
+    """Add and start a new MCP server at runtime.
+
+    The server configuration is persisted to ``~/.config/nonoka/mcp_servers.yaml``
+    so it survives CLI restarts. The Agent is rebuilt automatically so the new
+    tools are immediately available.
+
+    Args:
+      name: Server name.
+      config: Server configuration.
+
+    Returns:
+      The status of the newly started server.
+
+    Raises:
+      OrchestratorError: If not initialized.
+      MCPRestartExhaustedError: If the server fails to start.
+      ConfigError: If the configuration cannot be persisted.
+    """
+    if not self._initialized:
+      raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
+
+    # Persist to side-car file.
+    mcp_servers = ConfigLoader.load_mcp_servers()
+    if name in mcp_servers:
+      raise ConfigError(f"MCP server '{name}' already exists.")
+    mcp_servers[name] = config.model_dump()
+    ConfigLoader.save_mcp_servers(mcp_servers)
+
+    # Start the server and rebuild the Agent.
+    await self._mcp_manager.start_server(name, config)
+    if self._agent_factory is not None:
+      self._agent_factory.rebuild()
+
+    # Update the in-memory config so /config reload sees it.
+    self._config.mcp_servers[name] = config
+
+    logger.info("mcp_server_added", name=name, status="connected")
+    return self._mcp_manager.get_status(name)
+
   async def shutdown(self) -> None:
-    """Graceful shutdown — clean up resources."""
+    """Graceful shutdown — stop MCP servers and clean up resources."""
     if self._config_manager is not None:
       self._config_manager.remove_listener(self._on_config_changed)
     if self._session_manager is not None:
       await self._session_manager.close()
+    await self._mcp_manager.stop_all()
     logger.info("orchestrator_shutdown")
     self._initialized = False
