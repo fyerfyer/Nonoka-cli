@@ -3,12 +3,7 @@
 from __future__ import annotations
 
 
-class CLIError(Exception):
-  """Base exception for all CLI errors."""
-  pass
-
-
-class ConfigError(CLIError):
+class ConfigError(Exception):
   """Configuration loading or validation failed."""
   pass
 
@@ -18,25 +13,17 @@ class ConfigNotFoundError(ConfigError):
   pass
 
 
-class AgentBuildError(CLIError):
+class AgentBuildError(Exception):
   """Failed to build Agent from configuration."""
   pass
 
 
-class OrchestratorError(CLIError):
+class OrchestratorError(Exception):
   """Orchestrator execution error."""
   pass
 
 
-class UnknownCommandError(CLIError):
-  """Unknown / invalid CLI command."""
-
-  def __init__(self, command: str):
-    self.command = command
-    super().__init__(f"Unknown command: /{command}. Type /help for available commands.")
-
-
-class SessionError(CLIError):
+class SessionError(Exception):
   """Session management error."""
   pass
 
@@ -46,7 +33,7 @@ class SessionNotFoundError(SessionError):
   pass
 
 
-class MCPError(CLIError):
+class MCPError(Exception):
   """Base exception for MCP-related errors."""
   pass
 
