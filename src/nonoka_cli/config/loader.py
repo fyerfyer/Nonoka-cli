@@ -171,7 +171,7 @@ class ConfigLoader:
     logger.info("loading_config", path=str(config_path))
 
     try:
-      import yaml
+      import yaml  # noqa: F401
     except ImportError as exc:
       raise ConfigError("PyYAML is required. Install: pip install pyyaml") from exc
 

@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 
-class CLIConfigModel(BaseModel):
+class CLIBehaviorConfig(BaseModel):
   """CLI behavior configuration."""
   theme: str = "dark"
   auto_approve: bool = False
@@ -40,7 +40,7 @@ class CLIConfig(BaseModel):
   mcp_servers: dict[str, MCPServerConfigModel] = Field(default_factory=dict)
   tool_paths: list[Path] = Field(default_factory=list)
   skills: list[str] = Field(default_factory=list)
-  cli: CLIConfigModel = Field(default_factory=CLIConfigModel)
+  cli: CLIBehaviorConfig = Field(default_factory=CLIBehaviorConfig)
   hitl: HITLConfigModel = Field(default_factory=HITLConfigModel)
 
   @field_validator("tool_paths", mode="before")

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Any
 
 import structlog
 from nonoka.core.types import Capability
@@ -213,7 +212,7 @@ class MCPManager:
     for attempt in range(attempts + 1):
       try:
         tools = await self._start_one(name, config)
-        self._rebuild_tool_list()
+        await self._rebuild_tool_list()
         logger.info("mcp_server_restarted", name=name, tool_count=len(tools))
         return tools
       except Exception as exc:  # noqa: BLE001
@@ -242,7 +241,7 @@ class MCPManager:
       restart_count=restart_count,
       error=str(last_error) if last_error is not None else error_msg,
     )
-    self._rebuild_tool_list()
+    await self._rebuild_tool_list()
     raise MCPRestartExhaustedError(error_msg)
 
   async def stop_all(self) -> None:
@@ -317,7 +316,7 @@ class MCPManager:
     """Ping each connected server once and restart any that fail."""
     for name, client in list(self._clients.items()):
       try:
-        await client.session.send_ping()
+        await client.ping()
         status = self._status[name]
         self._status[name] = MCPStatus(
           name=name,
@@ -363,12 +362,12 @@ class MCPManager:
     """Return all currently available MCP capabilities."""
     return list(self._tools)
 
-  def _rebuild_tool_list(self) -> None:
+  async def _rebuild_tool_list(self) -> None:
     """Rebuild the merged capability list from all connected clients."""
     tools: list[Capability] = []
     for name, client in self._clients.items():
       try:
-        tools.extend(client.tools)
+        tools.extend(await client.get_capabilities())
       except Exception as exc:  # noqa: BLE001
         logger.warning("mcp_tool_list_failed", name=name, error=str(exc))
     self._tools = tools

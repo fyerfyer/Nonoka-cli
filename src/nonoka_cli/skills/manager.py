@@ -120,7 +120,7 @@ class SkillManager:
       SkillInfo(
         name=skill.name,
         description=skill.description,
-        source=getattr(skill, "_source", "<unknown>"),
+        source=skill.source or "<unknown>",
       )
       for skill in self._available.values()
     ]
@@ -131,7 +131,7 @@ class SkillManager:
       SkillInfo(
         name=skill.name,
         description=skill.description,
-        source=getattr(skill, "_source", "<unknown>"),
+        source=skill.source or "<unknown>",
       )
       for skill in self._loaded
     ]
@@ -145,8 +145,6 @@ class SkillManager:
       if not path.exists() or not path.is_dir():
         continue
       for skill in SkillLoader(path).load_all():
-        # Attach source metadata for debugging / listing.
-        object.__setattr__(skill, "_source", str(path / f"{skill.name}.md"))
         if skill.name in skills_by_name:
           logger.warning(
             "skill_duplicate",
@@ -169,7 +167,6 @@ class SkillManager:
       if path.exists():
         try:
           skill = SkillLoader.load_file(path)
-          object.__setattr__(skill, "_source", str(path))
           return skill
         except Exception as exc:  # noqa: BLE001
           logger.warning("skill_load_failed", path=str(path), error=str(exc))
@@ -187,7 +184,6 @@ class SkillManager:
       if candidate.exists():
         try:
           skill = SkillLoader.load_file(candidate)
-          object.__setattr__(skill, "_source", str(candidate))
           self._available[skill.name] = skill
           return skill
         except Exception as exc:  # noqa: BLE001

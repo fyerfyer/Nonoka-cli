@@ -33,7 +33,6 @@ def setup_logging(
   log_file.parent.mkdir(parents=True, exist_ok=True)
 
   shared_processors = [
-    structlog.stdlib.filter_by_level,
     structlog.stdlib.add_logger_name,
     structlog.stdlib.add_log_level,
     structlog.processors.TimeStamper(fmt="iso"),
@@ -55,7 +54,9 @@ def setup_logging(
   )
 
   structlog.configure(
-    processors=shared_processors + [
+    processors=[
+      structlog.stdlib.filter_by_level,
+      *shared_processors,
       structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ],
     context_class=dict,

@@ -6,9 +6,10 @@ while keeping the CLI running.
 
 from __future__ import annotations
 
-import structlog
 from pathlib import Path
 from typing import Callable
+
+import structlog
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig

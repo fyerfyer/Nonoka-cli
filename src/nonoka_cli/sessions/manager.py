@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from nonoka.backends.checkpoint.sqlite import SQLiteCheckpointStore
 
 from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.utils.errors import SessionNotFoundError
@@ -236,8 +237,8 @@ class SessionManager:
   async def delete(self, session_id: str) -> None:
     """Delete a session and its checkpoint data.
 
-    Also removes rows from nonoka's ``checkpoints`` and ``step_updates``
-    tables since the CheckpointStore protocol does not expose deletion.
+    Uses nonoka's ``SQLiteCheckpointStore.delete_session`` to clean up the
+    checkpoint tables owned by the framework.
 
     Args:
       session_id: Session to delete.
@@ -254,28 +255,22 @@ class SessionManager:
       )
       if cursor.rowcount == 0:
         raise SessionNotFoundError(f"Session not found: {session_id}")
-
-      # Best-effort cleanup of nonoka checkpoint data. These tables are
-      # owned by nonoka; if the schema changes the deletes will simply
-      # log a warning rather than failing the operation.
-      for table in ("checkpoints", "step_updates"):
-        try:
-          conn.execute(
-            f"DELETE FROM {table} WHERE session_id = ?",
-            (session_id,),
-          )
-        except sqlite3.Error as exc:
-          logger.warning(
-            "checkpoint_cleanup_failed",
-            table=table,
-            session_id=session_id,
-            error=str(exc),
-          )
-
       conn.commit()
 
     async with self._lock:
       await asyncio.to_thread(_delete)
+
+    # Clean up nonoka checkpoint data through the public CheckpointStore API.
+    try:
+      store = SQLiteCheckpointStore(db_path=str(self._db_path))
+      await store.delete_session(session_id)
+      await store.close()
+    except Exception as exc:
+      logger.warning(
+        "checkpoint_cleanup_failed",
+        session_id=session_id,
+        error=str(exc),
+      )
 
     logger.info("session_deleted", session_id=session_id)
 
