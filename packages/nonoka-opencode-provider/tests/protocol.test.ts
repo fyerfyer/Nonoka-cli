@@ -1,0 +1,73 @@
+import { describe, expect, it } from "bun:test";
+import {
+  encodeChatRequest,
+  parseOutboundLine,
+  type NonokaChatRequest,
+} from "../src/protocol";
+
+describe("encodeChatRequest", () => {
+  it("encodes a simple chat request", () => {
+    const req: NonokaChatRequest = {
+      type: "chat",
+      messages: [{ role: "user", content: "hello" }],
+      session_id: "sess-1",
+      cwd: "/tmp",
+      model: "deepseek-chat",
+    };
+    const line = encodeChatRequest(req);
+    const parsed = JSON.parse(line);
+    expect(parsed.type).toBe("chat");
+    expect(parsed.messages).toEqual([{ role: "user", content: "hello" }]);
+    expect(parsed.session_id).toBe("sess-1");
+    expect(parsed.cwd).toBe("/tmp");
+    expect(parsed.model).toBe("deepseek-chat");
+  });
+
+  it("encodes defaults correctly", () => {
+    const req: NonokaChatRequest = {
+      type: "chat",
+      messages: [{ role: "user", content: "hi" }],
+      cwd: ".",
+    };
+    const line = encodeChatRequest(req);
+    const parsed = JSON.parse(line);
+    expect(parsed.cwd).toBe(".");
+    expect(parsed.session_id).toBeUndefined();
+    expect(parsed.model).toBeUndefined();
+  });
+});
+
+describe("parseOutboundLine", () => {
+  it("parses text_delta", () => {
+    const msg = parseOutboundLine('{"type":"text_delta","text":"hi"}');
+    expect(msg?.type).toBe("text_delta");
+    expect((msg as any).text).toBe("hi");
+  });
+
+  it("parses finish", () => {
+    const msg = parseOutboundLine('{"type":"finish","finish_reason":"stop"}');
+    expect(msg?.type).toBe("finish");
+    expect((msg as any).finish_reason).toBe("stop");
+  });
+
+  it("parses error", () => {
+    const msg = parseOutboundLine('{"type":"error","message":"boom"}');
+    expect(msg?.type).toBe("error");
+    expect((msg as any).message).toBe("boom");
+  });
+
+  it("parses session_init", () => {
+    const msg = parseOutboundLine('{"type":"session_init","session_id":"abc"}');
+    expect(msg?.type).toBe("session_init");
+    expect((msg as any).session_id).toBe("abc");
+  });
+
+  it("returns null for empty lines", () => {
+    expect(parseOutboundLine("")).toBeNull();
+    expect(parseOutboundLine("   ")).toBeNull();
+  });
+
+  it("throws on invalid json", () => {
+    expect(() => parseOutboundLine("not json")).toThrow();
+  });
+});

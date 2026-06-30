@@ -1,0 +1,53 @@
+{
+  "name": "nonoka-opencode-provider",
+  "version": "0.1.1",
+  "description": "OpenCode provider for the Nonoka Agent framework",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "^4.0.0",
+    "@ai-sdk/provider-utils": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^26.0.1",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {},
+  "keywords": [
+    "nonoka",
+    "opencode",
+    "ai-sdk",
+    "provider",
+    "mcp",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fyerfyer/nonoka-cli.git",
+    "directory": "packages/nonoka-opencode-provider"
+  },
+  "bugs": {
+    "url": "https://github.com/fyerfyer/nonoka-cli/issues"
+  },
+  "homepage": "https://github.com/fyerfyer/nonoka-cli/tree/main/packages/nonoka-opencode-provider",
+  "license": "MIT"
+}
