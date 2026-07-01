@@ -40,6 +40,8 @@ MANIFEST
 .coverage
 htmlcov/
 .tox/
+.codegraph/
+.ruff_cache/
 
 # OS
 .DS_Store

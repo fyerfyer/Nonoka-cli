@@ -79,9 +79,10 @@ class BridgeServer:
           continue
 
         if isinstance(msg, ChatRequest):
-          task = asyncio.create_task(self._handle_chat(msg))
-          self._tasks.add(task)
-          task.add_done_callback(self._tasks.discard)
+          # Chat turns are processed sequentially so the single orchestrator
+          # state stays consistent.  Approval responses can still arrive in
+          # parallel via the fire-and-forget path below.
+          await self._handle_chat(msg)
         elif isinstance(msg, ApprovalResponse):
           task = asyncio.create_task(self._handler.handle_approval(msg))
           self._tasks.add(task)
