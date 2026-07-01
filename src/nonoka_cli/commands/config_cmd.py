@@ -13,7 +13,7 @@ import yaml
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.manager import ConfigManager
-from nonoka_cli.config.models import CLIConfig, CLIBehaviorConfig
+from nonoka_cli.config.models import CLIBehaviorConfig, CLIConfig
 from nonoka_cli.utils.errors import ConfigError
 
 logger = structlog.get_logger("nonoka_cli.commands.config")
@@ -26,7 +26,8 @@ def _load_manager(args: argparse.Namespace) -> ConfigManager:
     return ConfigManager.load(path)
   except ConfigError as exc:
     if "not found" in str(exc).lower():
-      return ConfigManager(CLIConfig(), config_path=Path(path) if path else ConfigLoader.DEFAULT_PATH)
+      cfg_path = Path(path) if path else ConfigLoader.DEFAULT_PATH
+      return ConfigManager(CLIConfig(), config_path=cfg_path)
     raise
 
 
@@ -106,7 +107,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     else:
       key_input = _read_input(f"{env_var} value (press Enter to skip)", "")
       if key_input:
-        if _confirm("Save the API key directly in the config file? (Not recommended)", default=False):
+        prompt = "Save the API key directly in the config file? (Not recommended)"
+        if _confirm(prompt, default=False):
           api_key_display = key_input
         else:
           api_key_display = "${" + env_var + "}"

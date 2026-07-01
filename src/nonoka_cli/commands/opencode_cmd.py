@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.utils.errors import ConfigError
-
 
 _DEFAULT_OPENCODE_CONFIG = {
   "$schema": "https://opencode.ai/config.json",

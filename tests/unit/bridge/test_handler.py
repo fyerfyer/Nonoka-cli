@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nonoka_cli.bridge.handler import ChatRequestHandler
-from nonoka_cli.bridge.protocol import ChatRequest, ChatMessage
+from nonoka_cli.bridge.protocol import ChatMessage, ChatRequest
 
 
 @pytest.fixture

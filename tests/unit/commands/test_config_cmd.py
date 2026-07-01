@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import pytest
-
 from nonoka_cli.commands.config_cmd import _coerce_value, _set_dotted, cmd_set
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
