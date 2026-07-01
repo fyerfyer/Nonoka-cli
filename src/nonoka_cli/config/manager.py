@@ -149,3 +149,15 @@ class ConfigManager:
       return True
     except ValueError:
       return False
+
+  def save(self, config: CLIConfig | None = None) -> Path:
+    """Persist the current (or given) configuration to disk.
+
+    Returns:
+      Path to the written file.
+    """
+    target = self._config_path or ConfigLoader.DEFAULT_PATH
+    cfg = config if config is not None else self._config
+    ConfigLoader.save(cfg, target)
+    self._config = cfg
+    return target

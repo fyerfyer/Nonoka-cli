@@ -10,6 +10,8 @@ import structlog
 from nonoka import Runner
 from nonoka.backends.checkpoint.sqlite import SQLiteCheckpointStore
 from nonoka.core.runner import StreamEvent
+from nonoka.ext.hitl import HumanInTheLoopHooks
+from nonoka.ext.hitl.core import HumanApprover, ToolRule
 
 from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel
@@ -27,6 +29,22 @@ from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import ConfigError, MCPRestartExhaustedError, OrchestratorError
 
 logger = structlog.get_logger("nonoka_cli.core")
+
+
+class _DeferredApprover(HumanApprover):
+  """Placeholder approver for deferred HITL mode.
+
+  The CLI never actually blocks on this approver; the bridge layer surfaces
+  ``approval_request`` events and the caller resumes with ``resume_approval``.
+  If this object is ever awaited, something has gone wrong.
+  """
+
+  async def request_approval(self, checkpoint):
+    raise RuntimeError("Deferred approver should never be awaited.")
+
+  @property
+  def supports_modify(self) -> bool:
+    return True
 
 
 class Orchestrator:
@@ -106,9 +124,11 @@ class Orchestrator:
     self._mcp_service = MCPService(self._mcp_manager, self._agent_factory)
 
     db_path = self._session_service.manager.db_path
-    self._runner_service = RunnerService(
-      Runner(checkpoint=SQLiteCheckpointStore(db_path=str(db_path)))
+    runner = Runner(
+      checkpoint=SQLiteCheckpointStore(db_path=str(db_path)),
+      hooks=self._build_hitl_hooks(),
     )
+    self._runner_service = RunnerService(runner)
 
     await self._session_service.initialize(model=self._config.model)
 
@@ -127,6 +147,34 @@ class Orchestrator:
       skills=self._config.skills,
     )
     self._initialized = True
+
+  def _build_hitl_hooks(self) -> HumanInTheLoopHooks | None:
+    """Build HITL hooks from CLI config, or None if approvals are disabled."""
+    if self._config is None:
+      return None
+
+    # Auto-approve disables HITL entirely.
+    if getattr(self._config.cli, "auto_approve", False):
+      return None
+
+    policy = getattr(self._config.hitl, "policy", "interactive")
+    if policy == "auto":
+      return None
+
+    dangerous = getattr(self._config.hitl, "dangerous_tools", None) or []
+    if not dangerous:
+      return None
+
+    rules = [
+      ToolRule(tool=name, action="approve", description=f"'{name}' requires approval.")
+      for name in dangerous
+    ]
+    return HumanInTheLoopHooks(
+      approver=_DeferredApprover(),
+      rules=rules,
+      default_action="allow",
+      deferred=True,
+    )
 
   def _on_config_changed(self, config: CLIConfig) -> None:
     """ConfigManager hot-reload listener: update local reference only."""
@@ -164,6 +212,46 @@ class Orchestrator:
     try:
       async for event in self._runner_service.run(
         agent, prompt, deps=deps, session_id=self.session_id
+      ):
+        yield event
+    finally:
+      try:
+        await self._session_service.touch()
+      except Exception as touch_exc:
+        logger.warning("session_touch_failed", error=str(touch_exc))
+
+  async def resume_approval(
+    self,
+    session_id: str,
+    approvals: dict[str, dict[str, Any]],
+    working_dir: Path | None = None,
+  ) -> AsyncIterator[StreamEvent]:
+    """Resume a session paused for tool-call approvals."""
+    self._ensure_initialized()
+    if self._agent_factory is None or self._runner_service is None:
+      raise OrchestratorError("Orchestrator not fully initialized.")
+
+    agent = self._agent_factory.get_agent()
+    if agent is None:
+      raise OrchestratorError("No Agent available. Build failed during initialization.")
+
+    logger.info(
+      "resuming_approval",
+      session_id=session_id,
+      approvals=list(approvals.keys()),
+      working_dir=str(working_dir or Path.cwd()),
+    )
+
+    deps = CLIContext(
+      user="local",
+      session_id=session_id,
+      config=self._config,
+      working_dir=working_dir or Path.cwd(),
+    )
+
+    try:
+      async for event in self._runner_service.resume_approval(
+        agent, deps=deps, session_id=session_id, approvals=approvals
       ):
         yield event
     finally:

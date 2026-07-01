@@ -112,3 +112,5 @@ function normalizeServerCommand(command: string | string[]): string[] {
 // Re-export for advanced users.
 export { NonokaLanguageModel };
 export type { NonokaLanguageModelConfig, NonokaLanguageModelSettings };
+
+export default createNonoka;

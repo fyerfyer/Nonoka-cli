@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,13 @@ class ChatRequestHandler:
       await self._send(ErrorEvent(message="Orchestrator not available"))
       return
 
+    # Provider explicitly requested a brand-new nonoka session (e.g. /new).
+    if msg.new_session:
+      new_id = await self._orchestrator.new_session()
+      self._session_id = new_id
+      self._session_init_sent = False
+      logger.info("new_session_created", session_id=new_id)
+
     # Use provided session_id or the orchestrator's current session.
     await self._apply_session(msg.session_id)
 
@@ -84,19 +92,29 @@ class ChatRequestHandler:
       await self._send(SessionInitEvent(session_id=self._session_id))
       self._session_init_sent = True
 
-    prompt = self._extract_prompt(msg)
-    if not prompt:
-      await self._send(ErrorEvent(message="No user message found in chat request"))
-      return
+    # If the provider sent tool-approval-response parts, resume the paused turn.
+    approvals = self._extract_approvals(msg)
+    if approvals:
+      stream = self._orchestrator.resume_approval(
+        session_id=self._session_id or self._orchestrator.session_id,
+        approvals=approvals,
+        working_dir=self._working_dir,
+      )
+    else:
+      prompt = self._extract_prompt(msg)
+      if not prompt:
+        await self._send(ErrorEvent(message="No user message found in chat request"))
+        return
+      stream = self._orchestrator.execute(prompt, working_dir=self._working_dir)
 
-    stream = self._orchestrator.execute(prompt, working_dir=self._working_dir)
     await self._consume_stream(stream)
 
   async def handle_approval(self, msg: ApprovalResponse) -> None:
-    """Process a user approval decision.
+    """Process a direct approval decision.
 
-    Currently a no-op placeholder; approval flow will be wired up once the
-    nonoka backend exposes an approval callback mechanism.
+    The normal two-call HITL flow sends approvals through ``ChatRequest``
+    tool-approval-response parts.  This method remains as a fallback for
+    simpler provider implementations that send standalone approval messages.
     """
     logger.warning(
       "approval_response_ignored",
@@ -122,8 +140,12 @@ class ChatRequestHandler:
 
   async def _apply_session(self, session_id: str | None) -> None:
     """Switch orchestrator session if the provider sent a different one."""
-    if not session_id or self._orchestrator is None:
-      self._session_id = self._orchestrator.session_id if self._orchestrator else None
+    if self._orchestrator is None:
+      self._session_id = None
+      return
+
+    if not session_id:
+      self._session_id = self._orchestrator.session_id
       return
 
     if session_id != self._orchestrator.session_id:
@@ -149,6 +171,42 @@ class ChatRequestHandler:
       if m.role == "user":
         return m.content
     return ""
+
+  @staticmethod
+  def _extract_approvals(msg: ChatRequest) -> dict[str, dict[str, Any]] | None:
+    """Parse tool-approval-response parts from incoming tool messages.
+
+    The Vercel AI SDK / OpenCode sends approval decisions as parts inside a
+    ``role="tool"`` message.  We map ``toolCallId`` to a decision dict.
+    """
+    approvals: dict[str, dict[str, Any]] = {}
+    for m in msg.messages:
+      if m.role != "tool" or not m.content:
+        continue
+      try:
+        parts = json.loads(m.content)
+      except json.JSONDecodeError:
+        continue
+      if not isinstance(parts, list):
+        continue
+      for part in parts:
+        if not isinstance(part, dict):
+          continue
+        if part.get("type") != "tool-approval-response":
+          continue
+        tool_call_id = part.get("toolCallId") or part.get("tool_call_id")
+        if not tool_call_id:
+          continue
+        decision: dict[str, Any] = {"approved": bool(part.get("approved", False))}
+        modified = part.get("modifiedArgs") or part.get("modified_args")
+        if modified is not None:
+          decision["modified_args"] = modified
+        reason = part.get("reason")
+        if reason is not None:
+          decision["reason"] = reason
+        approvals[str(tool_call_id)] = decision
+
+    return approvals if approvals else None
 
   async def _consume_stream(self, stream: AsyncIterator[StreamEvent]) -> None:
     """Translate nonoka StreamEvents into bridge events."""

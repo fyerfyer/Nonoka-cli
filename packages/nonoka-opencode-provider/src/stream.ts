@@ -1,5 +1,9 @@
 import type { LanguageModelV3StreamPart } from '@ai-sdk/provider';
-import type { NonokaOutboundEvent } from './protocol.js';
+import {
+  NONOKA_FINISH_REASONS,
+  NONOKA_OUTBOUND_TYPES,
+  type NonokaOutboundEvent,
+} from './protocol.js';
 
 export function createNonokaStreamTransformer(
   options: {
@@ -20,12 +24,12 @@ export function createNonokaStreamTransformer(
       }
 
       switch (event.type) {
-        case 'session_init': {
+        case NONOKA_OUTBOUND_TYPES.session_init: {
           options.onSessionInit?.(event.session_id);
           break;
         }
 
-        case 'text_delta': {
+        case NONOKA_OUTBOUND_TYPES.text_delta: {
           if (textBlockId === null) {
             textBlockId = generateId();
             textBlockStarted = true;
@@ -43,7 +47,41 @@ export function createNonokaStreamTransformer(
           break;
         }
 
-        case 'finish': {
+        case NONOKA_OUTBOUND_TYPES.tool_call: {
+          controller.enqueue({
+            type: 'tool-call',
+            toolCallId: event.tool_call_id,
+            toolName: event.tool_name,
+            input: JSON.stringify(event.args ?? {}),
+            providerExecuted: true,
+            dynamic: true,
+          });
+          break;
+        }
+
+        case NONOKA_OUTBOUND_TYPES.tool_result: {
+          const rawResult = event.result ?? event.content ?? '';
+          controller.enqueue({
+            type: 'tool-result',
+            toolCallId: event.tool_call_id,
+            toolName: event.tool_name,
+            result: rawResult as any,
+            isError: event.is_error ?? false,
+            dynamic: true,
+          });
+          break;
+        }
+
+        case NONOKA_OUTBOUND_TYPES.approval_request: {
+          controller.enqueue({
+            type: 'tool-approval-request',
+            approvalId: event.id,
+            toolCallId: event.tool_call_id,
+          });
+          break;
+        }
+
+        case NONOKA_OUTBOUND_TYPES.finish: {
           if (textBlockStarted && textBlockId !== null) {
             controller.enqueue({
               type: 'text-end',
@@ -68,7 +106,7 @@ export function createNonokaStreamTransformer(
           break;
         }
 
-        case 'error': {
+        case NONOKA_OUTBOUND_TYPES.error: {
           if (textBlockStarted && textBlockId !== null) {
             controller.enqueue({
               type: 'text-end',
@@ -107,11 +145,20 @@ function generateId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+const UNIFIED_FINISH_REASONS = {
+  stop: 'stop',
+  error: 'error',
+  cancel: 'other',
+  approval_required: 'tool-calls',
+  tool_calls: 'tool-calls',
+} as const;
+
 function mapFinishReason(
-  reason: 'stop' | 'error' | 'cancel',
+  reason: keyof typeof UNIFIED_FINISH_REASONS,
 ): 'stop' | 'error' | 'length' | 'content-filter' | 'tool-calls' | 'other' {
-  if (reason === 'cancel') {
-    return 'other';
-  }
-  return reason;
+  return UNIFIED_FINISH_REASONS[reason];
 }
+
+// Keep the NONOKA_FINISH_REASONS export used so TS doesn't complain about
+// unused imports when consumers use the type directly.
+export { NONOKA_FINISH_REASONS };

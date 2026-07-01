@@ -7,11 +7,15 @@ import type {
 } from '@ai-sdk/provider';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { Readable } from 'stream';
-import type {
-  NonokaChatMessage,
-  NonokaChatRequest,
+import {
+  NONOKA_INBOUND_TYPES,
+  NONOKA_MESSAGE_ROLES,
+  encodeApprovalMessage,
+  encodeChatRequest,
+  type NonokaChatMessage,
+  type NonokaChatRequest,
+  type NonokaApprovalMessage,
 } from './protocol.js';
-import { encodeChatRequest } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
 
 export interface NonokaLanguageModelConfig {
@@ -108,16 +112,22 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     warnings: SharedV3Warning[];
   }> {
     const warnings: SharedV3Warning[] = [];
-    const request = this.buildChatRequest(options);
 
+    const approvals = this.extractApprovalResponses(options);
     const child = this.spawnServer();
 
-    const requestLine = encodeChatRequest(request) + '\n';
-    child.stdin.write(requestLine, (err) => {
-      if (err) {
-        // The child may already be closed; ignore write errors here.
+    // If this request carries approval responses, send them before the chat
+    // request so the backend can resume the paused turn.
+    if (approvals.length > 0) {
+      for (const approval of approvals) {
+        const line = encodeApprovalMessage(approval) + '\n';
+        await writeToStdin(child, line);
       }
-    });
+    }
+
+    const request = this.buildChatRequest(options);
+    const requestLine = encodeChatRequest(request) + '\n';
+    await writeToStdin(child, requestLine);
 
     const stream = this.createOutputStream(child, options.abortSignal);
 
@@ -126,33 +136,43 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
   private buildChatRequest(options: LanguageModelV3CallOptions): NonokaChatRequest {
     const messages: NonokaChatMessage[] = [];
+    const newSession = this.isNewConversation(options);
+
+    if (newSession) {
+      this.sessionId = undefined;
+    }
 
     for (const message of options.prompt) {
       switch (message.role) {
-        case 'system': {
-          messages.push({ role: 'system', content: message.content as string });
+        case NONOKA_MESSAGE_ROLES.system: {
+          messages.push({
+            role: NONOKA_MESSAGE_ROLES.system,
+            content: message.content as string,
+          });
           break;
         }
-        case 'user': {
+        case NONOKA_MESSAGE_ROLES.user: {
           const text = extractTextFromContent(message.content);
-          messages.push({ role: 'user', content: text });
+          messages.push({ role: NONOKA_MESSAGE_ROLES.user, content: text });
           break;
         }
-        case 'assistant': {
+        case NONOKA_MESSAGE_ROLES.assistant: {
           const text = extractTextFromContent(message.content);
-          messages.push({ role: 'assistant', content: text });
+          messages.push({ role: NONOKA_MESSAGE_ROLES.assistant, content: text });
           break;
         }
-        case 'tool': {
+        case NONOKA_MESSAGE_ROLES.tool: {
           for (const part of message.content) {
             if (part.type === 'tool-result') {
               const outputText = extractToolOutputText(part.output);
               messages.push({
-                role: 'tool',
+                role: NONOKA_MESSAGE_ROLES.tool,
                 content: outputText,
                 tool_call_id: part.toolCallId,
               });
             }
+            // tool-approval-response parts are handled separately by
+            // extractApprovalResponses and sent as standalone approval messages.
           }
           break;
         }
@@ -164,18 +184,59 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     }
 
     return {
-      type: 'chat',
+      type: NONOKA_INBOUND_TYPES.chat,
       messages,
       session_id: this.sessionId,
+      new_session: newSession,
       cwd: this.config.cwd,
       model: this.config.model,
     };
   }
 
+  private extractApprovalResponses(
+    options: LanguageModelV3CallOptions,
+  ): NonokaApprovalMessage[] {
+    const approvals: NonokaApprovalMessage[] = [];
+
+    for (const message of options.prompt) {
+      if (message.role !== 'tool') continue;
+      for (const part of message.content) {
+        if (part.type !== 'tool-approval-response') continue;
+        const decision: NonokaApprovalMessage = {
+          type: NONOKA_INBOUND_TYPES.approval,
+          id: part.approvalId,
+          approved: part.approved,
+        };
+        // The AI SDK does not yet expose modified args in approval responses;
+        // we reserve the field for future protocol extensions.
+        approvals.push(decision);
+      }
+    }
+
+    return approvals;
+  }
+
+  private isNewConversation(options: LanguageModelV3CallOptions): boolean {
+    // OpenCode's /new resets the message history to system + user only.
+    // If we see no prior assistant or tool messages, treat this as a fresh
+    // nonoka session.
+    for (const message of options.prompt) {
+      if (message.role === 'assistant' || message.role === 'tool') {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private spawnServer(): ChildProcessWithoutNullStreams {
-    const [command, ...args] = this.config.serverCommand;
+    const [command, ...baseArgs] = this.config.serverCommand;
     if (!command) {
       throw new Error('serverCommand must not be empty');
+    }
+
+    const args = [...baseArgs];
+    if (this.config.configPath) {
+      args.push('--config', this.config.configPath);
     }
 
     const env: Record<string, string | undefined> = {
@@ -242,6 +303,22 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
     return composed;
   }
+}
+
+function writeToStdin(
+  child: ChildProcessWithoutNullStreams,
+  data: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!child.stdin.writable) {
+      resolve();
+      return;
+    }
+    child.stdin.write(data, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
 }
 
 function createLineSplitter(): TransformStream<string, string> {

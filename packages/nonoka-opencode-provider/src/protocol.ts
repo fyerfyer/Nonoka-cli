@@ -3,7 +3,14 @@
  * the nonoka-cli --server backend.
  */
 
-export type NonokaMessageRole = 'system' | 'user' | 'assistant' | 'tool';
+export const NONOKA_MESSAGE_ROLES = {
+  system: 'system',
+  user: 'user',
+  assistant: 'assistant',
+  tool: 'tool',
+} as const;
+
+export type NonokaMessageRole = keyof typeof NONOKA_MESSAGE_ROLES;
 
 export interface NonokaChatMessage {
   role: NonokaMessageRole;
@@ -11,39 +18,103 @@ export interface NonokaChatMessage {
   tool_call_id?: string;
 }
 
+export const NONOKA_INBOUND_TYPES = {
+  chat: 'chat',
+  approval: 'approval',
+} as const;
+
+export type NonokaInboundEventType = keyof typeof NONOKA_INBOUND_TYPES;
+
 export interface NonokaChatRequest {
-  type: 'chat';
+  type: typeof NONOKA_INBOUND_TYPES.chat;
   messages: NonokaChatMessage[];
   session_id?: string;
+  new_session?: boolean;
   cwd: string;
   model?: string;
 }
 
-export type NonokaInboundMessage = NonokaChatRequest;
+export interface NonokaApprovalMessage {
+  type: typeof NONOKA_INBOUND_TYPES.approval;
+  id: string;
+  approved: boolean;
+  modified_args?: Record<string, unknown>;
+}
+
+export type NonokaInboundMessage = NonokaChatRequest | NonokaApprovalMessage;
+
+export const NONOKA_OUTBOUND_TYPES = {
+  session_init: 'session_init',
+  text_delta: 'text_delta',
+  tool_call: 'tool_call',
+  tool_result: 'tool_result',
+  approval_request: 'approval_request',
+  finish: 'finish',
+  error: 'error',
+} as const;
+
+export type NonokaOutboundEventType = keyof typeof NONOKA_OUTBOUND_TYPES;
 
 export interface NonokaSessionInitEvent {
-  type: 'session_init';
+  type: typeof NONOKA_OUTBOUND_TYPES.session_init;
   session_id: string;
 }
 
 export interface NonokaTextDeltaEvent {
-  type: 'text_delta';
+  type: typeof NONOKA_OUTBOUND_TYPES.text_delta;
   text: string;
 }
 
+export interface NonokaToolCallEvent {
+  type: typeof NONOKA_OUTBOUND_TYPES.tool_call;
+  tool_call_id: string;
+  tool_name: string;
+  args?: unknown;
+}
+
+export interface NonokaToolResultEvent {
+  type: typeof NONOKA_OUTBOUND_TYPES.tool_result;
+  tool_call_id: string;
+  tool_name: string;
+  content: string;
+  result?: unknown;
+  is_error?: boolean;
+}
+
+export interface NonokaApprovalRequestEvent {
+  type: typeof NONOKA_OUTBOUND_TYPES.approval_request;
+  id: string;
+  tool_call_id: string;
+  tool_name: string;
+  args?: unknown;
+}
+
+export const NONOKA_FINISH_REASONS = {
+  stop: 'stop',
+  error: 'error',
+  cancel: 'cancel',
+  approval_required: 'approval_required',
+  tool_calls: 'tool_calls',
+} as const;
+
+export type NonokaFinishReason = keyof typeof NONOKA_FINISH_REASONS;
+
 export interface NonokaFinishEvent {
-  type: 'finish';
-  finish_reason: 'stop' | 'error' | 'cancel';
+  type: typeof NONOKA_OUTBOUND_TYPES.finish;
+  finish_reason: NonokaFinishReason;
 }
 
 export interface NonokaErrorEvent {
-  type: 'error';
+  type: typeof NONOKA_OUTBOUND_TYPES.error;
   message: string;
 }
 
 export type NonokaOutboundEvent =
   | NonokaSessionInitEvent
   | NonokaTextDeltaEvent
+  | NonokaToolCallEvent
+  | NonokaToolResultEvent
+  | NonokaApprovalRequestEvent
   | NonokaFinishEvent
   | NonokaErrorEvent;
 
@@ -54,5 +125,9 @@ export function parseOutboundLine(line: string): NonokaOutboundEvent | null {
 }
 
 export function encodeChatRequest(req: NonokaChatRequest): string {
+  return JSON.stringify(req);
+}
+
+export function encodeApprovalMessage(req: NonokaApprovalMessage): string {
   return JSON.stringify(req);
 }

@@ -206,6 +206,38 @@ class ConfigLoader:
     return config
 
   @classmethod
+  def save(cls, config: CLIConfig, path: Path | str | None = None) -> Path:
+    """Save a CLIConfig to a YAML file.
+
+    Args:
+      config: The configuration to persist.
+      path: Destination path. Defaults to ``~/.config/nonoka/config.yaml``.
+
+    Returns:
+      Path to the written file.
+    """
+    import yaml
+
+    target = Path(path) if path is not None else cls.DEFAULT_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    data = config.model_dump(mode="json", exclude_none=True)
+    # Keep the file tidy by dropping empty default containers.
+    if not data.get("mcp_servers"):
+      data.pop("mcp_servers", None)
+    if not data.get("tool_paths"):
+      data.pop("tool_paths", None)
+    if not data.get("skills"):
+      data.pop("skills", None)
+
+    target.write_text(
+      yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+      encoding="utf-8",
+    )
+    logger.info("config_saved", path=str(target))
+    return target
+
+  @classmethod
   def save_mcp_servers(cls, mcp_servers: dict[str, Any]) -> Path:
     """Save the MCP servers dictionary to the side-car file.
 

@@ -16,6 +16,7 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import structlog
 
 from nonoka_cli.bridge.server import main as server_main
+from nonoka_cli.commands import config_cmd, opencode_cmd
 from nonoka_cli.utils.logging import setup_logging
 
 logger = structlog.get_logger("nonoka_cli.cli")
@@ -55,6 +56,11 @@ def _build_parser() -> argparse.ArgumentParser:
     dest="server",
     help="Run as an NDJSON server backend for OpenCode",
   )
+
+  subparsers = parser.add_subparsers(dest="command")
+  config_cmd.add_subparser(subparsers)
+  opencode_cmd.add_subparser(subparsers)
+
   return parser
 
 
@@ -70,6 +76,15 @@ def main() -> int:
   if args.server:
     return server_main(config_path=args.config, model=args.model)
 
+  if args.command and getattr(args, "func", None):
+    log_level = (
+      logging.DEBUG if args.debug
+      else logging.INFO if args.verbose
+      else logging.WARNING
+    )
+    setup_logging(level=log_level, console=args.verbose or args.debug)
+    return args.func(args)
+
   log_level = (
     logging.DEBUG if args.debug
     else logging.INFO if args.verbose
@@ -78,6 +93,7 @@ def main() -> int:
   setup_logging(level=log_level, console=args.verbose or args.debug)
 
   print("nonoka-cli: use --server to start the OpenCode backend.", file=sys.stderr)
+  parser.print_help(sys.stderr)
   return 0
 
 

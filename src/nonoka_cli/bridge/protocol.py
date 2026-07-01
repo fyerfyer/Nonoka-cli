@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
   type: Literal["chat"] = "chat"
   messages: list[ChatMessage]
   session_id: str | None = None
+  new_session: bool = False
   cwd: str = Field(default=".")
   model: str | None = None
 
@@ -69,7 +70,7 @@ class FinishEvent(BaseModel):
   """A single assistant turn finished."""
 
   type: Literal["finish"] = "finish"
-  finish_reason: Literal["stop", "error", "cancel"]
+  finish_reason: Literal["stop", "error", "cancel", "approval_required", "tool_calls"]
 
 
 class ToolCallEvent(BaseModel):
@@ -86,7 +87,9 @@ class ToolResultEvent(BaseModel):
 
   type: Literal["tool_result"] = "tool_result"
   tool_call_id: str
+  tool_name: str
   content: str
+  result: Any = None
   is_error: bool = False
 
 
@@ -95,6 +98,7 @@ class ApprovalRequestEvent(BaseModel):
 
   type: Literal["approval_request"] = "approval_request"
   id: str
+  tool_call_id: str
   tool_name: str
   args: Any = None
 

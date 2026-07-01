@@ -61,3 +61,31 @@ class RunnerService:
     except Exception as exc:
       logger.error("runner_execution_failed", error=str(exc))
       raise OrchestratorError(f"Execution failed: {exc}") from exc
+
+  async def resume_approval(
+    self,
+    agent: Agent,
+    deps: Any,
+    session_id: str,
+    approvals: dict[str, dict[str, Any]],
+  ) -> AsyncIterator[StreamEvent]:
+    """Resume a session paused for tool-call approvals.
+
+    Args:
+      agent: The nonoka Agent to run.
+      deps: Runtime dependencies passed to tools.
+      session_id: Session identifier for checkpoint persistence.
+      approvals: Mapping from tool_call_id to decision dict with
+        ``approved: bool`` and optional ``modified_args``.
+
+    Yields:
+      StreamEvent objects from the resumed ReAct loop.
+    """
+    try:
+      async for event in self._runner.resume_approval(
+        agent, deps=deps, session_id=session_id, approvals=approvals
+      ):
+        yield event
+    except Exception as exc:
+      logger.error("approval_resume_failed", error=str(exc))
+      raise OrchestratorError(f"Approval resume failed: {exc}") from exc

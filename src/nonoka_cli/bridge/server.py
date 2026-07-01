@@ -51,6 +51,8 @@ class BridgeServer:
       model=model,
     )
     self._running = True
+    self._tasks: set[asyncio.Task] = set()
+    self._chat_lock = asyncio.Lock()
 
   # ------------------------------------------------------------------ #
   # Public API
@@ -76,20 +78,43 @@ class BridgeServer:
         if msg is None:
           continue
 
-        try:
-          if isinstance(msg, ChatRequest):
-            await self._handler.handle(msg)
-          elif isinstance(msg, ApprovalResponse):
-            await self._handler.handle_approval(msg)
-          else:
-            logger.warning("unexpected_inbound_type", type=type(msg).__name__)
-        except Exception as exc:
-          logger.error("message_handler_failed", error=str(exc), type=type(msg).__name__)
-          await self._handler.send(ErrorEvent(message=f"Handler failed: {exc}"))
+        if isinstance(msg, ChatRequest):
+          task = asyncio.create_task(self._handle_chat(msg))
+          self._tasks.add(task)
+          task.add_done_callback(self._tasks.discard)
+        elif isinstance(msg, ApprovalResponse):
+          task = asyncio.create_task(self._handler.handle_approval(msg))
+          self._tasks.add(task)
+          task.add_done_callback(self._on_task_done)
+        else:
+          logger.warning("unexpected_inbound_type", type=type(msg).__name__)
     finally:
       await self._shutdown()
 
     return 0
+
+  # ------------------------------------------------------------------ #
+  # Internal handlers
+  # ------------------------------------------------------------------ #
+
+  async def _handle_chat(self, msg: ChatRequest) -> None:
+    """Serialize chat handling so only one turn runs at a time."""
+    async with self._chat_lock:
+      try:
+        await self._handler.handle(msg)
+      except Exception as exc:
+        logger.error("chat_handler_failed", error=str(exc))
+        try:
+          await self._handler.send(ErrorEvent(message=f"Chat handler failed: {exc}"))
+        except Exception:
+          pass
+
+  def _on_task_done(self, task: asyncio.Task) -> None:
+    """Log exceptions from fire-and-forget tasks."""
+    self._tasks.discard(task)
+    exc = task.exception()
+    if exc is not None:
+      logger.error("background_task_failed", error=str(exc))
 
   # ------------------------------------------------------------------ #
   # Lifecycle
@@ -97,6 +122,13 @@ class BridgeServer:
 
   async def _shutdown(self) -> None:
     """Shutdown the handler and close the stdout writer."""
+    # Cancel any background tasks and let them finish cleanly.
+    if self._tasks:
+      for task in self._tasks:
+        task.cancel()
+      await asyncio.gather(*self._tasks, return_exceptions=True)
+      self._tasks.clear()
+
     await self._handler.shutdown()
 
     try:
