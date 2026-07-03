@@ -100,8 +100,12 @@ class ConfigLoader:
   """
 
   DEFAULT_PATH = Path.home() / ".config" / "nonoka" / "config.yaml"
-  FALLBACK_PATH = Path.cwd() / "nonoka.yaml"
   MCP_SERVERS_PATH = Path.home() / ".config" / "nonoka" / "mcp_servers.yaml"
+
+  @classmethod
+  def fallback_path(cls) -> Path:
+    """Return the runtime fallback config path (./nonoka.yaml)."""
+    return Path.cwd() / "nonoka.yaml"
 
   @classmethod
   def find_config_file(
@@ -121,11 +125,12 @@ class ConfigLoader:
     if cls.DEFAULT_PATH.exists():
       return cls.DEFAULT_PATH
 
-    if cls.FALLBACK_PATH.exists():
-      return cls.FALLBACK_PATH
+    fallback = cls.fallback_path()
+    if fallback.exists():
+      return fallback
 
     raise ConfigNotFoundError(
-      f"No config file found. Searched: {cls.DEFAULT_PATH}, {cls.FALLBACK_PATH}"
+      f"No config file found. Searched: {cls.DEFAULT_PATH}, {fallback}"
     )
 
   @classmethod

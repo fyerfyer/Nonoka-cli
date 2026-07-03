@@ -14,12 +14,29 @@ from pathlib import Path
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import structlog
+from dotenv import load_dotenv
 
 from nonoka_cli.bridge.server import main as server_main
-from nonoka_cli.commands import config_cmd, opencode_cmd
+from nonoka_cli.commands import config_cmd, doctor_cmd, opencode_cmd
 from nonoka_cli.utils.logging import setup_logging
 
 logger = structlog.get_logger("nonoka_cli.cli")
+
+
+def _load_env_files() -> None:
+  """Load .env files so config env-var substitution works transparently.
+
+  Priority (lowest to highest):
+  1. ~/.config/nonoka/.env
+  2. ./.env
+  Existing environment variables always win.
+  """
+  global_env = Path.home() / ".config" / "nonoka" / ".env"
+  local_env = Path.cwd() / ".env"
+  for path in (global_env, local_env):
+    if path.exists():
+      load_dotenv(dotenv_path=path, override=False)
+      logger.debug("loaded_env_file", path=str(path))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -59,6 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
   subparsers = parser.add_subparsers(dest="command")
   config_cmd.add_subparser(subparsers)
+  doctor_cmd.add_subparser(subparsers)
   opencode_cmd.add_subparser(subparsers)
 
   return parser
@@ -72,6 +90,9 @@ def main() -> int:
   """
   parser = _build_parser()
   args = parser.parse_args()
+
+  # Load .env files early so configuration and LLM providers see API keys.
+  _load_env_files()
 
   if args.server:
     return server_main(config_path=args.config, model=args.model)

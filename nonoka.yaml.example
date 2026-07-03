@@ -3,6 +3,12 @@
 
 model: "deepseek-chat"
 
+# API key / base URL are normally loaded from environment variables or a .env
+# file. nonoka-cli automatically loads ~/.config/nonoka/.env and ./.env.
+# You can also set them here (not recommended for api_key).
+# api_key: "${DEEPSEEK_API_KEY}"
+# base_url: "https://api.deepseek.com"
+
 # Optional: override the default system prompt.
 # If omitted, nonoka-cli uses a built-in coding-assistant prompt that
 # explains the available tools and encourages autonomous tool use.

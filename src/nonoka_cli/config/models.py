@@ -37,6 +37,8 @@ class CLIConfig(BaseModel):
   """
   model: str = "gpt-4o"
   system_prompt: str = ""
+  api_key: str = ""
+  base_url: str = ""
   mcp_servers: dict[str, MCPServerConfigModel] = Field(default_factory=dict)
   tool_paths: list[Path] = Field(default_factory=list)
   skills: list[str] = Field(default_factory=list)

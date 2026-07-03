@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,9 @@ from nonoka_cli.config.models import CLIBehaviorConfig, CLIConfig, HITLConfigMod
 from nonoka_cli.utils.errors import ConfigError
 
 logger = structlog.get_logger("nonoka_cli.commands.config")
+
+
+_GLOBAL_ENV_PATH = Path.home() / ".config" / "nonoka" / ".env"
 
 
 def _load_manager(args: argparse.Namespace) -> ConfigManager:
@@ -47,6 +51,52 @@ def _confirm(prompt: str, default: bool = False) -> bool:
   if not answer:
     return default
   return answer in ("y", "yes")
+
+
+def _read_secret(prompt: str) -> str:
+  """Read a secret from stdin, masking input when possible."""
+  try:
+    return getpass.getpass(f"{prompt}: ").strip()
+  except (EOFError, KeyboardInterrupt):
+    return ""
+  except Exception:
+    # Fallback for non-TTY environments where getpass may fail.
+    value = _read_input(f"{prompt} (input will be visible)")
+    if value:
+      print("Warning: input was visible because this terminal does not support secure input.")
+    return value
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+  """Parse a simple KEY=VALUE .env file, ignoring comments and blank lines."""
+  values: dict[str, str] = {}
+  if not path.exists():
+    return values
+  for line in path.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+      continue
+    if "=" in line:
+      key, value = line.split("=", 1)
+      values[key.strip()] = value.strip()
+  return values
+
+
+def _write_env_file(path: Path, env_var: str, value: str) -> None:
+  """Write or update a key in a .env file."""
+  path.parent.mkdir(parents=True, exist_ok=True)
+  values = _load_env_file(path)
+  values[env_var] = value
+
+  lines: list[str] = ["# nonoka API keys and environment overrides", ""]
+  for key, val in values.items():
+    if " " in val or "#" in val:
+      val = f'"{val}"'
+    lines.append(f"{key}={val}")
+  lines.append("")
+  path.write_text("\n".join(lines), encoding="utf-8")
+  # Restrict permissions on the .env file.
+  path.chmod(0o600)
 
 
 def _set_dotted(data: dict[str, Any], key: str, value: Any) -> None:
@@ -81,11 +131,116 @@ def _coerce_value(raw: str) -> Any:
   return raw
 
 
+_DEFAULT_DANGEROUS_TOOLS = [
+  "write_file",
+  "edit_file",
+  "delete_file",
+  "execute_command",
+]
+
+_DEFAULT_SYSTEM_PROMPT = "You are a helpful coding assistant. Be concise and helpful."
+
+
+def _api_key_env_for_model(model: str) -> str:
+  """Return a conventional API-key env var name for a model identifier."""
+  lowered = model.lower()
+  if "openai" in lowered or lowered.startswith("gpt-"):
+    return "OPENAI_API_KEY"
+  if "anthropic" in lowered or "claude" in lowered:
+    return "ANTHROPIC_API_KEY"
+  if "deepseek" in lowered:
+    return "DEEPSEEK_API_KEY"
+  if "openrouter" in lowered:
+    return "OPENROUTER_API_KEY"
+  if "gemini" in lowered or "google" in lowered:
+    return "GOOGLE_API_KEY"
+  return "OPENAI_API_KEY"
+
+
+def _api_key_source_summary(env_var: str) -> str:
+  """Return a short description of where the API key is currently sourced."""
+  if os.getenv(env_var):
+    return f"from environment (${env_var})"
+  if _load_env_file(_GLOBAL_ENV_PATH).get(env_var):
+    return f"from {_GLOBAL_ENV_PATH}"
+  return ""
+
+
+def _collect_api_key(model: str) -> tuple[str, str, str]:
+  """Collect API key info and optionally persist it.
+
+  Returns:
+    (env_var_name, api_key_for_config, summary_for_user)
+  """
+  env_var = _api_key_env_for_model(model)
+  existing = os.getenv(env_var) or _load_env_file(_GLOBAL_ENV_PATH).get(env_var)
+  if existing:
+    print(f"Found {env_var} already set.")
+    return env_var, "", f"using existing ${env_var}"
+
+  key_input = _read_secret(f"{env_var} value (press Enter to skip)")
+  if not key_input:
+    return env_var, "", "no key provided"
+
+  print("")
+  print("Where would you like to save the API key?")
+  print("  [d] ~/.config/nonoka/.env (recommended, auto-loaded, file permission 600)")
+  print("  [c] directly in config.yaml (not recommended)")
+  print("  [s] skip saving, set it manually later")
+  choice = _read_input("Choice", "d").lower().strip()
+
+  if choice in ("c", "config"):
+    print("Warning: the API key will be stored in plain text in config.yaml.")
+    return env_var, key_input, "stored in config.yaml"
+
+  if choice in ("s", "skip"):
+    print(f"Remember to set the key later: export {env_var}=<your-key>")
+    return env_var, "", "not saved"
+
+  # Default: save to .env
+  _write_env_file(_GLOBAL_ENV_PATH, env_var, key_input)
+  # Make it available for the rest of this process too.
+  os.environ[env_var] = key_input
+  print(f"Saved {env_var} to {_GLOBAL_ENV_PATH}")
+  return env_var, "", f"saved to {_GLOBAL_ENV_PATH}"
+
+
 def cmd_init(args: argparse.Namespace) -> int:
-  """Interactive wizard to create an initial nonoka config."""
+  """Create an initial nonoka config, interactively or with --yes defaults."""
   path = Path(args.config) if args.config else ConfigLoader.DEFAULT_PATH
 
   print(f"Creating nonoka configuration at: {path}")
+
+  if getattr(args, "yes", False):
+    model = getattr(args, "model", None) or "deepseek-chat"
+    auto_approve = getattr(args, "auto_approve", False)
+    env_var = _api_key_env_for_model(model)
+    key_summary = _api_key_source_summary(env_var) or "not configured"
+
+    config = CLIConfig(
+      model=model,
+      system_prompt=_DEFAULT_SYSTEM_PROMPT,
+      api_key="",
+      cli=CLIBehaviorConfig(auto_approve=auto_approve),
+      hitl=HITLConfigModel(
+        policy="auto" if auto_approve else "interactive",
+        dangerous_tools=[] if auto_approve else _DEFAULT_DANGEROUS_TOOLS,
+      ),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ConfigLoader.save(config, path)
+
+    print("")
+    print(f"Configuration saved to {path}")
+    print(f"Model: {model}")
+    print(f"API key ({env_var}): {key_summary}")
+    if not os.getenv(env_var) and not _load_env_file(_GLOBAL_ENV_PATH).get(env_var):
+      print(
+        f"Set your API key with: nonoka-cli config init (interactive) "
+        f"or export {env_var}=<your-key>"
+      )
+    return 0
+
   print("")
   print(
     "Examples: deepseek-chat, openai/gpt-4o, "
@@ -93,48 +248,23 @@ def cmd_init(args: argparse.Namespace) -> int:
   )
 
   model = _read_input("Model identifier", "deepseek-chat")
-  env_var = _read_input(
-    "Environment variable for the API key (optional, e.g. DEEPSEEK_API_KEY)",
-    "",
-  )
-
-  api_key_display = ""
-  if env_var:
-    existing = os.getenv(env_var, "")
-    if existing:
-      print(f"Found {env_var} in environment.")
-      api_key_display = "${" + env_var + "}"
-    else:
-      key_input = _read_input(f"{env_var} value (press Enter to skip)", "")
-      if key_input:
-        prompt = "Save the API key directly in the config file? (Not recommended)"
-        if _confirm(prompt, default=False):
-          api_key_display = key_input
-        else:
-          api_key_display = "${" + env_var + "}"
-          print(f"Please export {env_var} in your environment before running nonoka.")
+  env_var, api_key_value, key_summary = _collect_api_key(model)
 
   system_prompt = _read_input(
     "Optional system prompt",
-    "You are a helpful coding assistant. Be concise and helpful.",
+    _DEFAULT_SYSTEM_PROMPT,
   )
 
   auto_approve = _confirm("Auto-approve all tool calls? (skips HITL)", default=False)
 
-  dangerous_tools = [
-    "write_file",
-    "edit_file",
-    "delete_file",
-    "execute_command",
-  ]
-
   config = CLIConfig(
     model=model,
     system_prompt=system_prompt,
+    api_key=api_key_value,
     cli=CLIBehaviorConfig(auto_approve=auto_approve),
     hitl=HITLConfigModel(
       policy="auto" if auto_approve else "interactive",
-      dangerous_tools=[] if auto_approve else dangerous_tools,
+      dangerous_tools=[] if auto_approve else _DEFAULT_DANGEROUS_TOOLS,
     ),
   )
 
@@ -143,8 +273,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
   print("")
   print(f"Configuration saved to {path}")
-  if env_var and not os.getenv(env_var) and api_key_display.startswith("${"):
-    print(f"Remember to export your API key: export {env_var}=<your-key>")
+  print(f"API key ({env_var}): {key_summary}")
   return 0
 
 
@@ -199,6 +328,21 @@ def add_subparser(subparsers: Any) -> None:
 
   init_parser = config_subparsers.add_parser("init", help="Create an initial config file")
   _add_config_arg(init_parser)
+  init_parser.add_argument(
+    "--yes", "-y",
+    action="store_true",
+    help="Non-interactive mode: create config with defaults",
+  )
+  init_parser.add_argument(
+    "--model",
+    default="deepseek-chat",
+    help="Default model to write when using --yes",
+  )
+  init_parser.add_argument(
+    "--auto-approve",
+    action="store_true",
+    help="Enable auto-approve when using --yes",
+  )
   init_parser.set_defaults(func=cmd_init)
 
   set_parser = config_subparsers.add_parser("set", help="Set a config value")
