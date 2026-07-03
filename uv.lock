@@ -1609,7 +1609,7 @@ wheels = [
 
 [[package]]
 name = "nonoka"
-version = "1.3.1"
+version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1623,18 +1623,19 @@ dependencies = [
     { name = "structlog" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/8c/870d3d6d2a86fcc3198531ea9d2bcd86d1210097b7684dae0197e61660fb/nonoka-1.3.1.tar.gz", hash = "sha256:b8a8895360dad949667f8c968795f7bd40a39b05bb5ae74990187ff3b8ffd593", size = 139306, upload-time = "2026-06-30T15:04:01.054Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/36/37a0f7f82c3ee199f7502973c746d647654a90538c540f9cff8c43bae911/nonoka-1.3.2.tar.gz", hash = "sha256:fb00ab1feb7be0791664694b9216ae7f8214435f3b97be12a6ac596f6ff174a2", size = 140261, upload-time = "2026-07-02T15:26:01.99Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/48/21767d38db87bedaaacc12ac77d7446547df97c0960397261a559f6ebed4/nonoka-1.3.1-py3-none-any.whl", hash = "sha256:ecd17d8da7d6f02512ccda438ab4c9e84b90df79c7fc87ec5c3b866f663e8162", size = 102961, upload-time = "2026-06-30T15:03:29.924Z" },
+    { url = "https://files.pythonhosted.org/packages/87/99/1f9e7a0fbdc4c31b8b41e16f6c73f44e0daa5c2d16a1ccc0dc11b94a1aba/nonoka-1.3.2-py3-none-any.whl", hash = "sha256:795c6b1c14aaa37d73a0855f999c3d031013d3a0eafcc69295e4b67afc310575", size = 103557, upload-time = "2026-07-02T15:25:55.658Z" },
 ]
 
 [[package]]
 name = "nonoka-cli"
-version = "0.2.0"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "nonoka" },
     { name = "pydantic" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "structlog" },
 ]
@@ -1648,11 +1649,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "nonoka", specifier = ">=1.3.1" },
+    { name = "nonoka", specifier = ">=1.3.2" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "structlog", specifier = ">=24.0.0" },
 ]
