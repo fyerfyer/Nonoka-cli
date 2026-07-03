@@ -9,45 +9,55 @@ using newline-delimited JSON (NDJSON).
 ## Installation
 
 ```bash
-npm install nonoka-opencode-provider
-# or
-bun add nonoka-opencode-provider
+npm install -g nonoka-opencode-provider
+# or let OpenCode install it automatically on first run
+```
+
+The easiest way to set everything up is the nonoka installer:
+
+```bash
+curl -fsSL https://nonoka.dev/install.sh | bash
 ```
 
 ## OpenCode configuration
 
-Add the provider to your `~/.config/opencode/opencode.json`:
+Add the provider to your `~/.config/opencode/opencode.json` (or run
+`nonoka-cli opencode init --global`):
 
 ```json
 {
-  "providers": {
+  "$schema": "https://opencode.ai/config.json",
+  "model": "nonoka/default",
+  "provider": {
     "nonoka": {
-      "model": "deepseek-chat",
-      "provider": {
-        "custom": {
-          "baseURL": "stdio",
-          "serverCommand": ["nonoka-cli", "--server"],
-          "cwd": ".",
-          "configPath": "./nonoka.yaml",
-          "env": {
-            "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}"
-          }
-        }
+      "npm": "nonoka-opencode-provider",
+      "name": "Nonoka",
+      "options": {
+        "serverCommand": ["nonoka-cli", "--server"],
+        "cwd": ".",
+        "configPath": "~/.config/nonoka/config.yaml"
+      },
+      "models": {
+        "default": { "name": "Nonoka Default" }
       }
     }
+  },
+  "permission": {
+    "edit": "ask",
+    "bash": "ask"
   }
 }
 ```
 
 ### Options
 
-| Option          | Type                  | Default               | Description                                                                   |
-| --------------- | --------------------- | --------------------- | ----------------------------------------------------------------------------- |
-| `serverCommand` | `string[]`            | `["nonoka-cli", "--server"]` | Command and arguments to spawn the nonoka-cli bridge server.           |
-| `cwd`           | `string`              | `"."`                 | Working directory for the spawned server process.                             |
-| `configPath`    | `string`              | `"./nonoka.yaml"`     | Path to the nonoka YAML config file, passed to `--config`.                    |
-| `model`         | `string`              | `"deepseek-chat"`     | Model identifier sent to nonoka-cli and reported to OpenCode.                 |
-| `env`           | `Record<string, any>` | `{}`                  | Extra environment variables for the server process.                           |
+| Option          | Type                  | Default                      | Description                                                |
+| --------------- | --------------------- | ---------------------------- | ---------------------------------------------------------- |
+| `serverCommand` | `string \| string[]`  | `"nonoka-cli --server"`      | Command to spawn the nonoka-cli bridge server.             |
+| `cwd`           | `string`              | `"."`                        | Working directory for the spawned server process.          |
+| `configPath`    | `string`              | `"~/.config/nonoka/config.yaml"` | Path to the nonoka YAML config file, passed to `--config`. |
+| `model`         | `string`              | none                         | Model identifier override sent to nonoka-cli.              |
+| `env`           | `Record<string, any>` | `{}`                         | Extra environment variables for the server process.        |
 
 ## Development
 

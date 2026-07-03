@@ -1,0 +1,41 @@
+nonoka-cli — OpenCode backend for the Nonoka Agent framework
+
+Copyright (c) 2026 fyerfyer
+
+This project is licensed under the MIT License (see LICENSE).
+
+Third-party software and attribution
+-------------------------------------
+
+1. OpenCode
+   - Repository: https://github.com/anomalyco/opencode
+   - License: MIT
+   - Copyright: OpenCode team and contributors
+   - The terminal TUI, desktop application, and OpenCode server/client
+     architecture are provided by OpenCode. nonoka-cli does not modify
+     OpenCode source code; it integrates via OpenCode's custom provider
+     mechanism and the Vercel AI SDK provider interface.
+
+2. Vercel AI SDK
+   - Repository: https://github.com/vercel/ai
+   - License: Apache License 2.0
+   - nonoka-opencode-provider implements the Vercel AI SDK provider API.
+
+3. LiteLLM
+   - Repository: https://github.com/BerriAI/litellm
+   - License: MIT
+   - Used by the underlying nonoka Agent framework for multi-provider LLM calls.
+
+4. MCP (Model Context Protocol)
+   - Repository: https://github.com/modelcontextprotocol
+   - License: MIT
+   - Used for tool server integration.
+
+Agent core
+----------
+The conversational agent core, execution engine, checkpoint/memory system,
+and tool framework are provided by the Nonoka Python Agent framework
+(https://pypi.org/project/nonoka/), independently developed by fyerfyer.
+
+This NOTICE file is provided for attribution purposes. If you distribute
+binaries or derivative works, please keep the above notices intact.
