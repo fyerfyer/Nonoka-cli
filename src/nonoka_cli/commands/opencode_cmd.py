@@ -130,6 +130,11 @@ def add_subparser(subparsers: Any) -> None:
   init_parser = opencode_subparsers.add_parser("init", help="Generate or merge opencode.json")
   _add_config_arg(init_parser)
   init_parser.add_argument(
+    "--yes", "-y",
+    action="store_true",
+    help="Non-interactive mode (default; kept for script compatibility)",
+  )
+  init_parser.add_argument(
     "--cwd",
     dest="cwd",
     default=".",
