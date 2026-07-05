@@ -97,10 +97,10 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.1
+✓ nonoka-cli 0.2.4
 ✓ Python 3.11
-✓ opencode 1.16.2
-✓ provider nonoka-opencode-provider@0.2.0
+✓ opencode 1.17.13
+✓ provider nonoka-opencode-provider@0.2.4
 ✓ config ~/.config/nonoka/config.yaml
 ✓ API key DEEPSEEK_API_KEY set
 ✓ OpenCode provider config in /home/user/.config/opencode/opencode.json
@@ -180,21 +180,23 @@ A typical generated `opencode.json` looks like:
 
 ## Human-in-the-loop
 
-When a tool call matches the `hitl.dangerous_tools` list in `nonoka.yaml`,
-nonoka pauses the turn and sends a `tool-approval-request` to OpenCode.
-OpenCode shows the tool card with an approval dialog; after the user decides,
-nonoka resumes the turn, executes approved tools, and returns the final answer.
+> **Note on OpenCode 1.17.13**: nonoka sends `tool-approval-request` stream
+> parts to the OpenCode provider, but the current OpenCode release does not
+> render an approval dialog for tools emitted by custom npm providers. Until
+> this is resolved on the OpenCode side, the practical fallback is to enable
+> auto-approval.
 
-Example `nonoka.yaml`:
+Set `cli.auto_approve: true` (or `hitl.policy: auto`) to run tools without
+manual approval:
 
 ```yaml
 model: "deepseek-chat"
 
 cli:
-  auto_approve: false
+  auto_approve: true
 
 hitl:
-  policy: interactive
+  policy: auto
   dangerous_tools:
     - write_file
     - edit_file
@@ -202,7 +204,10 @@ hitl:
     - execute_command
 ```
 
-Set `cli.auto_approve: true` (or `hitl.policy: auto`) to skip approval dialogs.
+For users who need explicit approval per tool, the planned next step is to
+expose nonoka's tools through an MCP server so that OpenCode treats them as
+first-class tools and applies its built-in permission / HITL system. See
+`DESIGN.md` section 13 for the MCP integration design.
 
 ## Development
 

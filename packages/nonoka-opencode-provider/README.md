@@ -72,6 +72,18 @@ bun run build
 bun test
 ```
 
+## Notes
+
+- The provider streams `tool_call`/`tool_result` events as observations so
+  OpenCode can render tool cards. Actual tool execution is performed by
+  `nonoka-cli --server`.
+- Text deltas are buffered so that leading spaces are not dropped between
+  chunks, fixing rendering issues like `project.Seems`.
+- On OpenCode 1.17.13, `tool-approval-request` parts from custom npm providers
+  do not yet render an approval dialog. Use `cli.auto_approve: true` in
+  `nonoka.yaml` as a fallback, or follow the MCP server roadmap in the main
+  `DESIGN.md`.
+
 ## License
 
 MIT
