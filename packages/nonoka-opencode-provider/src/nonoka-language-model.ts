@@ -17,6 +17,15 @@ import {
   type NonokaApprovalMessage,
 } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
+import fs from 'fs';
+
+function providerLog(message: string) {
+  try {
+    fs.appendFileSync('/tmp/nonoka-provider.log', `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    // ignore logging errors
+  }
+}
 
 export interface NonokaLanguageModelConfig {
   provider: string;
@@ -113,8 +122,10 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   }> {
     const warnings: SharedV3Warning[] = [];
 
+    providerLog('doStream start');
     const approvals = this.extractApprovalResponses(options);
     const child = this.spawnServer();
+    providerLog(`spawned child pid=${child.pid}`);
 
     // If this request carries approval responses, send them before the chat
     // request so the backend can resume the paused turn.
@@ -127,11 +138,59 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
     const request = this.buildChatRequest(options);
     const requestLine = encodeChatRequest(request) + '\n';
+    providerLog(`sending request: ${requestLine.trim()}`);
     await writeToStdin(child, requestLine);
 
-    const stream = this.createOutputStream(child, options.abortSignal);
+    const rawStream = this.createOutputStream(child, options.abortSignal);
 
-    return { stream, warnings };
+    // Wrap the raw stream so we can guarantee it closes as soon as the
+    // server signals the turn is finished. OpenCode will not schedule the
+    // next message until the ReadableStream reaches a closed state.
+    const reader = rawStream.getReader();
+    const controlledStream = new ReadableStream<LanguageModelV3StreamPart>({
+      start: (controller) => {
+        let closed = false;
+        const closeOnce = () => {
+          if (closed) return;
+          closed = true;
+          providerLog('controller.close called');
+          try { controller.close(); } catch {}
+          try { reader.cancel(); } catch {}
+          this.killChild(child);
+        };
+
+        const pump = () => {
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              providerLog('raw stream done');
+              closeOnce();
+              return;
+            }
+            providerLog(`enqueuing part type=${value.type}`);
+            controller.enqueue(value);
+            if (value.type === 'finish' || value.type === 'error') {
+              providerLog('terminal part seen, closing controlled stream');
+              closeOnce();
+              return;
+            }
+            pump();
+          }).catch((err) => {
+            providerLog(`raw stream error: ${err}`);
+            controller.error(err);
+            this.killChild(child);
+          });
+        };
+
+        pump();
+      },
+      cancel: () => {
+        providerLog('controlled stream cancelled');
+        reader.cancel().catch(() => {});
+        this.killChild(child);
+      },
+    });
+
+    return { stream: controlledStream, warnings };
   }
 
   private buildChatRequest(options: LanguageModelV3CallOptions): NonokaChatRequest {
@@ -249,6 +308,12 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+  }
+
+  private killChild(child: ChildProcessWithoutNullStreams): void {
+    providerLog(`killing child pid=${child.pid}`);
+    try { child.stdin?.destroy(); } catch {}
+    try { child.kill(); } catch {}
   }
 
   private createOutputStream(

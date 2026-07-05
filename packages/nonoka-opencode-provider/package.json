@@ -1,6 +1,6 @@
 {
   "name": "nonoka-opencode-provider",
-  "version": "0.2.0",
+  "version": "0.2.4",
   "description": "OpenCode provider for the Nonoka Agent framework",
   "type": "module",
   "main": "./dist/index.js",

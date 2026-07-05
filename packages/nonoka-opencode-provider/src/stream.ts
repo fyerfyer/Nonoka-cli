@@ -4,14 +4,74 @@ import {
   NONOKA_OUTBOUND_TYPES,
   type NonokaOutboundEvent,
 } from './protocol.js';
+import fs from 'fs';
+
+function timelineLog(message: string) {
+  try {
+    fs.appendFileSync('/tmp/nonoka-tui-timeline.ndjson', `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    // ignore logging errors
+  }
+}
+
+function logStreamPart(part: LanguageModelV3StreamPart) {
+  const base = { ts: new Date().toISOString(), source: 'provider', type: part.type };
+  if (part.type === 'text-delta') {
+    timelineLog(
+      JSON.stringify({
+        ...base,
+        len: part.delta.length,
+        hasNewline: part.delta.includes('\n'),
+        preview: part.delta.slice(0, 80).replace(/\n/g, '\\n'),
+      }),
+    );
+  } else if (
+    part.type === 'tool-call' ||
+    part.type === 'tool-result' ||
+    part.type === 'tool-approval-request'
+  ) {
+    timelineLog(
+      JSON.stringify({
+        ...base,
+        toolName: (part as any).toolName || (part as any).tool_name,
+        toolCallId: (part as any).toolCallId || (part as any).tool_call_id,
+      }),
+    );
+  } else {
+    timelineLog(JSON.stringify(base));
+  }
+}
 
 export function createNonokaStreamTransformer(
   options: {
     onSessionInit?: (sessionId: string) => void;
+    onFinish?: () => void;
   } = {},
 ): TransformStream<string, LanguageModelV3StreamPart> {
   let textBlockId: string | null = null;
   let textBlockStarted = false;
+  // Buffer used to glue trailing whitespace to the next token so that OpenCode
+  // does not drop leading spaces between text-delta chunks.
+  let pendingText = '';
+
+  function startTextBlock(controller: TransformStreamDefaultController<LanguageModelV3StreamPart>) {
+    if (textBlockId === null) {
+      textBlockId = generateId();
+      textBlockStarted = true;
+      const startPart = { type: 'text-start' as const, id: textBlockId };
+      logStreamPart(startPart);
+      controller.enqueue(startPart);
+    }
+  }
+
+  function flushPendingText(controller: TransformStreamDefaultController<LanguageModelV3StreamPart>) {
+    if (!pendingText) return;
+    startTextBlock(controller);
+    const part = { type: 'text-delta' as const, id: textBlockId!, delta: pendingText };
+    logStreamPart(part);
+    controller.enqueue(part);
+    pendingText = '';
+  }
 
   return new TransformStream<string, LanguageModelV3StreamPart>({
     transform(line, controller) {
@@ -30,70 +90,76 @@ export function createNonokaStreamTransformer(
         }
 
         case NONOKA_OUTBOUND_TYPES.text_delta: {
-          if (textBlockId === null) {
-            textBlockId = generateId();
-            textBlockStarted = true;
-            controller.enqueue({
-              type: 'text-start',
-              id: textBlockId,
-            });
+          const text = event.text ?? '';
+          if (!text) break;
+          pendingText += text;
+          // Keep buffering while the pending text ends with whitespace; flush
+          // as soon as a non-whitespace character arrives so spaces are sent
+          // attached to the word that follows them.
+          if (!/\s$/.test(pendingText)) {
+            flushPendingText(controller);
           }
-
-          controller.enqueue({
-            type: 'text-delta',
-            id: textBlockId,
-            delta: event.text,
-          });
           break;
         }
 
         case NONOKA_OUTBOUND_TYPES.tool_call: {
-          controller.enqueue({
-            type: 'tool-call',
+          flushPendingText(controller);
+          const part = {
+            type: 'tool-call' as const,
             toolCallId: event.tool_call_id,
             toolName: event.tool_name,
             input: JSON.stringify(event.args ?? {}),
             providerExecuted: true,
             dynamic: true,
-          });
+          };
+          logStreamPart(part);
+          controller.enqueue(part);
           break;
         }
 
         case NONOKA_OUTBOUND_TYPES.tool_result: {
+          flushPendingText(controller);
           const rawResult = event.result ?? event.content ?? '';
-          controller.enqueue({
-            type: 'tool-result',
+          const part = {
+            type: 'tool-result' as const,
             toolCallId: event.tool_call_id,
             toolName: event.tool_name,
             result: rawResult as any,
             isError: event.is_error ?? false,
             dynamic: true,
-          });
+          };
+          logStreamPart(part);
+          controller.enqueue(part);
           break;
         }
 
         case NONOKA_OUTBOUND_TYPES.approval_request: {
-          controller.enqueue({
-            type: 'tool-approval-request',
-            approvalId: event.id,
+          flushPendingText(controller);
+          const approvalId = event.tool_call_id || event.id || 'unknown';
+          const part = {
+            type: 'tool-approval-request' as const,
+            approvalId,
             toolCallId: event.tool_call_id,
-          });
+            isAutomatic: false,
+          };
+          logStreamPart(part);
+          controller.enqueue(part);
           break;
         }
 
         case NONOKA_OUTBOUND_TYPES.finish: {
+          flushPendingText(controller);
           if (textBlockStarted && textBlockId !== null) {
-            controller.enqueue({
-              type: 'text-end',
-              id: textBlockId,
-            });
+            const endPart = { type: 'text-end' as const, id: textBlockId };
+            logStreamPart(endPart);
+            controller.enqueue(endPart);
             textBlockStarted = false;
             textBlockId = null;
           }
 
           const unified = mapFinishReason(event.finish_reason);
-          controller.enqueue({
-            type: 'finish',
+          const part = {
+            type: 'finish' as const,
             finishReason: {
               unified,
               raw: event.finish_reason,
@@ -102,24 +168,28 @@ export function createNonokaStreamTransformer(
               inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
               outputTokens: { total: undefined, text: undefined, reasoning: undefined },
             },
-          });
+          };
+          logStreamPart(part);
+          controller.enqueue(part);
+          // The server processed one complete turn; signal the caller to
+          // terminate the child process so OpenCode can schedule the next turn.
+          options.onFinish?.();
           break;
         }
 
         case NONOKA_OUTBOUND_TYPES.error: {
+          flushPendingText(controller);
           if (textBlockStarted && textBlockId !== null) {
-            controller.enqueue({
-              type: 'text-end',
-              id: textBlockId,
-            });
+            const endPart = { type: 'text-end' as const, id: textBlockId };
+            logStreamPart(endPart);
+            controller.enqueue(endPart);
             textBlockStarted = false;
             textBlockId = null;
           }
 
-          controller.enqueue({
-            type: 'error',
-            error: event.message,
-          });
+          const part = { type: 'error' as const, error: event.message };
+          logStreamPart(part);
+          controller.enqueue(part);
           break;
         }
 
@@ -131,11 +201,11 @@ export function createNonokaStreamTransformer(
     },
 
     flush(controller) {
+      flushPendingText(controller);
       if (textBlockStarted && textBlockId !== null) {
-        controller.enqueue({
-          type: 'text-end',
-          id: textBlockId,
-        });
+        const endPart = { type: 'text-end' as const, id: textBlockId };
+        logStreamPart(endPart);
+        controller.enqueue(endPart);
       }
     },
   });
