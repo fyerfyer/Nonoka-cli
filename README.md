@@ -219,6 +219,30 @@ If you prefer auto-approval, change the permissions in `opencode.json` or set
 `cli.auto_approve: true` / `hitl.policy: auto` in `nonoka.yaml` for Nonoka's
 standalone mode.
 
+## Known limitations
+
+These are current behaviors observed with OpenCode CLI 1.17.13. They are tracked
+here because they affect the TUI/HITL experience but cannot be fixed inside
+`nonoka-cli` or `nonoka-opencode-provider`.
+
+- [ ] **External directory rejection crashes OpenCode**: if the model tries to
+  access a path outside the workspace (for example `/Users/admin/workspace` or
+  `~/Projects/`) and you select **Reject**, OpenCode exits. Workaround: keep
+  requests scoped to the current working directory, or approve if the path is
+  safe.
+- [ ] **`write` is auto-approved inside the workspace**: even with `"*": "ask"`
+  in `opencode.json`, OpenCode does not show an approval dialog for `write`
+  operations within the workspace root. `bash`, `read`, and `edit` do ask.
+- [ ] **Code blocks render as plain indented text**: OpenCode renders Python and
+  other code as plain indented output rather than fenced code blocks with syntax
+  highlighting. This is an OpenCode TUI rendering choice.
+- [ ] **Short replies leave empty vertical space**: the OpenCode TUI uses a flex
+  layout, so short assistant replies appear at the top with visible empty space
+  above the status bar. This is normal OpenCode layout behavior.
+- [ ] **Model may skip tools for ambiguous requests**: the adapter prompt
+  mitigates this, but a vague request can still cause the model to answer
+  directly instead of calling `read`/`edit`. Make file/tool requests explicit.
+
 ## Development
 
 ```bash
