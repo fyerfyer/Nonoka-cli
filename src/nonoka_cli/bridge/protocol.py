@@ -24,11 +24,20 @@ class ChatMessage(BaseModel):
   tool_call_id: str | None = None
 
 
+class ExternalToolDefinition(BaseModel):
+  """A tool definition supplied by the OpenCode host."""
+
+  name: str
+  description: str
+  parameters: dict[str, Any]
+
+
 class ChatRequest(BaseModel):
   """Request nonoka-cli to run one user turn."""
 
   type: Literal["chat"] = "chat"
   messages: list[ChatMessage]
+  tools: list[ExternalToolDefinition] | None = None
   session_id: str | None = None
   new_session: bool = False
   cwd: str = Field(default=".")

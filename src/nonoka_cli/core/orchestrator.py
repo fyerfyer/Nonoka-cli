@@ -10,6 +10,7 @@ import structlog
 from nonoka import Runner
 from nonoka.backends.checkpoint.sqlite import SQLiteCheckpointStore
 from nonoka.core.runner import StreamEvent
+from nonoka.core.types import Capability
 from nonoka.ext.hitl import HumanInTheLoopHooks
 from nonoka.ext.hitl.core import HumanApprover, ToolRule
 
@@ -252,6 +253,94 @@ class Orchestrator:
     try:
       async for event in self._runner_service.resume_approval(
         agent, deps=deps, session_id=session_id, approvals=approvals
+      ):
+        yield event
+    finally:
+      try:
+        await self._session_service.touch()
+      except Exception as touch_exc:
+        logger.warning("session_touch_failed", error=str(touch_exc))
+
+  async def execute_with_external_tools(
+    self,
+    prompt: str,
+    tools: list[Capability],
+    working_dir: Path | None = None,
+  ) -> AsyncIterator[StreamEvent]:
+    """Execute *prompt* using only externally-supplied tools.
+
+    The Agent is rebuilt for this turn so that local/MCP tools are excluded.
+    Tool execution itself is delegated to the external host (OpenCode).
+    """
+    self._ensure_initialized()
+    if self._agent_factory is None or self._runner_service is None:
+      raise OrchestratorError("Orchestrator not fully initialized.")
+
+    agent = self._agent_factory.build_with_external_tools(tools)
+
+    logger.info(
+      "executing_with_external_tools",
+      prompt_length=len(prompt),
+      session_id=self.session_id,
+      tool_count=len(tools),
+      working_dir=str(working_dir or Path.cwd()),
+    )
+
+    deps = CLIContext(
+      user="local",
+      session_id=self.session_id,
+      config=self._config,
+      working_dir=working_dir or Path.cwd(),
+    )
+
+    try:
+      async for event in self._runner_service.run(
+        agent, prompt, deps=deps, session_id=self.session_id
+      ):
+        yield event
+    finally:
+      try:
+        await self._session_service.touch()
+      except Exception as touch_exc:
+        logger.warning("session_touch_failed", error=str(touch_exc))
+
+  async def resume_external_tools(
+    self,
+    session_id: str,
+    results: dict[str, Any],
+    tools: list[Capability],
+    working_dir: Path | None = None,
+  ) -> AsyncIterator[StreamEvent]:
+    """Resume a session paused for external tool execution.
+
+    The temporary external-tools Agent is rebuilt from the tool definitions
+    carried in the current request, because the server process may have been
+    recreated between turns.
+    """
+    self._ensure_initialized()
+    if self._agent_factory is None or self._runner_service is None:
+      raise OrchestratorError("Orchestrator not fully initialized.")
+
+    agent = self._agent_factory.build_with_external_tools(tools)
+
+    logger.info(
+      "resuming_external_tools",
+      session_id=session_id,
+      tool_results=list(results.keys()),
+      tool_count=len(tools),
+      working_dir=str(working_dir or Path.cwd()),
+    )
+
+    deps = CLIContext(
+      user="local",
+      session_id=session_id,
+      config=self._config,
+      working_dir=working_dir or Path.cwd(),
+    )
+
+    try:
+      async for event in self._runner_service.resume_external_tools(
+        agent, deps=deps, session_id=session_id, results=results
       ):
         yield event
     finally:

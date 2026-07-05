@@ -89,3 +89,31 @@ class RunnerService:
     except Exception as exc:
       logger.error("approval_resume_failed", error=str(exc))
       raise OrchestratorError(f"Approval resume failed: {exc}") from exc
+
+  async def resume_external_tools(
+    self,
+    agent: Agent,
+    deps: Any,
+    session_id: str,
+    results: dict[str, Any],
+  ) -> AsyncIterator[StreamEvent]:
+    """Resume a session paused for external tool execution.
+
+    Args:
+      agent: The nonoka Agent to run.
+      deps: Runtime dependencies passed to tools.
+      session_id: Session identifier for checkpoint persistence.
+      results: Mapping from tool_call_id to the result returned by the
+        external host.
+
+    Yields:
+      StreamEvent objects from the resumed ReAct loop.
+    """
+    try:
+      async for event in self._runner.resume_external_tools(
+        agent, deps=deps, session_id=session_id, results=results
+      ):
+        yield event
+    except Exception as exc:
+      logger.error("external_tool_resume_failed", error=str(exc))
+      raise OrchestratorError(f"External tool resume failed: {exc}") from exc

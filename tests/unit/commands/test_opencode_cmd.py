@@ -49,3 +49,63 @@ def test_opencode_init_merges_existing(tmp_path: Path):
   assert data["model"] == "other/model"
   assert data["custom"] is True
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
+
+
+def test_opencode_init_creates_agent_prompt(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
+
+  args = argparse.Namespace(
+    config=str(config_path),
+    cwd=str(tmp_path),
+    global_=False,
+  )
+  assert cmd_init(args) == 0
+
+  agent_file = tmp_path / ".opencode" / "agents" / "build.md"
+  assert agent_file.exists()
+  content = agent_file.read_text()
+  assert "permission:" in content
+  assert '"*": ask' in content
+  assert "bash: ask" in content
+  assert "OpenCode-specific guidelines" in content
+
+
+def test_opencode_init_uses_nonoka_system_prompt(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  custom_prompt = "You are a pirate. Speak like one."
+  ConfigLoader.save(
+    CLIConfig(model="deepseek-chat", system_prompt=custom_prompt),
+    config_path,
+  )
+
+  args = argparse.Namespace(
+    config=str(config_path),
+    cwd=str(tmp_path),
+    global_=False,
+  )
+  assert cmd_init(args) == 0
+
+  agent_file = tmp_path / ".opencode" / "agents" / "build.md"
+  content = agent_file.read_text()
+  assert custom_prompt in content
+  assert "OpenCode-specific guidelines" in content
+
+
+def test_opencode_init_has_hitl_permissions(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
+
+  args = argparse.Namespace(
+    config=str(config_path),
+    cwd=str(tmp_path),
+    global_=False,
+  )
+  assert cmd_init(args) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  assert data["permission"]["*"] == "ask"
+  assert data["permission"]["bash"] == "ask"
+  assert data["permission"]["edit"] == "ask"
+  assert data["permission"]["write"] == "ask"
+  assert data["agent"]["build"]["permission"]["*"] == "ask"

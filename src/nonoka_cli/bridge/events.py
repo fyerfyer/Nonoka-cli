@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from nonoka.core.runner import StreamEvent
@@ -16,6 +17,34 @@ from nonoka_cli.bridge.protocol import (
   ToolCallEvent,
   ToolResultEvent,
 )
+
+
+def _timeline_log(event: StreamEvent, messages: list[OutboundMessage]) -> None:
+  """Append a structured event to the shared TUI timeline log."""
+  try:
+    with open("/tmp/nonoka-tui-timeline.ndjson", "a", encoding="utf-8") as f:
+      for msg in messages:
+        record: dict[str, Any] = {
+          "ts": datetime.now(timezone.utc).isoformat(),
+          "source": "bridge",
+          "type": msg.type,
+        }
+        if msg.type == "text_delta":
+          record["len"] = len(msg.text)
+          record["has_newline"] = "\n" in msg.text
+          record["preview"] = msg.text[:80].replace("\n", "\\n")
+        elif msg.type in {"tool_call", "tool_result"}:
+          record["toolName"] = getattr(msg, "tool_name", "")
+          record["toolCallId"] = getattr(msg, "tool_call_id", "")
+        elif msg.type == "approval_request":
+          record["toolName"] = getattr(msg, "tool_name", "")
+          record["toolCallId"] = getattr(msg, "tool_call_id", "")
+        elif msg.type == "finish":
+          record["finish_reason"] = msg.finish_reason
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+  except Exception:
+    # Timeline logging is best-effort; never fail the stream because of it.
+    pass
 
 
 def _stringify_args(args: Any) -> str:
@@ -34,7 +63,9 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
     case "content_delta":
       content = event.data.get("content", "")
       if content:
-        return [TextDeltaEvent(text=content)]
+        messages = [TextDeltaEvent(text=content)]
+        _timeline_log(event, messages)
+        return messages
       return []
 
     case "tool_call_start":
@@ -55,10 +86,11 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
             args=args,
           )
         )
+      _timeline_log(event, out)
       return out
 
     case "tool_call_result":
-      return [
+      messages = [
         ToolResultEvent(
           tool_call_id=event.data.get("tool_call_id", "unknown"),
           tool_name=event.data.get("name", ""),
@@ -67,9 +99,11 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
           is_error=bool(event.data.get("is_error", False)),
         )
       ]
+      _timeline_log(event, messages)
+      return messages
 
     case "approval_request":
-      return [
+      messages = [
         ApprovalRequestEvent(
           id=event.data.get("tool_call_id", "unknown"),
           tool_call_id=event.data.get("tool_call_id", "unknown"),
@@ -77,18 +111,27 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
           args=event.data.get("args"),
         )
       ]
+      _timeline_log(event, messages)
+      return messages
 
     case "error":
-      return [
+      messages = [
         ErrorEvent(message=event.data.get("error", "Unknown error")),
         FinishEvent(finish_reason="error"),
       ]
+      _timeline_log(event, messages)
+      return messages
 
     case "final":
       if event.data.get("requires_approval"):
-        return [FinishEvent(finish_reason="approval_required")]
-      finish_reason = "stop" if event.data.get("success", False) else "error"
-      return [FinishEvent(finish_reason=finish_reason)]
+        messages = [FinishEvent(finish_reason="approval_required")]
+      elif event.data.get("requires_external_execution"):
+        messages = [FinishEvent(finish_reason="tool_calls")]
+      else:
+        finish_reason = "stop" if event.data.get("success", False) else "error"
+        messages = [FinishEvent(finish_reason=finish_reason)]
+      _timeline_log(event, messages)
+      return messages
 
     case _:
       return []

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
 from nonoka import Agent, AgentBuilder
+from nonoka.core.context import RunContext
 from nonoka.core.types import Capability
 
 from nonoka_cli.config.models import CLIConfig
@@ -165,6 +167,58 @@ class AgentFactory:
     identity_line = f"\n\nYour current model is: {model}."
     return base.rstrip() + identity_line
 
+  def build_with_external_tools(self, tools: list[Capability]) -> Agent:
+    """Build a temporary Agent that uses only externally-supplied tools.
+
+    This is used when nonoka-cli is hosted inside OpenCode: OpenCode sends
+    its native tool definitions, nonoka registers them as opaque capabilities,
+    and OpenCode executes the actual tool calls. Local tools, MCP tools, and
+    skills are intentionally excluded.
+    """
+    if not self._config.model:
+      raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
+
+    system_prompt = self._build_system_prompt()
+    system_prompt = system_prompt.rstrip() + (
+      "\n\nYou are running inside OpenCode. Use only the tools provided by "
+      "OpenCode. Tool execution and approvals are handled by the OpenCode host."
+    )
+
+    logger.info(
+      "building_agent_with_external_tools",
+      model=self._config.model,
+      tool_count=len(tools),
+      system_prompt_length=len(system_prompt),
+    )
+
+    builder = (
+      AgentBuilder()
+      .model(self._config.model)
+      .system_prompt(system_prompt)
+      .max_turns(20)
+      .tools(*tools)
+    )
+
+    return builder.build()
+
+  @staticmethod
+  def create_external_tool_capability(
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+  ) -> Capability:
+    """Create a lightweight Capability from an OpenCode tool definition.
+
+    The returned capability carries the JSON schema the LLM sees. Its
+    ``invoke`` method must never be called: execution is delegated to OpenCode
+    via the ``external=True`` marker.
+    """
+    return _ExternalCapability(
+      name=name,
+      description=description,
+      parameters=parameters,
+    )
+
   def _collect_tools(self) -> list[Capability]:
     """Collect tools from all configured sources for listing/inspection."""
     tools: list[Capability] = []
@@ -218,3 +272,34 @@ class AgentFactory:
   def get_agent(self) -> Agent | None:
     """Return the currently built Agent, if any."""
     return self._agent
+
+
+@dataclass
+class _ExternalCapability:
+  """A capability whose execution is delegated to an external host.
+
+  Implements the ``nonoka.core.types.Capability`` protocol enough for the
+  nonoka Agent to register the tool schema and emit a tool call. The
+  ``external=True`` marker tells ``ReActAgent`` to pause and let the host
+  execute the tool instead of calling ``invoke``.
+  """
+
+  name: str
+  description: str
+  parameters: dict[str, Any]
+  external: bool = field(default=True, init=False)
+
+  async def invoke(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
+    raise RuntimeError(
+      f"External tool '{self.name}' must be executed by the host, not nonoka."
+    )
+
+  def to_json_schema(self) -> dict[str, Any]:
+    return {
+      "type": "function",
+      "function": {
+        "name": self.name,
+        "description": self.description,
+        "parameters": self.parameters,
+      },
+    }

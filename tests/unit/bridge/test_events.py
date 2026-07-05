@@ -60,6 +60,17 @@ def test_translate_final_requires_approval():
   assert messages[0].finish_reason == "approval_required"
 
 
+def test_translate_final_requires_external_execution():
+  event = StreamEvent(
+    type="final",
+    data={"success": False, "requires_external_execution": True},
+  )
+  messages = translate_stream_event(event)
+  assert len(messages) == 1
+  assert isinstance(messages[0], FinishEvent)
+  assert messages[0].finish_reason == "tool_calls"
+
+
 def test_translate_tool_call_start():
   event = StreamEvent(
     type="tool_call_start",

@@ -20,6 +20,7 @@ from nonoka_cli.bridge.protocol import (
   SessionInitEvent,
   encode_outbound_message,
 )
+from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.utils.errors import SessionNotFoundError
 
@@ -92,20 +93,44 @@ class ChatRequestHandler:
       await self._send(SessionInitEvent(session_id=self._session_id))
       self._session_init_sent = True
 
-    # If the provider sent tool-approval-response parts, resume the paused turn.
-    approvals = self._extract_approvals(msg)
-    if approvals:
-      stream = self._orchestrator.resume_approval(
-        session_id=self._session_id or self._orchestrator.session_id,
-        approvals=approvals,
-        working_dir=self._working_dir,
-      )
+    # When OpenCode forwards its native tool definitions, use the external-tool
+    # path so OpenCode can execute the tools and handle HITL itself.
+    external_tools = self._build_external_tools(msg)
+    tool_results = self._extract_tool_results(msg)
+
+    if external_tools:
+      if tool_results:
+        stream = self._orchestrator.resume_external_tools(
+          session_id=self._session_id or self._orchestrator.session_id,
+          results=tool_results,
+          tools=external_tools,
+          working_dir=self._working_dir,
+        )
+      else:
+        prompt = self._extract_prompt(msg)
+        if not prompt:
+          await self._send(ErrorEvent(message="No user message found in chat request"))
+          return
+        stream = self._orchestrator.execute_with_external_tools(
+          prompt=prompt,
+          tools=external_tools,
+          working_dir=self._working_dir,
+        )
     else:
-      prompt = self._extract_prompt(msg)
-      if not prompt:
-        await self._send(ErrorEvent(message="No user message found in chat request"))
-        return
-      stream = self._orchestrator.execute(prompt, working_dir=self._working_dir)
+      # If the provider sent tool-approval-response parts, resume the paused turn.
+      approvals = self._extract_approvals(msg)
+      if approvals:
+        stream = self._orchestrator.resume_approval(
+          session_id=self._session_id or self._orchestrator.session_id,
+          approvals=approvals,
+          working_dir=self._working_dir,
+        )
+      else:
+        prompt = self._extract_prompt(msg)
+        if not prompt:
+          await self._send(ErrorEvent(message="No user message found in chat request"))
+          return
+        stream = self._orchestrator.execute(prompt, working_dir=self._working_dir)
 
     await self._consume_stream(stream)
 
@@ -207,6 +232,46 @@ class ChatRequestHandler:
         approvals[str(tool_call_id)] = decision
 
     return approvals if approvals else None
+
+  @staticmethod
+  def _build_external_tools(msg: ChatRequest) -> list[Any]:
+    """Convert incoming external tool definitions into nonoka Capabilities."""
+    if not msg.tools:
+      return []
+    return [
+      AgentFactory.create_external_tool_capability(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
+      )
+      for tool in msg.tools
+    ]
+
+  @staticmethod
+  def _extract_tool_results(msg: ChatRequest) -> dict[str, Any] | None:
+    """Parse plain tool results from incoming role='tool' messages.
+
+    OpenCode returns tool results as ``role='tool'`` messages with a
+    ``tool_call_id``. We skip approval-response parts (handled separately)
+    and collect the latest result for each tool_call_id.
+    """
+    results: dict[str, Any] = {}
+    for m in msg.messages:
+      if m.role != "tool" or not m.content or not m.tool_call_id:
+        continue
+      # Skip approval-response payloads.
+      try:
+        parts = json.loads(m.content)
+      except json.JSONDecodeError:
+        parts = None
+      if isinstance(parts, list) and any(
+        isinstance(part, dict) and part.get("type") == "tool-approval-response"
+        for part in parts
+      ):
+        continue
+      results[m.tool_call_id] = m.content
+
+    return results if results else None
 
   async def _consume_stream(self, stream: AsyncIterator[StreamEvent]) -> None:
     """Translate nonoka StreamEvents into bridge events."""

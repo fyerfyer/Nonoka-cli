@@ -6,15 +6,16 @@ import type {
   SharedV3Warning,
 } from '@ai-sdk/provider';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { createHash } from 'crypto';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import path from 'path';
 import { Readable } from 'stream';
 import {
   NONOKA_INBOUND_TYPES,
   NONOKA_MESSAGE_ROLES,
-  encodeApprovalMessage,
   encodeChatRequest,
   type NonokaChatMessage,
   type NonokaChatRequest,
-  type NonokaApprovalMessage,
 } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
 import fs from 'fs';
@@ -24,6 +25,34 @@ function providerLog(message: string) {
     fs.appendFileSync('/tmp/nonoka-provider.log', `${new Date().toISOString()} ${message}\n`);
   } catch {
     // ignore logging errors
+  }
+}
+
+function getSessionIdFile(cwd: string): string {
+  const hash = createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 16);
+  return path.join('/tmp', `nonoka-session-${hash}.id`);
+}
+
+function loadSessionId(cwd: string): string | undefined {
+  try {
+    const file = getSessionIdFile(cwd);
+    if (!existsSync(file)) return undefined;
+    const id = readFileSync(file, 'utf-8').trim();
+    return id || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSessionId(cwd: string, sessionId: string | undefined): void {
+  try {
+    const file = getSessionIdFile(cwd);
+    if (!sessionId) {
+      return;
+    }
+    writeFileSync(file, sessionId, 'utf-8');
+  } catch {
+    // ignore persistence errors
   }
 }
 
@@ -58,7 +87,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     this.provider = config.provider;
     this.config = config;
     this.settings = settings;
-    this.sessionId = settings.sessionId;
+    this.sessionId = settings.sessionId ?? loadSessionId(config.cwd);
   }
 
   get supportedUrls(): Record<string, RegExp[]> {
@@ -123,18 +152,9 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     const warnings: SharedV3Warning[] = [];
 
     providerLog('doStream start');
-    const approvals = this.extractApprovalResponses(options);
+    providerLog(`options.tools count=${options.tools?.length ?? 0} names=${JSON.stringify(options.tools?.map((t: any) => t.name))}`);
     const child = this.spawnServer();
     providerLog(`spawned child pid=${child.pid}`);
-
-    // If this request carries approval responses, send them before the chat
-    // request so the backend can resume the paused turn.
-    if (approvals.length > 0) {
-      for (const approval of approvals) {
-        const line = encodeApprovalMessage(approval) + '\n';
-        await writeToStdin(child, line);
-      }
-    }
 
     const request = this.buildChatRequest(options);
     const requestLine = encodeChatRequest(request) + '\n';
@@ -229,9 +249,27 @@ export class NonokaLanguageModel implements LanguageModelV3 {
                 content: outputText,
                 tool_call_id: part.toolCallId,
               });
+            } else if (part.type === 'tool-approval-response') {
+              // Encode the approval decision as a JSON part list inside a
+              // role="tool" message. The nonoka-cli bridge extracts these
+              // parts in ChatRequestHandler._extract_approvals() and routes
+              // them to Orchestrator.resume_approval().
+              // OpenCode identifies approvals by approvalId; our bridge emits
+              // approvalId equal to the nonoka tool_call_id, so we can use it
+              // as the resume key.
+              const toolCallId = part.approvalId;
+              messages.push({
+                role: NONOKA_MESSAGE_ROLES.tool,
+                content: JSON.stringify([
+                  {
+                    type: 'tool-approval-response',
+                    toolCallId,
+                    approved: part.approved,
+                  },
+                ]),
+                tool_call_id: toolCallId,
+              });
             }
-            // tool-approval-response parts are handled separately by
-            // extractApprovalResponses and sent as standalone approval messages.
           }
           break;
         }
@@ -242,37 +280,23 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       }
     }
 
+    const tools = options.tools
+      ?.filter((tool): tool is { type: 'function'; name: string; description?: string; inputSchema: Record<string, unknown> } => tool.type === 'function')
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? '',
+        parameters: tool.inputSchema,
+      }));
+    providerLog(`buildChatRequest tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
     return {
       type: NONOKA_INBOUND_TYPES.chat,
       messages,
+      tools,
       session_id: this.sessionId,
       new_session: newSession,
       cwd: this.config.cwd,
       model: this.config.model,
     };
-  }
-
-  private extractApprovalResponses(
-    options: LanguageModelV3CallOptions,
-  ): NonokaApprovalMessage[] {
-    const approvals: NonokaApprovalMessage[] = [];
-
-    for (const message of options.prompt) {
-      if (message.role !== 'tool') continue;
-      for (const part of message.content) {
-        if (part.type !== 'tool-approval-response') continue;
-        const decision: NonokaApprovalMessage = {
-          type: NONOKA_INBOUND_TYPES.approval,
-          id: part.approvalId,
-          approved: part.approved,
-        };
-        // The AI SDK does not yet expose modified args in approval responses;
-        // we reserve the field for future protocol extensions.
-        approvals.push(decision);
-      }
-    }
-
-    return approvals;
   }
 
   private isNewConversation(options: LanguageModelV3CallOptions): boolean {
@@ -340,6 +364,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     const transformer = createNonokaStreamTransformer({
       onSessionInit: (sessionId) => {
         this.sessionId = sessionId;
+        saveSessionId(this.config.cwd, sessionId);
       },
     });
 

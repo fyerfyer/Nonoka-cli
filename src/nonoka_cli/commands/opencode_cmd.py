@@ -28,10 +28,55 @@ _DEFAULT_OPENCODE_CONFIG = {
     }
   },
   "permission": {
+    "*": "ask",
+    "bash": "ask",
     "edit": "ask",
-    "bash": "ask"
-  }
+    "write": "ask",
+  },
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "permission": {
+        "*": "ask",
+        "bash": "ask",
+        "edit": "ask",
+        "write": "ask",
+      },
+    }
+  },
 }
+
+_OPENCODE_PROMPT_GUIDELINES = """
+
+OpenCode-specific guidelines:
+- You are running inside OpenCode. Use only the tools provided by OpenCode.
+- Tool names available in this environment include bash, read, write, and edit.
+- Do not explore directories or read files unless the user explicitly requests it.
+- When writing or editing files, use absolute paths under the current working directory unless the user provides a different path.
+- Prefer reading a file before editing it when you need context.
+- Every tool call requires user approval in this environment, so choose the simplest and most direct way to satisfy the request.
+"""
+
+
+def _build_opencode_agent_prompt(system_prompt: str) -> str:
+  """Wrap the canonical nonoka system prompt for OpenCode's agent file.
+
+  nonoka owns the system prompt (via ``system_prompt`` in nonoka.yaml). The
+  OpenCode adapter places it in ``.opencode/agents/build.md`` and appends
+  OpenCode-specific tool guidelines so the model behaves correctly inside
+  OpenCode without leaking frontend details into nonoka's core prompt.
+  """
+  body = system_prompt.strip() or "You are a helpful coding assistant."
+  return f"""---
+permission:
+  "*": ask
+  bash: ask
+  edit: ask
+  write: ask
+---
+
+{body}{_OPENCODE_PROMPT_GUIDELINES}
+"""
 
 
 def _load_config(args: argparse.Namespace) -> CLIConfig:
@@ -94,6 +139,22 @@ def cmd_init(args: argparse.Namespace) -> int:
     json.dumps(merged, indent=2, ensure_ascii=False) + "\n",
     encoding="utf-8",
   )
+
+  # Create the OpenCode agent prompt file for project-level installs.
+  # nonoka owns the system prompt; this is the OpenCode adapter that places it
+  # where OpenCode expects its primary agent prompt.
+  if not args.global_:
+    agent_dir = Path(args.cwd) / ".opencode" / "agents"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    agent_file = agent_dir / "build.md"
+    if not agent_file.exists():
+      agent_file.write_text(
+        _build_opencode_agent_prompt(config.system_prompt),
+        encoding="utf-8",
+      )
+      print(f"Agent prompt saved to {agent_file}")
+    else:
+      print(f"Agent prompt already exists at {agent_file}; not overwriting.")
 
   print(f"OpenCode config saved to {target}")
   print("Install the provider with: npm install -g nonoka-opencode-provider")

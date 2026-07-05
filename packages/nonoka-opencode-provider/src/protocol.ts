@@ -18,6 +18,12 @@ export interface NonokaChatMessage {
   tool_call_id?: string;
 }
 
+export interface ExternalToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
 export const NONOKA_INBOUND_TYPES = {
   chat: 'chat',
   approval: 'approval',
@@ -28,6 +34,7 @@ export type NonokaInboundEventType = keyof typeof NONOKA_INBOUND_TYPES;
 export interface NonokaChatRequest {
   type: typeof NONOKA_INBOUND_TYPES.chat;
   messages: NonokaChatMessage[];
+  tools?: ExternalToolDefinition[];
   session_id?: string;
   new_session?: boolean;
   cwd: string;

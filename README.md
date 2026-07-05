@@ -3,9 +3,9 @@
 OpenCode backend for the [Nonoka](https://pypi.org/project/nonoka/) Agent framework.
 
 `nonoka-cli` runs as a stdio NDJSON bridge server (`nonoka-cli --server`) that
-talks to the `nonoka-opencode-provider` TypeScript package. OpenCode uses the
-provider to drive Nonoka agents, with full support for tool cards and
-human-in-the-loop (HITL) approval.
+talks to the `nonoka-opencode-provider` TypeScript package. When used inside
+OpenCode, Nonoka acts as the conversation/decision backend while OpenCode owns
+tool execution and human-in-the-loop (HITL) approval using its native tools.
 
 ## Quick install
 
@@ -145,11 +145,18 @@ Print the resolved configuration and its file path.
 
 ### `nonoka-cli opencode init`
 
-Generate or merge an `opencode.json` in the current directory. The generated
+Generate or merge an `opencode.json` in the current directory and create
+`.opencode/agents/build.md` from your nonoka `system_prompt`. The generated
 config points OpenCode at the `nonoka-opencode-provider` package and passes the
 nonoka config path to the backend.
 
 ## OpenCode configuration
+
+`nonoka-cli opencode init` generates two things:
+
+1. `opencode.json` in the current directory, which wires OpenCode to the
+   `nonoka-opencode-provider` package and sets HITL permissions.
+2. `.opencode/agents/build.md`, which contains the agent prompt.
 
 A typical generated `opencode.json` looks like:
 
@@ -172,42 +179,45 @@ A typical generated `opencode.json` looks like:
     }
   },
   "permission": {
+    "*": "ask",
+    "bash": "ask",
     "edit": "ask",
-    "bash": "ask"
+    "write": "ask"
+  },
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "permission": {
+        "*": "ask",
+        "bash": "ask",
+        "edit": "ask",
+        "write": "ask"
+      }
+    }
   }
 }
 ```
 
+## Prompt ownership
+
+Nonoka owns the canonical system prompt via `system_prompt` in
+`~/.config/nonoka/config.yaml`. When you run `nonoka-cli opencode init`, the
+command adapts that prompt and writes it to `.opencode/agents/build.md` so
+OpenCode uses it for its primary agent. OpenCode-specific guidelines (tool
+names, approval behavior, path conventions) are appended automatically; they are
+not mixed into Nonoka's core prompt, so the same config works for other
+frontends in the future.
+
 ## Human-in-the-loop
 
-> **Note on OpenCode 1.17.13**: nonoka sends `tool-approval-request` stream
-> parts to the OpenCode provider, but the current OpenCode release does not
-> render an approval dialog for tools emitted by custom npm providers. Until
-> this is resolved on the OpenCode side, the practical fallback is to enable
-> auto-approval.
+When running inside OpenCode, HITL is handled by OpenCode itself. The generated
+`opencode.json` sets `"*": "ask"` so every tool requires approval. Because
+Nonoka forwards OpenCode's native tool definitions to the model, approval
+dialogs render natively for `bash`, `read`, `write`, and `edit` operations.
 
-Set `cli.auto_approve: true` (or `hitl.policy: auto`) to run tools without
-manual approval:
-
-```yaml
-model: "deepseek-chat"
-
-cli:
-  auto_approve: true
-
-hitl:
-  policy: auto
-  dangerous_tools:
-    - write_file
-    - edit_file
-    - delete_file
-    - execute_command
-```
-
-For users who need explicit approval per tool, the planned next step is to
-expose nonoka's tools through an MCP server so that OpenCode treats them as
-first-class tools and applies its built-in permission / HITL system. See
-`DESIGN.md` section 13 for the MCP integration design.
+If you prefer auto-approval, change the permissions in `opencode.json` or set
+`cli.auto_approve: true` / `hitl.policy: auto` in `nonoka.yaml` for Nonoka's
+standalone mode.
 
 ## Development
 

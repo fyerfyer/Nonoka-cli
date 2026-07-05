@@ -138,7 +138,9 @@ _DEFAULT_DANGEROUS_TOOLS = [
   "execute_command",
 ]
 
-_DEFAULT_SYSTEM_PROMPT = "You are a helpful coding assistant. Be concise and helpful."
+_DEFAULT_SYSTEM_PROMPT = """You are a helpful coding assistant. Be concise, direct, and helpful.
+
+Only use tools when the user explicitly asks you to perform an operation such as running a command, reading a file, creating a file, or modifying a file. For direct questions, greetings, math problems, translations, and general explanations, answer directly without invoking tools."""
 
 
 def _api_key_env_for_model(model: str) -> str:

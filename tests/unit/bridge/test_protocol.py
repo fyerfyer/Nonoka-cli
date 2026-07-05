@@ -5,6 +5,7 @@ import pytest
 from nonoka_cli.bridge.protocol import (
   ChatRequest,
   ErrorEvent,
+  ExternalToolDefinition,
   FinishEvent,
   SessionInitEvent,
   TextDeltaEvent,
@@ -27,6 +28,45 @@ def test_parse_chat_request():
   assert msg.messages[0].content == "hello"
   assert msg.session_id == "sess-1"
   assert msg.cwd == "/tmp"
+
+
+def test_parse_chat_request_with_tools():
+  line = json.dumps(
+    {
+      "type": "chat",
+      "messages": [{"role": "user", "content": "run ls"}],
+      "tools": [
+        {
+          "name": "bash",
+          "description": "Run shell commands",
+          "parameters": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+          },
+        }
+      ],
+      "cwd": "/tmp",
+    }
+  )
+  msg = parse_inbound_line(line)
+  assert isinstance(msg, ChatRequest)
+  assert msg.tools is not None
+  assert len(msg.tools) == 1
+  assert msg.tools[0].name == "bash"
+  assert msg.tools[0].description == "Run shell commands"
+  assert "command" in msg.tools[0].parameters["properties"]
+
+
+def test_external_tool_definition_roundtrip():
+  tool = ExternalToolDefinition(
+    name="write_file",
+    description="Write a file",
+    parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+  )
+  data = json.loads(tool.model_dump_json())
+  assert data["name"] == "write_file"
+  assert data["parameters"]["properties"]["path"]["type"] == "string"
 
 
 def test_parse_unknown_type():

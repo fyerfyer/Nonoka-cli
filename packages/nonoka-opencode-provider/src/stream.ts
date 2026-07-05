@@ -8,7 +8,7 @@ import fs from 'fs';
 
 function timelineLog(message: string) {
   try {
-    fs.appendFileSync('/tmp/nonoka-tui-timeline.ndjson', `${new Date().toISOString()} ${message}\n`);
+    fs.appendFileSync('/tmp/nonoka-tui-timeline.ndjson', `${message}\n`);
   } catch {
     // ignore logging errors
   }
@@ -104,12 +104,15 @@ export function createNonokaStreamTransformer(
 
         case NONOKA_OUTBOUND_TYPES.tool_call: {
           flushPendingText(controller);
+          // In deferred HITL mode the backend emits tool_call before the tool
+          // has actually executed; it is waiting for an approval decision.
+          // providerExecuted must be false so OpenCode renders the approval UI.
           const part = {
             type: 'tool-call' as const,
             toolCallId: event.tool_call_id,
             toolName: event.tool_name,
             input: JSON.stringify(event.args ?? {}),
-            providerExecuted: true,
+            providerExecuted: false,
             dynamic: true,
           };
           logStreamPart(part);
