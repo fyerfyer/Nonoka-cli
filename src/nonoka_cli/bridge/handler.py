@@ -12,7 +12,6 @@ from nonoka.core.runner import StreamEvent
 
 from nonoka_cli.bridge.events import translate_stream_event
 from nonoka_cli.bridge.protocol import (
-  ApprovalResponse,
   ChatRequest,
   ErrorEvent,
   FinishEvent,
@@ -23,6 +22,7 @@ from nonoka_cli.bridge.protocol import (
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.utils.errors import SessionNotFoundError
+from nonoka_cli.utils.trace_logger import TraceLogger
 
 logger = structlog.get_logger("nonoka_cli.bridge.handler")
 
@@ -93,10 +93,20 @@ class ChatRequestHandler:
       await self._send(SessionInitEvent(session_id=self._session_id))
       self._session_init_sent = True
 
+    trace_logger = TraceLogger(request_id=msg.request_id)
+    trace_logger.log_request(
+      session_id=self._session_id,
+      cwd=str(self._working_dir),
+      message_count=len(msg.messages),
+      roles=[m.role for m in msg.messages],
+      tools=[t.name for t in (msg.tools or [])],
+    )
+
     # When OpenCode forwards its native tool definitions, use the external-tool
     # path so OpenCode can execute the tools and handle HITL itself.
     external_tools = self._build_external_tools(msg)
     tool_results = self._extract_tool_results(msg)
+    host_system_prompt = self._extract_host_system_prompt(msg)
 
     if external_tools:
       if tool_results:
@@ -105,6 +115,7 @@ class ChatRequestHandler:
           results=tool_results,
           tools=external_tools,
           working_dir=self._working_dir,
+          host_system_prompt=host_system_prompt,
         )
       else:
         prompt = self._extract_prompt(msg)
@@ -115,6 +126,7 @@ class ChatRequestHandler:
           prompt=prompt,
           tools=external_tools,
           working_dir=self._working_dir,
+          host_system_prompt=host_system_prompt,
         )
     else:
       # If the provider sent tool-approval-response parts, resume the paused turn.
@@ -132,20 +144,7 @@ class ChatRequestHandler:
           return
         stream = self._orchestrator.execute(prompt, working_dir=self._working_dir)
 
-    await self._consume_stream(stream)
-
-  async def handle_approval(self, msg: ApprovalResponse) -> None:
-    """Process a direct approval decision.
-
-    The normal two-call HITL flow sends approvals through ``ChatRequest``
-    tool-approval-response parts.  This method remains as a fallback for
-    simpler provider implementations that send standalone approval messages.
-    """
-    logger.warning(
-      "approval_response_ignored",
-      approval_id=msg.id,
-      approved=msg.approved,
-    )
+    await self._consume_stream(stream, trace_logger)
 
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
     """Initialize the orchestrator on first request."""
@@ -248,13 +247,40 @@ class ChatRequestHandler:
     ]
 
   @staticmethod
+  def _extract_pending_tool_call_ids(msg: ChatRequest) -> set[str]:
+    """Collect tool_call_ids declared by the most recent assistant message."""
+    pending: set[str] = set()
+    for m in reversed(msg.messages):
+      if m.role == "assistant" and m.tool_calls:
+        for tc in m.tool_calls:
+          pending.add(tc.id)
+        break
+    return pending
+
+  @staticmethod
+  def _extract_host_system_prompt(msg: ChatRequest) -> str | None:
+    """Return the first inbound system message, if any.
+
+    OpenCode forwards its agent prompt as a system message. We pass it through
+    as a fallback when the user has not configured a custom system_prompt in
+    nonoka.yaml.
+    """
+    for m in msg.messages:
+      if m.role == "system":
+        return m.content
+    return None
+
+  @staticmethod
   def _extract_tool_results(msg: ChatRequest) -> dict[str, Any] | None:
     """Parse plain tool results from incoming role='tool' messages.
 
     OpenCode returns tool results as ``role='tool'`` messages with a
     ``tool_call_id``. We skip approval-response parts (handled separately)
-    and collect the latest result for each tool_call_id.
+    and collect the latest result for each tool_call_id. Results whose id
+    does not match a pending tool_call from the latest assistant message are
+    dropped to avoid misalignment.
     """
+    pending_ids = ChatRequestHandler._extract_pending_tool_call_ids(msg)
     results: dict[str, Any] = {}
     for m in msg.messages:
       if m.role != "tool" or not m.content or not m.tool_call_id:
@@ -269,20 +295,72 @@ class ChatRequestHandler:
         for part in parts
       ):
         continue
+      if pending_ids and m.tool_call_id not in pending_ids:
+        logger.warning(
+          "tool_result_id_mismatch",
+          tool_call_id=m.tool_call_id,
+          pending_ids=list(pending_ids),
+        )
+        continue
       results[m.tool_call_id] = m.content
 
     return results if results else None
 
-  async def _consume_stream(self, stream: AsyncIterator[StreamEvent]) -> None:
+  async def _consume_stream(
+    self,
+    stream: AsyncIterator[StreamEvent],
+    trace_logger: TraceLogger | None = None,
+  ) -> None:
     """Translate nonoka StreamEvents into bridge events."""
     try:
       async for event in stream:
+        if trace_logger is not None:
+          trace_logger.log_stream_event(
+            session_id=self._session_id,
+            event_type=event.type,
+            data=self._summarize_stream_event(event),
+          )
         for outbound in translate_stream_event(event):
           await self._send(outbound)
     except Exception as exc:
       logger.error("stream_consumption_failed", error=str(exc))
       await self._send(ErrorEvent(message=f"Stream failed: {exc}"))
       await self._send(FinishEvent(finish_reason="error"))
+
+  @staticmethod
+  def _summarize_stream_event(event: StreamEvent) -> dict[str, Any]:
+    """Return a compact, trace-friendly summary of a StreamEvent."""
+    data = event.data or {}
+    summary: dict[str, Any] = {}
+    if event.type == "content_delta":
+      content = data.get("content", "")
+      summary["len"] = len(content)
+      summary["has_newline"] = "\n" in content
+    elif event.type == "tool_call_start":
+      summary["tool_calls"] = [
+        {
+          "id": tc.get("id") or tc.get("tool_call_id"),
+          "name": tc.get("function", {}).get("name"),
+        }
+        for tc in (data.get("tool_calls") or [])
+      ]
+    elif event.type == "tool_call_result":
+      summary["tool_call_id"] = data.get("tool_call_id")
+      summary["name"] = data.get("name")
+      summary["is_error"] = bool(data.get("is_error", False))
+    elif event.type == "approval_request":
+      summary["tool_call_id"] = data.get("tool_call_id")
+      summary["tool_name"] = data.get("tool_name")
+    elif event.type == "final":
+      summary["success"] = bool(data.get("success", False))
+      summary["requires_external_execution"] = bool(
+        data.get("requires_external_execution", False)
+      )
+      summary["requires_approval"] = bool(data.get("requires_approval", False))
+    elif event.type == "error":
+      summary["error"] = data.get("error")
+      summary["error_type"] = data.get("error_type")
+    return summary
 
   def reset_session_init(self) -> None:
     """Reset the session-init flag so the next response emits it again.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -45,6 +46,39 @@ Guidelines:
   so the match is unique.
 - Prefer `write_file` over many small `edit_file` calls when rewriting a whole
   file or large section.
+- Run build/test commands when available and report the result.
+- If a command fails, analyze the output and try to fix the issue.
+- Keep responses concise but thorough.
+
+You operate in the user's current working directory.
+"""
+
+_OPENCODE_HOSTED_SYSTEM_PROMPT = """\
+You are an autonomous coding assistant running inside OpenCode.
+Use only the tools provided by OpenCode to complete tasks.
+OpenCode handles all tool execution and any required approvals.
+
+MANDATORY TODO WORKFLOW for multi-step tasks:
+1. FIRST, call the `todowrite` tool to create the complete todo list. Mark the
+   first step as `in_progress` and the rest as `pending`.
+2. BEFORE starting any step, call `todowrite` to mark that step as
+   `in_progress` and any previously completed steps as `completed`.
+3. AFTER a step finishes successfully, call `todowrite` to mark it as
+   `completed` and the next step as `in_progress`.
+4. If a step fails or is skipped, call `todowrite` to mark it as `cancelled`.
+5. At the end, call `todowrite` with every item marked `completed`.
+
+Do not skip these updates. The user sees progress through the OpenCode TODO
+UI, so you must keep the list accurate at every transition.
+
+Use these statuses exactly:
+- `pending` for steps not yet started.
+- `in_progress` for the step currently being worked on.
+- `completed` for steps that finished successfully.
+- `cancelled` for steps that failed or were skipped.
+
+Guidelines:
+- Prefer reading files before editing them.
 - Run build/test commands when available and report the result.
 - If a command fails, analyze the output and try to fix the issue.
 - Keep responses concise but thorough.
@@ -167,21 +201,32 @@ class AgentFactory:
     identity_line = f"\n\nYour current model is: {model}."
     return base.rstrip() + identity_line
 
-  def build_with_external_tools(self, tools: list[Capability]) -> Agent:
+  def build_with_external_tools(
+    self,
+    tools: list[Capability],
+    cwd: str | Path | None = None,
+    host_system_prompt: str | None = None,
+  ) -> Agent:
     """Build a temporary Agent that uses only externally-supplied tools.
 
     This is used when nonoka-cli is hosted inside OpenCode: OpenCode sends
     its native tool definitions, nonoka registers them as opaque capabilities,
     and OpenCode executes the actual tool calls. Local tools, MCP tools, and
     skills are intentionally excluded.
+
+    Args:
+      tools: Tool definitions supplied by the OpenCode host.
+      cwd: Current working directory to inject into the system prompt.
+      host_system_prompt: Optional system prompt forwarded by the host
+        (e.g. OpenCode's agent file). Used only when the user has not
+        configured a custom ``system_prompt`` in nonoka.yaml.
     """
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
-    system_prompt = self._build_system_prompt()
-    system_prompt = system_prompt.rstrip() + (
-      "\n\nYou are running inside OpenCode. Use only the tools provided by "
-      "OpenCode. Tool execution and approvals are handled by the OpenCode host."
+    system_prompt = self._build_external_system_prompt(
+      base=self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT,
+      cwd=cwd,
     )
 
     logger.info(
@@ -189,6 +234,7 @@ class AgentFactory:
       model=self._config.model,
       tool_count=len(tools),
       system_prompt_length=len(system_prompt),
+      cwd=str(cwd) if cwd else None,
     )
 
     builder = (
@@ -200,6 +246,32 @@ class AgentFactory:
     )
 
     return builder.build()
+
+  def _build_external_system_prompt(
+    self,
+    base: str,
+    cwd: str | Path | None,
+  ) -> str:
+    """Assemble the system prompt for the OpenCode-hosted agent."""
+    model = self._config.model.strip()
+
+    # Inject model identity once.
+    identity_line = f"Your current model is: {model}."
+    if identity_line not in base:
+      base = base.rstrip() + f"\n\n{identity_line}"
+
+    # Inject cwd and path guidance when a cwd is provided.
+    if cwd is not None:
+      cwd_str = str(Path(cwd).resolve())
+      cwd_block = (
+        f"\n\nCurrent working directory: {cwd_str}\n"
+        "All file paths must be relative to this directory or use the absolute path above.\n"
+        "Prefer write_file/edit_file over bash/execute_command for file mutations."
+      )
+      if "Current working directory:" not in base:
+        base = base.rstrip() + cwd_block
+
+    return base
 
   @staticmethod
   def create_external_tool_capability(

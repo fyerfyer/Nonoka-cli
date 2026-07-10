@@ -17,7 +17,6 @@ import structlog
 
 from nonoka_cli.bridge.handler import ChatRequestHandler, build_sender
 from nonoka_cli.bridge.protocol import (
-  ApprovalResponse,
   ChatRequest,
   ErrorEvent,
   parse_inbound_line,
@@ -51,7 +50,6 @@ class BridgeServer:
       model=model,
     )
     self._running = True
-    self._tasks: set[asyncio.Task] = set()
     self._chat_lock = asyncio.Lock()
 
   # ------------------------------------------------------------------ #
@@ -80,13 +78,8 @@ class BridgeServer:
 
         if isinstance(msg, ChatRequest):
           # Chat turns are processed sequentially so the single orchestrator
-          # state stays consistent.  Approval responses can still arrive in
-          # parallel via the fire-and-forget path below.
+          # state stays consistent.
           await self._handle_chat(msg)
-        elif isinstance(msg, ApprovalResponse):
-          task = asyncio.create_task(self._handler.handle_approval(msg))
-          self._tasks.add(task)
-          task.add_done_callback(self._on_task_done)
         else:
           logger.warning("unexpected_inbound_type", type=type(msg).__name__)
     finally:
@@ -110,26 +103,12 @@ class BridgeServer:
         except Exception:
           pass
 
-  def _on_task_done(self, task: asyncio.Task) -> None:
-    """Log exceptions from fire-and-forget tasks."""
-    self._tasks.discard(task)
-    exc = task.exception()
-    if exc is not None:
-      logger.error("background_task_failed", error=str(exc))
-
   # ------------------------------------------------------------------ #
   # Lifecycle
   # ------------------------------------------------------------------ #
 
   async def _shutdown(self) -> None:
     """Shutdown the handler and close the stdout writer."""
-    # Cancel any background tasks and let them finish cleanly.
-    if self._tasks:
-      for task in self._tasks:
-        task.cancel()
-      await asyncio.gather(*self._tasks, return_exceptions=True)
-      self._tasks.clear()
-
     await self._handler.shutdown()
 
     try:

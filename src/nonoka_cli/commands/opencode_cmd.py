@@ -19,7 +19,7 @@ _DEFAULT_OPENCODE_CONFIG = {
       "npm": "nonoka-opencode-provider",
       "name": "Nonoka",
       "options": {
-        "serverCommand": ["nonoka-cli", "--server"],
+        "serverCommand": ["bash", "-c", "nonoka-cli --server 2>/tmp/nonoka-server.log"],
         "cwd": ".",
       },
       "models": {

@@ -16,12 +16,21 @@ from pydantic import BaseModel, Field
 # --------------------------------------------------------------------------- #
 
 
+class ToolCall(BaseModel):
+  """A tool call attached to an assistant message."""
+
+  id: str
+  name: str
+  arguments: str
+
+
 class ChatMessage(BaseModel):
   """A single message in the chat history."""
 
   role: Literal["system", "user", "assistant", "tool"]
   content: str
   tool_call_id: str | None = None
+  tool_calls: list[ToolCall] | None = None
 
 
 class ExternalToolDefinition(BaseModel):
@@ -42,18 +51,10 @@ class ChatRequest(BaseModel):
   new_session: bool = False
   cwd: str = Field(default=".")
   model: str | None = None
+  request_id: str | None = None
 
 
-class ApprovalResponse(BaseModel):
-  """User approval decision for a pending tool operation."""
-
-  type: Literal["approval"] = "approval"
-  id: str
-  approved: bool
-  modified_args: dict[str, Any] | None = None
-
-
-InboundMessage = ChatRequest | ApprovalResponse
+InboundMessage = ChatRequest
 
 
 # --------------------------------------------------------------------------- #
@@ -156,9 +157,6 @@ def parse_inbound_line(line: str) -> InboundMessage | None:
 
   if msg_type == "chat":
     return ChatRequest.model_validate(data)
-
-  if msg_type == "approval":
-    return ApprovalResponse.model_validate(data)
 
   raise ValueError(f"Unknown inbound message type: {msg_type}")
 

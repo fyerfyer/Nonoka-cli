@@ -91,6 +91,13 @@ class Orchestrator:
     if not self._initialized:
       raise OrchestratorError("Orchestrator not initialized. Call initialize() first.")
 
+  async def _touch_session(self) -> None:
+    """Best-effort update of the current session's last-active timestamp."""
+    try:
+      await self._session_service.touch()
+    except Exception as touch_exc:
+      logger.warning("session_touch_failed", error=str(touch_exc))
+
   async def initialize(self, config_path: Path | str | None = None) -> None:
     """Load config, start MCP, build agent, create runner, and register session."""
     if self._config is None:
@@ -216,10 +223,7 @@ class Orchestrator:
       ):
         yield event
     finally:
-      try:
-        await self._session_service.touch()
-      except Exception as touch_exc:
-        logger.warning("session_touch_failed", error=str(touch_exc))
+      await self._touch_session()
 
   async def resume_approval(
     self,
@@ -256,16 +260,14 @@ class Orchestrator:
       ):
         yield event
     finally:
-      try:
-        await self._session_service.touch()
-      except Exception as touch_exc:
-        logger.warning("session_touch_failed", error=str(touch_exc))
+      await self._touch_session()
 
   async def execute_with_external_tools(
     self,
     prompt: str,
     tools: list[Capability],
     working_dir: Path | None = None,
+    host_system_prompt: str | None = None,
   ) -> AsyncIterator[StreamEvent]:
     """Execute *prompt* using only externally-supplied tools.
 
@@ -276,7 +278,11 @@ class Orchestrator:
     if self._agent_factory is None or self._runner_service is None:
       raise OrchestratorError("Orchestrator not fully initialized.")
 
-    agent = self._agent_factory.build_with_external_tools(tools)
+    agent = self._agent_factory.build_with_external_tools(
+      tools,
+      cwd=working_dir or Path.cwd(),
+      host_system_prompt=host_system_prompt,
+    )
 
     logger.info(
       "executing_with_external_tools",
@@ -299,10 +305,7 @@ class Orchestrator:
       ):
         yield event
     finally:
-      try:
-        await self._session_service.touch()
-      except Exception as touch_exc:
-        logger.warning("session_touch_failed", error=str(touch_exc))
+      await self._touch_session()
 
   async def resume_external_tools(
     self,
@@ -310,6 +313,7 @@ class Orchestrator:
     results: dict[str, Any],
     tools: list[Capability],
     working_dir: Path | None = None,
+    host_system_prompt: str | None = None,
   ) -> AsyncIterator[StreamEvent]:
     """Resume a session paused for external tool execution.
 
@@ -321,7 +325,11 @@ class Orchestrator:
     if self._agent_factory is None or self._runner_service is None:
       raise OrchestratorError("Orchestrator not fully initialized.")
 
-    agent = self._agent_factory.build_with_external_tools(tools)
+    agent = self._agent_factory.build_with_external_tools(
+      tools,
+      cwd=working_dir or Path.cwd(),
+      host_system_prompt=host_system_prompt,
+    )
 
     logger.info(
       "resuming_external_tools",
@@ -344,10 +352,7 @@ class Orchestrator:
       ):
         yield event
     finally:
-      try:
-        await self._session_service.touch()
-      except Exception as touch_exc:
-        logger.warning("session_touch_failed", error=str(touch_exc))
+      await self._touch_session()
 
   async def new_session(self, name: str | None = None) -> str:
     """Create a new session and return its id."""

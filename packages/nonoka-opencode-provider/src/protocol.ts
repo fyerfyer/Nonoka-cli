@@ -12,10 +12,17 @@ export const NONOKA_MESSAGE_ROLES = {
 
 export type NonokaMessageRole = keyof typeof NONOKA_MESSAGE_ROLES;
 
+export interface NonokaChatToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 export interface NonokaChatMessage {
   role: NonokaMessageRole;
   content: string;
   tool_call_id?: string;
+  tool_calls?: NonokaChatToolCall[];
 }
 
 export interface ExternalToolDefinition {
@@ -39,6 +46,7 @@ export interface NonokaChatRequest {
   new_session?: boolean;
   cwd: string;
   model?: string;
+  request_id?: string;
 }
 
 export interface NonokaApprovalMessage {

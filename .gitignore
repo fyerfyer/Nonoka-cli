@@ -54,6 +54,11 @@ node_modules/
 dist/
 nonoka-cli-prev/
 
+# Local sandbox artifacts
+verdaccio.pid
+verdaccio.log
+verdaccio-storage/
+
 # Private planning documents
 DESIGN.md
 REFACTOR.md

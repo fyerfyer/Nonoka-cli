@@ -16,6 +16,7 @@ import {
   encodeChatRequest,
   type NonokaChatMessage,
   type NonokaChatRequest,
+  type NonokaChatToolCall,
 } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
 import fs from 'fs';
@@ -28,14 +29,27 @@ function providerLog(message: string) {
   }
 }
 
-function getSessionIdFile(cwd: string): string {
-  const hash = createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 16);
-  return path.join('/tmp', `nonoka-session-${hash}.id`);
+function generateId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
-function loadSessionId(cwd: string): string | undefined {
+function generateRequestId(): string {
+  return `req-${generateId()}`;
+}
+
+const TITLE_PROMPT_SENTINEL = 'Generate a title for this conversation';
+
+function cwdHash(cwd: string): string {
+  return createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 16);
+}
+
+export function getChatSessionIdFile(cwd: string): string {
+  return path.join('/tmp', `nonoka-chat-${cwdHash(cwd)}.id`);
+}
+
+export function loadChatSessionId(cwd: string): string | undefined {
   try {
-    const file = getSessionIdFile(cwd);
+    const file = getChatSessionIdFile(cwd);
     if (!existsSync(file)) return undefined;
     const id = readFileSync(file, 'utf-8').trim();
     return id || undefined;
@@ -44,9 +58,9 @@ function loadSessionId(cwd: string): string | undefined {
   }
 }
 
-function saveSessionId(cwd: string, sessionId: string | undefined): void {
+export function saveChatSessionId(cwd: string, sessionId: string | undefined): void {
   try {
-    const file = getSessionIdFile(cwd);
+    const file = getChatSessionIdFile(cwd);
     if (!sessionId) {
       return;
     }
@@ -54,6 +68,10 @@ function saveSessionId(cwd: string, sessionId: string | undefined): void {
   } catch {
     // ignore persistence errors
   }
+}
+
+function getServerStderrLogPath(cwd: string): string {
+  return path.join('/tmp', `nonoka-server-${cwdHash(cwd)}.log`);
 }
 
 export interface NonokaLanguageModelConfig {
@@ -76,7 +94,8 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
   private readonly config: NonokaLanguageModelConfig;
   private readonly settings: NonokaLanguageModelSettings;
-  private sessionId: string | undefined;
+  private chatSessionId: string | undefined;
+  private titleSessionId: string | undefined;
 
   constructor(
     modelId: string,
@@ -87,7 +106,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     this.provider = config.provider;
     this.config = config;
     this.settings = settings;
-    this.sessionId = settings.sessionId ?? loadSessionId(config.cwd);
+    this.chatSessionId = settings.sessionId ?? loadChatSessionId(config.cwd);
   }
 
   get supportedUrls(): Record<string, RegExp[]> {
@@ -151,17 +170,18 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   }> {
     const warnings: SharedV3Warning[] = [];
 
-    providerLog('doStream start');
+    const isTitle = this.isTitleGeneration(options);
+    providerLog(`doStream start isTitle=${isTitle}`);
     providerLog(`options.tools count=${options.tools?.length ?? 0} names=${JSON.stringify(options.tools?.map((t: any) => t.name))}`);
     const child = this.spawnServer();
     providerLog(`spawned child pid=${child.pid}`);
 
-    const request = this.buildChatRequest(options);
+    const request = this.buildChatRequest(options, isTitle);
     const requestLine = encodeChatRequest(request) + '\n';
     providerLog(`sending request: ${requestLine.trim()}`);
     await writeToStdin(child, requestLine);
 
-    const rawStream = this.createOutputStream(child, options.abortSignal);
+    const rawStream = this.createOutputStream(child, isTitle, options.abortSignal);
 
     // Wrap the raw stream so we can guarantee it closes as soon as the
     // server signals the turn is finished. OpenCode will not schedule the
@@ -213,31 +233,97 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     return { stream: controlledStream, warnings };
   }
 
-  private buildChatRequest(options: LanguageModelV3CallOptions): NonokaChatRequest {
-    const messages: NonokaChatMessage[] = [];
-    const newSession = this.isNewConversation(options);
+  private isTitleGeneration(options: LanguageModelV3CallOptions): boolean {
+    for (const message of options.prompt) {
+      if (message.role === NONOKA_MESSAGE_ROLES.user) {
+        const text = extractTextFromContent(message.content);
+        if (text.includes(TITLE_PROMPT_SENTINEL)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
-    if (newSession) {
-      this.sessionId = undefined;
+  private buildChatRequest(
+    options: LanguageModelV3CallOptions,
+    isTitle: boolean,
+  ): NonokaChatRequest {
+    const messages = this.convertPromptMessages(options.prompt, isTitle);
+
+    let sessionId: string | undefined;
+    let newSession = false;
+
+    if (isTitle) {
+      // Title generation never reads or writes the chat session.
+      this.titleSessionId = generateId();
+      sessionId = this.titleSessionId;
+      newSession = true;
+    } else {
+      newSession = this.isNewConversation(options);
+      if (newSession) {
+        this.chatSessionId = undefined;
+      }
+      sessionId = this.chatSessionId;
     }
 
-    for (const message of options.prompt) {
+    const tools = options.tools
+      ?.filter((tool): tool is { type: 'function'; name: string; description?: string; inputSchema: Record<string, unknown> } => tool.type === 'function')
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? '',
+        parameters: tool.inputSchema,
+      }));
+    providerLog(`buildChatRequest isTitle=${isTitle} tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
+    return {
+      type: NONOKA_INBOUND_TYPES.chat,
+      messages,
+      tools,
+      session_id: sessionId,
+      new_session: newSession,
+      cwd: this.config.cwd,
+      model: this.config.model,
+      request_id: generateRequestId(),
+    };
+  }
+
+  private convertPromptMessages(
+    prompt: LanguageModelV3CallOptions['prompt'],
+    isTitle: boolean,
+  ): NonokaChatMessage[] {
+    const messages: NonokaChatMessage[] = [];
+
+    for (const message of prompt) {
       switch (message.role) {
         case NONOKA_MESSAGE_ROLES.system: {
           messages.push({
             role: NONOKA_MESSAGE_ROLES.system,
-            content: message.content as string,
+            content: extractTextFromContent(message.content),
           });
           break;
         }
         case NONOKA_MESSAGE_ROLES.user: {
           const text = extractTextFromContent(message.content);
+          if (isTitle && messages.length > 0) {
+            const last = messages[messages.length - 1];
+            if (last && last.role === NONOKA_MESSAGE_ROLES.user) {
+              // OpenCode title generator sends two consecutive user messages.
+              // Merge them to satisfy strict chat templates.
+              last.content = `${last.content}\n\n${text}`;
+              break;
+            }
+          }
           messages.push({ role: NONOKA_MESSAGE_ROLES.user, content: text });
           break;
         }
         case NONOKA_MESSAGE_ROLES.assistant: {
           const text = extractTextFromContent(message.content);
-          messages.push({ role: NONOKA_MESSAGE_ROLES.assistant, content: text });
+          const toolCalls = extractToolCallsFromContent(message.content);
+          messages.push({
+            role: NONOKA_MESSAGE_ROLES.assistant,
+            content: text,
+            tool_calls: toolCalls,
+          });
           break;
         }
         case NONOKA_MESSAGE_ROLES.tool: {
@@ -280,23 +366,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       }
     }
 
-    const tools = options.tools
-      ?.filter((tool): tool is { type: 'function'; name: string; description?: string; inputSchema: Record<string, unknown> } => tool.type === 'function')
-      .map((tool) => ({
-        name: tool.name,
-        description: tool.description ?? '',
-        parameters: tool.inputSchema,
-      }));
-    providerLog(`buildChatRequest tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
-    return {
-      type: NONOKA_INBOUND_TYPES.chat,
-      messages,
-      tools,
-      session_id: this.sessionId,
-      new_session: newSession,
-      cwd: this.config.cwd,
-      model: this.config.model,
-    };
+    return messages;
   }
 
   private isNewConversation(options: LanguageModelV3CallOptions): boolean {
@@ -327,11 +397,22 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       ...this.config.env,
     };
 
-    return spawn(command, args, {
+    const child = spawn(command, args, {
       cwd: this.config.cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Redirect server stderr to a file so it does not leak into OpenCode's TUI.
+    const stderrLogPath = getServerStderrLogPath(this.config.cwd);
+    try {
+      const stderrStream = fs.createWriteStream(stderrLogPath, { flags: 'a' });
+      child.stderr.pipe(stderrStream);
+    } catch (err) {
+      providerLog(`failed to redirect stderr to ${stderrLogPath}: ${err}`);
+    }
+
+    return child;
   }
 
   private killChild(child: ChildProcessWithoutNullStreams): void {
@@ -342,6 +423,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
   private createOutputStream(
     child: ChildProcessWithoutNullStreams,
+    isTitle: boolean,
     abortSignal?: AbortSignal,
   ): ReadableStream<LanguageModelV3StreamPart> {
     let cleanupDone = false;
@@ -363,8 +445,13 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
     const transformer = createNonokaStreamTransformer({
       onSessionInit: (sessionId) => {
-        this.sessionId = sessionId;
-        saveSessionId(this.config.cwd, sessionId);
+        // Title sessions are ephemeral; never persist them as the chat session.
+        if (isTitle) {
+          this.titleSessionId = sessionId;
+          return;
+        }
+        this.chatSessionId = sessionId;
+        saveChatSessionId(this.config.cwd, sessionId);
       },
     });
 
@@ -377,17 +464,15 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       .pipeThrough(createLineSplitter())
       .pipeThrough(transformer);
 
-    // Propagate stderr to the parent process so diagnostics are visible.
-    child.stderr.on('data', (data: Buffer) => {
-      process.stderr.write(data);
-    });
-
     child.on('error', (err) => {
       cleanup();
       throw err;
     });
 
-    child.on('exit', () => {
+    child.on('exit', (code) => {
+      if (code && code !== 0) {
+        providerLog(`child exited with code ${code}`);
+      }
       cleanup();
     });
 
@@ -432,7 +517,7 @@ function createLineSplitter(): TransformStream<string, string> {
 }
 
 function extractTextFromContent(
-  content: string | Array<{ type: string; text?: string; toolName?: string; input?: unknown }>,
+  content: string | Array<{ type: string; text?: string; toolName?: string; input?: unknown; toolCallId?: string }>,
 ): string {
   if (typeof content === 'string') {
     return content;
@@ -446,6 +531,25 @@ function extractTextFromContent(
       return '';
     })
     .join('');
+}
+
+function extractToolCallsFromContent(
+  content: string | Array<{ type: string; text?: string; toolName?: string; input?: unknown; toolCallId?: string }>,
+): NonokaChatToolCall[] | undefined {
+  if (typeof content === 'string') {
+    return undefined;
+  }
+  const calls: NonokaChatToolCall[] = [];
+  for (const part of content) {
+    if (part.type === 'tool-call') {
+      calls.push({
+        id: part.toolCallId ?? generateId(),
+        name: part.toolName ?? '',
+        arguments: JSON.stringify(part.input ?? {}),
+      });
+    }
+  }
+  return calls.length > 0 ? calls : undefined;
 }
 
 function extractToolOutputText(output: { type: string; value?: unknown; reason?: string; text?: string }): string {
