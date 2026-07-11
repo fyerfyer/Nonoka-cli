@@ -169,7 +169,7 @@ A typical generated `opencode.json` looks like:
       "npm": "nonoka-opencode-provider",
       "name": "Nonoka",
       "options": {
-        "serverCommand": ["nonoka-cli", "--server"],
+        "serverCommand": ["bash", "-c", "nonoka-cli --server 2>/tmp/nonoka-server.log"],
         "cwd": ".",
         "configPath": "~/.config/nonoka/config.yaml"
       },
@@ -219,15 +219,61 @@ If you prefer auto-approval, change the permissions in `opencode.json` or set
 `cli.auto_approve: true` / `hitl.policy: auto` in `nonoka.yaml` for Nonoka's
 standalone mode.
 
+## External-tools mode
+
+When nonoka-cli runs inside OpenCode, it operates in **external-tools mode** by
+default. OpenCode sends its native tool list (e.g. `bash`, `read`, `write`,
+`edit`, `todowrite`) to the provider; nonoka-cli registers them as
+`ExternalCapability` objects and lets OpenCode execute them. This means:
+
+- OpenCode owns tool execution, HITL approval, and TUI rendering.
+- nonoka owns decision-making: which tool to call, when, and with what arguments.
+- Tool results are returned by OpenCode and resumed via
+  `Runner.resume_external_tools()`.
+
+To start external-tools mode, run OpenCode with the generated `opencode.json`;
+the provider spawns `nonoka-cli --server` automatically.
+
+## MCP and Skill support
+
+nonoka-cli can merge MCP tools and lazy-loaded skills alongside OpenCode's
+native tools. Configure them in `~/.config/nonoka/config.yaml`:
+
+```yaml
+model: deepseek-chat
+
+mcp_servers:
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+
+skills:
+  - code-review
+  - nextjs-best-practices
+```
+
+- **MCP tools** are executed locally by nonoka-cli and are exposed with a
+  `mcp__<server>__<tool>` namespace prefix so they do not collide with OpenCode
+  native tools.
+- **Skills** use nonoka-agent's lazy `SkillRegistry`. Only names and
+  descriptions are injected into the system prompt; full guidance is loaded
+  on-demand via the `load_skill` tool. Skill tools are prefixed with
+  `skill__<skill>__<tool>` in external-tools mode.
+
+Both MCP tools and skill tools remain available in standalone mode without any
+prefixing.
+
 ## Known limitations
 
 These are current behaviors observed with OpenCode CLI 1.17.13. They are tracked
 here because they affect the TUI/HITL experience but cannot be fixed inside
 `nonoka-cli` or `nonoka-opencode-provider`.
 
-- [ ] **External directory rejection crashes OpenCode**: if the model tries to
-  access a path outside the workspace (for example `/Users/admin/workspace` or
-  `~/Projects/`) and you select **Reject**, OpenCode exits. Workaround: keep
+- [x] **External directory rejection crashes OpenCode**: the adapter now injects
+  the current working directory into the system prompt and instructs the model
+  to use paths relative to it, so requests outside the workspace are rare. If
+  one still occurs and you select **Reject**, OpenCode may still exit. Keep
   requests scoped to the current working directory, or approve if the path is
   safe.
 - [ ] **`write` is auto-approved inside the workspace**: even with `"*": "ask"`
@@ -242,6 +288,34 @@ here because they affect the TUI/HITL experience but cannot be fixed inside
 - [ ] **Model may skip tools for ambiguous requests**: the adapter prompt
   mitigates this, but a vague request can still cause the model to answer
   directly instead of calling `read`/`edit`. Make file/tool requests explicit.
+
+## Server logs and request traces
+
+When running inside OpenCode, the provider spawns `nonoka-cli --server` as a
+long-lived NDJSON bridge. Server stderr is redirected by the provider to a
+per-working-directory log file so it does not pollute OpenCode's TUI:
+
+```text
+/tmp/nonoka-server-<cwd-hash>.log
+```
+
+In addition, `nonoka-cli --server` writes a structured NDJSON trace of every
+request and stream event for debugging:
+
+```text
+/tmp/nonoka-trace/trace-YYYYMMDD.jsonl
+```
+
+You can override the trace directory with the `NONOKA_TRACE_DIR` environment
+variable.
+
+### Debug environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `NONOKA_DEBUG=1` | Emit `debug` NDJSON events from the bridge for every request and stream transition. |
+| `NONOKA_TRACE_DIR=/path` | Directory for NDJSON request/event traces (default: `/tmp/nonoka-trace`). |
+| `NONOKA_SERVER_LOG=/path` | Override the server stderr log path when running the bridge manually. |
 
 ## Development
 
@@ -264,12 +338,18 @@ src/nonoka_cli/
 ├── bridge/          # NDJSON protocol, request handler, server
 ├── commands/        # CLI subcommands (config, doctor, opencode)
 ├── config/          # YAML config loading and Pydantic models
-├── core/            # Orchestrator, RunnerService, SessionService, ToolService, MCPService
-├── mcp/             # MCP server lifecycle manager
+├── core/            # Orchestrator, RunnerService, SessionService, ToolService,
+│                    # MCPService, AgentFactory, prompt/context/task-state/output pruning
+│                    #   agent_factory.py      # Build nonoka Agent from CLI config
+│                    #   prompt_builder.py     # System prompt assembly for OpenCode mode
+│                    #   context_trimmer.py    # Turn-based context window trimming
+│                    #   task_state.py         # Local TODO state mirror
+│                    #   tool_output_policy.py # Tool output pruning / spill policy
+├── mcp/             # MCP server lifecycle manager (thin wrapper around nonoka-agent)
 ├── sessions/        # Session metadata persistence
-├── skills/          # Skill loading and application
+├── skills/          # Skill loading shim (delegates to nonoka-agent SkillRegistry)
 ├── tools/           # Built-in and local tool loader
-└── utils/           # Errors, logging
+└── utils/           # Errors, logging, trace logger
 
 packages/nonoka-opencode-provider/  # TypeScript provider for OpenCode
 install.sh                          # One-line installer
