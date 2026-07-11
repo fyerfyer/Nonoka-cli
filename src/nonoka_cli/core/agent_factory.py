@@ -1,19 +1,18 @@
-"""Agent factory — builds nonoka Agent from CLI configuration."""
+"""Agent factory — builds nonoka Agent instances from CLI configuration."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
-from nonoka import Agent, AgentBuilder
+from nonoka import Agent, AgentBuilder, ExternalCapability, SkillRegistry, load_skill
 from nonoka.core.context import RunContext
 from nonoka.core.types import Capability
 
 from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.core.prompt_builder import SystemPromptBuilder
 from nonoka_cli.mcp.manager import MCPManager
-from nonoka_cli.skills.manager import SkillManager
 from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import AgentBuildError
 
@@ -53,38 +52,17 @@ Guidelines:
 You operate in the user's current working directory.
 """
 
-_OPENCODE_HOSTED_SYSTEM_PROMPT = """\
-You are an autonomous coding assistant running inside OpenCode.
-Use only the tools provided by OpenCode to complete tasks.
-OpenCode handles all tool execution and any required approvals.
-
-MANDATORY TODO WORKFLOW for multi-step tasks:
-1. FIRST, call the `todowrite` tool to create the complete todo list. Mark the
-   first step as `in_progress` and the rest as `pending`.
-2. BEFORE starting any step, call `todowrite` to mark that step as
-   `in_progress` and any previously completed steps as `completed`.
-3. AFTER a step finishes successfully, call `todowrite` to mark it as
-   `completed` and the next step as `in_progress`.
-4. If a step fails or is skipped, call `todowrite` to mark it as `cancelled`.
-5. At the end, call `todowrite` with every item marked `completed`.
-
-Do not skip these updates. The user sees progress through the OpenCode TODO
-UI, so you must keep the list accurate at every transition.
-
-Use these statuses exactly:
-- `pending` for steps not yet started.
-- `in_progress` for the step currently being worked on.
-- `completed` for steps that finished successfully.
-- `cancelled` for steps that failed or were skipped.
-
-Guidelines:
-- Prefer reading files before editing them.
-- Run build/test commands when available and report the result.
-- If a command fails, analyze the output and try to fix the issue.
-- Keep responses concise but thorough.
-
-You operate in the user's current working directory.
-"""
+_OPENCODE_HOSTED_SYSTEM_PROMPT = (
+  "You are nonoka-cli, an autonomous coding assistant running inside OpenCode.\n"
+  "Use only the tools provided by OpenCode to complete tasks.\n"
+  "OpenCode handles all tool execution and any required approvals.\n\n"
+  "Guidelines:\n"
+  "- Prefer reading files before editing them.\n"
+  "- Run build/test commands when available and report the result.\n"
+  "- If a command fails, analyze the output and try to fix the issue.\n"
+  "- Keep responses concise but thorough.\n\n"
+  "You operate in the user's current working directory.\n"
+)
 
 
 class AgentFactory:
@@ -94,7 +72,7 @@ class AgentFactory:
   - Built-in tools (always available)
   - Local tool directories (via ``ToolLoader``)
   - MCP servers (via ``MCPManager``)
-  - Skills (via ``SkillManager``)
+  - Skills (via nonoka-agent ``SkillRegistry`` + ``load_skill``)
   """
 
   def __init__(
@@ -102,19 +80,20 @@ class AgentFactory:
     config: CLIConfig,
     mcp_manager: MCPManager | None = None,
     tool_loader: ToolLoader | None = None,
-    skill_manager: SkillManager | None = None,
+    skill_registry: SkillRegistry | None = None,
   ):
     """Args:
       config: Validated CLI configuration.
       mcp_manager: Optional MCP manager whose discovered tools are registered
         with the Agent.
       tool_loader: Optional tool loader for local / built-in tools.
-      skill_manager: Optional skill manager for applying configured skills.
+      skill_registry: Optional pre-built skill registry. If omitted, the
+        factory constructs one from ``config.skills`` at build time.
     """
     self._config = config
     self._mcp_manager = mcp_manager
     self._tool_loader = tool_loader
-    self._skill_manager = skill_manager
+    self._skill_registry = skill_registry
     self._agent: Agent | None = None
 
   @property
@@ -128,9 +107,9 @@ class AgentFactory:
     return self._tool_loader
 
   @property
-  def skill_manager(self) -> SkillManager | None:
-    """Current skill manager, if any."""
-    return self._skill_manager
+  def skill_registry(self) -> SkillRegistry | None:
+    """Current skill registry, if any."""
+    return self._skill_registry
 
   def build(self) -> Agent:
     """Build (or rebuild) an Agent from the current configuration.
@@ -169,22 +148,23 @@ class AgentFactory:
       builder = builder.tool_registry(registry)
       logger.debug("agent_factory_local_tools", count=len(registry))
 
+    # Lazy-load skill registry: only names/descriptions are injected eagerly;
+    # full guidance is loaded on-demand via the ``load_skill`` tool.
+    skill_registry = self._skill_registry_for_build()
+    if skill_registry is not None:
+      builder = builder.skill_manager(skill_registry).tool(load_skill)
+      logger.debug(
+        "agent_factory_skills",
+        enabled=self._config.skills,
+      )
+
     # MCP tools are individual Capabilities managed by MCPManager.
     if self._mcp_manager is not None:
       mcp_tools = self._mcp_manager.get_tools()
       if mcp_tools:
-        builder = builder.tools(*mcp_tools)
+        for _, capability in mcp_tools:
+          builder = builder.tool(capability)
         logger.debug("agent_factory_mcp_tools", count=len(mcp_tools))
-
-    # Apply configured skills declaratively through the builder.
-    if self._skill_manager is not None and self._config.skills:
-      skills = self._skill_manager.load_all(self._config.skills)
-      if skills:
-        builder = builder.skills(*skills)
-        logger.info(
-          "skills_applied",
-          skills=self._config.skills,
-        )
 
     self._agent = builder.build()
     return self._agent
@@ -207,12 +187,13 @@ class AgentFactory:
     cwd: str | Path | None = None,
     host_system_prompt: str | None = None,
   ) -> Agent:
-    """Build a temporary Agent that uses only externally-supplied tools.
+    """Build an Agent for OpenCode-hosted mode.
 
-    This is used when nonoka-cli is hosted inside OpenCode: OpenCode sends
-    its native tool definitions, nonoka registers them as opaque capabilities,
-    and OpenCode executes the actual tool calls. Local tools, MCP tools, and
-    skills are intentionally excluded.
+    OpenCode sends its native tool definitions; nonoka registers them as
+    opaque external capabilities and OpenCode executes the actual tool calls.
+    Configured skills and MCP servers are merged in with namespace prefixes
+    (``skill__<skill>__<tool>`` and ``mcp__<server>__<tool>``) so they remain
+    available without colliding with OpenCode native tools.
 
     Args:
       tools: Tool definitions supplied by the OpenCode host.
@@ -224,15 +205,61 @@ class AgentFactory:
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
-    system_prompt = self._build_external_system_prompt(
-      base=self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT,
+    base = self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT
+
+    external_caps: list[Capability] = []
+    for t in tools:
+      if isinstance(t, Capability):
+        external_caps.append(t)
+      else:
+        external_caps.append(
+          self.create_external_tool_capability(
+            name=t.name,
+            description=t.description,
+            parameters=t.parameters,
+          )
+        )
+
+    native_tool_names = [c.name for c in external_caps]
+
+    skill_registry = self._skill_registry_for_build(cwd)
+
+    # MCP tools are prefixed with the server name to avoid collisions.
+    mcp_tools: list[tuple[str, Capability]] = []
+    mcp_tool_names: list[str] = []
+    if self._mcp_manager is not None:
+      mcp_tools = self._mcp_manager.get_tools()
+      mcp_tool_names = [
+        _sanitize_tool_name(f"mcp__{server}__{cap.name}")
+        for server, cap in mcp_tools
+      ]
+
+    # Skill tools are prefixed with the skill name.
+    skill_tool_names: list[str] = []
+    if skill_registry is not None:
+      for info in skill_registry.enabled:
+        skill = skill_registry.get_skill(info.name)
+        if skill is None:
+          continue
+        prefix = f"skill__{skill.name}__"
+        for tool in skill.tools:
+          skill_tool_names.append(_sanitize_tool_name(f"{prefix}{tool.name}"))
+
+    system_prompt = SystemPromptBuilder(
+      base=base,
+      model=self._config.model,
       cwd=cwd,
-    )
+      native_tools=native_tool_names,
+      mcp_tools=mcp_tool_names,
+      skill_tools=skill_tool_names,
+    ).build()
 
     logger.info(
       "building_agent_with_external_tools",
       model=self._config.model,
-      tool_count=len(tools),
+      native_tool_count=len(native_tool_names),
+      mcp_tool_count=len(mcp_tool_names),
+      skill_tool_count=len(skill_tool_names),
       system_prompt_length=len(system_prompt),
       cwd=str(cwd) if cwd else None,
     )
@@ -242,36 +269,47 @@ class AgentFactory:
       .model(self._config.model)
       .system_prompt(system_prompt)
       .max_turns(20)
-      .tools(*tools)
     )
+
+    # Register lazy-load skills with prefixed tool names so they cannot clash
+    # with OpenCode native tools.
+    if skill_registry is not None:
+      builder = builder.skill_manager(_PrefixedSkillRegistry(skill_registry)).tool(load_skill)
+
+    # OpenCode native tools are external capabilities.
+    for cap in external_caps:
+      builder = builder.tool(cap)
+
+    # MCP tools are executed locally by nonoka-cli.
+    for server, cap in mcp_tools:
+      builder = builder.tool(_PrefixedCapability(cap, f"mcp__{server}__"))
 
     return builder.build()
 
-  def _build_external_system_prompt(
+  def _skill_registry_for_build(
     self,
-    base: str,
-    cwd: str | Path | None,
-  ) -> str:
-    """Assemble the system prompt for the OpenCode-hosted agent."""
-    model = self._config.model.strip()
+    cwd: str | Path | None = None,
+  ) -> SkillRegistry | None:
+    """Return a SkillRegistry for the current config and optional cwd."""
+    if not self._config.skills:
+      return None
 
-    # Inject model identity once.
-    identity_line = f"Your current model is: {model}."
-    if identity_line not in base:
-      base = base.rstrip() + f"\n\n{identity_line}"
+    # If no cwd is supplied and a registry was injected, reuse it.
+    if cwd is None and self._skill_registry is not None:
+      return self._skill_registry
 
-    # Inject cwd and path guidance when a cwd is provided.
+    search_paths: list[Path] = []
     if cwd is not None:
-      cwd_str = str(Path(cwd).resolve())
-      cwd_block = (
-        f"\n\nCurrent working directory: {cwd_str}\n"
-        "All file paths must be relative to this directory or use the absolute path above.\n"
-        "Prefer write_file/edit_file over bash/execute_command for file mutations."
-      )
-      if "Current working directory:" not in base:
-        base = base.rstrip() + cwd_block
+      cwd_path = Path(cwd).expanduser().resolve()
+      search_paths.extend([
+        cwd_path / ".nonoka" / "skills",
+        cwd_path / "skills",
+      ])
 
-    return base
+    return SkillRegistry(
+      enabled=list(self._config.skills),
+      search_paths=search_paths,
+    )
 
   @staticmethod
   def create_external_tool_capability(
@@ -285,7 +323,7 @@ class AgentFactory:
     ``invoke`` method must never be called: execution is delegated to OpenCode
     via the ``external=True`` marker.
     """
-    return _ExternalCapability(
+    return ExternalCapability(
       name=name,
       description=description,
       parameters=parameters,
@@ -303,9 +341,17 @@ class AgentFactory:
 
     # MCP tools
     if self._mcp_manager is not None:
-      mcp_tools = self._mcp_manager.get_tools()
-      tools.extend(mcp_tools)
-      logger.debug("agent_factory_mcp_tools", count=len(mcp_tools))
+      for _, cap in self._mcp_manager.get_tools():
+        tools.append(cap)
+      logger.debug("agent_factory_mcp_tools", count=len(self._mcp_manager.get_tools()))
+
+    # Skill tools (raw names; used only for introspection such as /tool list).
+    skill_registry = self._skill_registry_for_build()
+    if skill_registry is not None:
+      for info in skill_registry.enabled:
+        skill = skill_registry.get_skill(info.name)
+        if skill is not None:
+          tools.extend(skill.tools)
 
     return tools
 
@@ -346,32 +392,91 @@ class AgentFactory:
     return self._agent
 
 
-@dataclass
-class _ExternalCapability:
-  """A capability whose execution is delegated to an external host.
+def _sanitize_tool_name(name: str) -> str:
+  """Return a provider-safe tool name.
 
-  Implements the ``nonoka.core.types.Capability`` protocol enough for the
-  nonoka Agent to register the tool schema and emit a tool call. The
-  ``external=True`` marker tells ``ReActAgent`` to pause and let the host
-  execute the tool instead of calling ``invoke``.
+  OpenAI function names must match ``^[a-zA-Z0-9_-]+$``. We replace namespace
+  separators (``:``) with ``__`` and replace any remaining invalid characters
+  with underscores. Double underscores are preserved as the namespace marker.
+  """
+  import re
+
+  sanitized = name.replace(":", "__")
+  sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", sanitized)
+  # Avoid leading/trailing underscores.
+  return sanitized.strip("_")
+
+
+class _PrefixedCapability:
+  """Wraps a capability with a namespace prefix to avoid name collisions.
+
+  This is used for MCP tools (``mcp__<server>__<tool>``) and skill tools
+  (``skill__<skill>__<tool>``) when they are exposed alongside OpenCode's
+  native tools in external-tools mode.
   """
 
-  name: str
-  description: str
-  parameters: dict[str, Any]
-  external: bool = field(default=True, init=False)
+  def __init__(self, wrapped: Capability, prefix: str):
+    self._wrapped = wrapped
+    self.name = _sanitize_tool_name(f"{prefix}{wrapped.name}")
+    self.description = getattr(wrapped, "description", "")
+    self.parameters = getattr(wrapped, "parameters", {})
+    self.external = getattr(wrapped, "external", False)
 
   async def invoke(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
-    raise RuntimeError(
-      f"External tool '{self.name}' must be executed by the host, not nonoka."
-    )
+    return await self._wrapped.invoke(ctx, arguments)
 
   def to_json_schema(self) -> dict[str, Any]:
-    return {
-      "type": "function",
-      "function": {
-        "name": self.name,
-        "description": self.description,
-        "parameters": self.parameters,
-      },
-    }
+    schema = self._wrapped.to_json_schema()
+    if not isinstance(schema, dict):
+      schema = {}
+    if (
+      schema.get("type") == "function"
+      and isinstance(schema.get("function"), dict)
+    ):
+      schema["function"]["name"] = self.name
+    return schema
+
+  def __getattr__(self, name: str) -> Any:
+    """Forward any unknown attributes to the wrapped capability."""
+    return getattr(self._wrapped, name)
+
+
+class _PrefixedSkillRegistry(SkillRegistry):
+  """SkillRegistry that exposes skill tools with namespace prefixes.
+
+  This lets the lazy skill expansion in nonoka-agent register prefixed skill
+  tools (``skill__<skill>__<tool>``) instead of raw names, preventing name
+  collisions with OpenCode native tools.
+  """
+
+  def __init__(self, inner: SkillRegistry):
+    self._inner = inner
+
+  def discover(self) -> dict[str, Any]:
+    return self._inner.discover()
+
+  @property
+  def available(self) -> list[Any]:
+    return self._inner.available
+
+  @property
+  def enabled(self) -> list[Any]:
+    return self._inner.enabled
+
+  def get_skill(self, name: str) -> Any | None:
+    return self._inner.get_skill(name)
+
+  def get_tools(self) -> list[Capability]:
+    """Return tools from enabled skills with a per-skill namespace prefix."""
+    tools: list[Capability] = []
+    for info in self.enabled:
+      skill = self.get_skill(info.name)
+      if skill is None:
+        continue
+      prefix = f"skill__{skill.name}__"
+      for tool in skill.tools:
+        tools.append(_PrefixedCapability(tool, prefix))
+    return tools
+
+  def build_registry_block(self) -> str:
+    return self._inner.build_registry_block()

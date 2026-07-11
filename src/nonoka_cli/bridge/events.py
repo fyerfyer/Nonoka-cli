@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from nonoka.core.runner import StreamEvent
@@ -18,11 +20,15 @@ from nonoka_cli.bridge.protocol import (
   ToolResultEvent,
 )
 
+_TIMELINE_PATH = Path(
+  os.environ.get("NONOKA_TIMELINE_PATH") or "/tmp/nonoka-tui-timeline.ndjson"
+)
+
 
 def _timeline_log(event: StreamEvent, messages: list[OutboundMessage]) -> None:
   """Append a structured event to the shared TUI timeline log."""
   try:
-    with open("/tmp/nonoka-tui-timeline.ndjson", "a", encoding="utf-8") as f:
+    with open(_TIMELINE_PATH, "a", encoding="utf-8") as f:
       for msg in messages:
         record: dict[str, Any] = {
           "ts": datetime.now(timezone.utc).isoformat(),

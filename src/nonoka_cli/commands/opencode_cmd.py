@@ -46,16 +46,18 @@ _DEFAULT_OPENCODE_CONFIG = {
   },
 }
 
-_OPENCODE_PROMPT_GUIDELINES = """
-
-OpenCode-specific guidelines:
-- You are running inside OpenCode. Use only the tools provided by OpenCode.
-- Tool names available in this environment include bash, read, write, and edit.
-- Do not explore directories or read files unless the user explicitly requests it.
-- When writing or editing files, use absolute paths under the current working directory unless the user provides a different path.
-- Prefer reading a file before editing it when you need context.
-- Every tool call requires user approval in this environment, so choose the simplest and most direct way to satisfy the request.
-"""
+_OPENCODE_PROMPT_GUIDELINES = (
+  "\n"
+  "OpenCode-specific guidelines:\n"
+  "- You are running inside OpenCode. Use only the tools provided by OpenCode.\n"
+  "- Tool names available in this environment include bash, read, write, and edit.\n"
+  "- Do not explore directories or read files unless the user explicitly requests it.\n"
+  "- When writing or editing files, use absolute paths under the current working directory "
+  "unless the user provides a different path.\n"
+  "- Prefer reading a file before editing it when you need context.\n"
+  "- Every tool call requires user approval in this environment, so choose the simplest "
+  "and most direct way to satisfy the request.\n"
+)
 
 
 def _build_opencode_agent_prompt(system_prompt: str) -> str:
@@ -123,9 +125,15 @@ def cmd_init(args: argparse.Namespace) -> int:
       "default": {"name": f"Nonoka {config.model}"}
     }
   if args.config:
-    provider_block["options"]["configPath"] = str(Path(args.config).expanduser().resolve())
+    config_path = str(Path(args.config).expanduser().resolve())
   else:
-    provider_block["options"]["configPath"] = str(ConfigLoader.DEFAULT_PATH)
+    config_path = str(ConfigLoader.DEFAULT_PATH)
+  provider_block["options"]["configPath"] = config_path
+  provider_block["options"]["serverCommand"] = [
+    "bash",
+    "-c",
+    f"nonoka-cli --server --config {config_path} 2>/tmp/nonoka-server.log",
+  ]
 
   merged.setdefault("provider", {})
   merged["provider"]["nonoka"] = provider_block

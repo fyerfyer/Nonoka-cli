@@ -10,6 +10,7 @@ import pytest
 
 from nonoka_cli.bridge.handler import ChatRequestHandler
 from nonoka_cli.bridge.protocol import ChatMessage, ChatRequest, ExternalToolDefinition, ToolCall
+from nonoka_cli.core.task_state import TaskStateService
 
 
 @pytest.fixture
@@ -196,3 +197,43 @@ def test_extract_tool_results_accepts_all_when_no_pending_ids():
 async def async_empty() -> AsyncIterator[None]:
   if False:
     yield None
+
+
+async def test_sync_task_state_from_todowrite(tmp_path):
+  sent = []
+  handler = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
+  handler._session_id = "sess-1"
+  handler._orchestrator = MagicMock()
+  handler._orchestrator.session_id = "sess-1"
+  handler._task_state_service = TaskStateService(
+    tasks_dir=".nonoka/tasks",
+    base_dir=tmp_path,
+  )
+
+  from nonoka.core.runner import StreamEvent
+  event = StreamEvent(
+    type="tool_call_start",
+    data={
+      "tool_calls": [
+        {
+          "id": "call_todo",
+          "function": {
+            "name": "todowrite",
+            "arguments": json.dumps({
+              "todos": [
+                {"id": "1", "content": "step 1", "status": "completed"},
+                {"id": "2", "content": "step 2", "status": "in_progress"},
+              ]
+            }),
+          },
+        }
+      ]
+    },
+  )
+  handler._sync_task_state(event)
+
+  state = handler._task_state_service.load("sess-1")
+  assert state is not None
+  assert len(state.steps) == 2
+  assert state.steps[0].status == "completed"
+  assert state.steps[1].status == "in_progress"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,9 @@ from nonoka.core.runner import StreamEvent
 
 from nonoka_cli.bridge.events import translate_stream_event
 from nonoka_cli.bridge.protocol import (
+  ChatMessage,
   ChatRequest,
+  DebugEvent,
   ErrorEvent,
   FinishEvent,
   OutboundMessage,
@@ -21,6 +24,7 @@ from nonoka_cli.bridge.protocol import (
 )
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.orchestrator import Orchestrator
+from nonoka_cli.core.task_state import TaskStateService
 from nonoka_cli.utils.errors import SessionNotFoundError
 from nonoka_cli.utils.trace_logger import TraceLogger
 
@@ -55,10 +59,29 @@ class ChatRequestHandler:
     self._session_id: str | None = None
     self._session_init_sent = False
     self._working_dir: Path = Path.cwd()
+    self._task_state_service: TaskStateService | None = None
+    self._debug_enabled = os.environ.get("NONOKA_DEBUG", "").lower() in {"1", "true", "yes"}
 
   async def send(self, msg: OutboundMessage) -> None:
     """Send a single outbound message."""
     await self._send(msg)
+
+  async def _emit_debug(
+    self,
+    message: str,
+    payload: dict[str, Any] | None = None,
+    level: str = "info",
+  ) -> None:
+    """Emit a debug event when NONOKA_DEBUG is enabled."""
+    if not self._debug_enabled:
+      return
+    await self._send(
+      DebugEvent(
+        level=level,  # type: ignore[arg-type]
+        message=message,
+        payload=payload,
+      )
+    )
 
   @property
   def orchestrator(self) -> Orchestrator | None:
@@ -102,6 +125,17 @@ class ChatRequestHandler:
       tools=[t.name for t in (msg.tools or [])],
     )
 
+    await self._emit_debug(
+      "chat_request_received",
+      payload={
+        "session_id": self._session_id,
+        "working_dir": str(self._working_dir),
+        "message_count": len(msg.messages),
+        "roles": [m.role for m in msg.messages],
+        "tool_names": [t.name for t in (msg.tools or [])],
+      },
+    )
+
     # When OpenCode forwards its native tool definitions, use the external-tool
     # path so OpenCode can execute the tools and handle HITL itself.
     external_tools = self._build_external_tools(msg)
@@ -110,6 +144,16 @@ class ChatRequestHandler:
 
     if external_tools:
       if tool_results:
+        # Resume after external tool execution: do not re-inject old user or
+        # assistant messages. The checkpoint already contains the pending
+        # assistant tool_calls; we only need the fresh tool results.
+        sanitized = self._sanitize_messages_for_resume(msg)
+        logger.debug(
+          "resuming_external_tools",
+          original_messages=len(msg.messages),
+          sanitized_messages=len(sanitized),
+          roles=[m.role for m in sanitized],
+        )
         stream = self._orchestrator.resume_external_tools(
           session_id=self._session_id or self._orchestrator.session_id,
           results=tool_results,
@@ -144,6 +188,16 @@ class ChatRequestHandler:
           return
         stream = self._orchestrator.execute(prompt, working_dir=self._working_dir)
 
+    await self._emit_debug(
+      "stream_prepared",
+      payload={
+        "mode": "external_tools" if external_tools else "local",
+        "is_resume": bool(tool_results),
+        "has_approvals": bool(self._extract_approvals(msg)) if not external_tools else False,
+        "session_id": self._session_id,
+      },
+    )
+
     await self._consume_stream(stream, trace_logger)
 
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
@@ -155,6 +209,12 @@ class ChatRequestHandler:
 
     self._orchestrator = Orchestrator()
     await self._orchestrator.initialize(config_path=self._config_path)
+
+    self._task_state_service = TaskStateService(
+      tasks_dir=self._orchestrator.config.task_state.tasks_dir,
+      enabled=self._orchestrator.config.task_state.enabled,
+      base_dir=self._working_dir,
+    )
     if self._model:
       await self._orchestrator.switch_model(self._model)
     elif msg.model:
@@ -271,6 +331,18 @@ class ChatRequestHandler:
     return None
 
   @staticmethod
+  def _sanitize_messages_for_resume(msg: ChatRequest) -> list[ChatMessage]:
+    """Drop non-tool messages when resuming after external tool execution.
+
+    The nonoka checkpoint already stores the assistant message that emitted the
+    pending tool_calls and any earlier history. Re-injecting user/assistant
+    messages from the provider would duplicate context and can reorder the
+    conversation. We keep only role='tool' messages (the fresh results) plus the
+    host system prompt if it was forwarded.
+    """
+    return [m for m in msg.messages if m.role == "tool"]
+
+  @staticmethod
   def _extract_tool_results(msg: ChatRequest) -> dict[str, Any] | None:
     """Parse plain tool results from incoming role='tool' messages.
 
@@ -320,12 +392,46 @@ class ChatRequestHandler:
             event_type=event.type,
             data=self._summarize_stream_event(event),
           )
+        self._sync_task_state(event)
         for outbound in translate_stream_event(event):
           await self._send(outbound)
     except Exception as exc:
       logger.error("stream_consumption_failed", error=str(exc))
       await self._send(ErrorEvent(message=f"Stream failed: {exc}"))
       await self._send(FinishEvent(finish_reason="error"))
+
+  def _sync_task_state(self, event: StreamEvent) -> None:
+    """Mirror ``todowrite`` calls into the local task-state file."""
+    if (
+      self._task_state_service is None
+      or not self._task_state_service.enabled
+      or event.type != "tool_call_start"
+    ):
+      return
+
+    for tc in event.data.get("tool_calls") or []:
+      func = tc.get("function", {})
+      if func.get("name") != "todowrite":
+        continue
+      args = func.get("arguments", "{}")
+      if isinstance(args, str):
+        try:
+          args = json.loads(args)
+        except json.JSONDecodeError:
+          continue
+      if not isinstance(args, dict):
+        continue
+      todos = args.get("todos")
+      if not isinstance(todos, list):
+        continue
+      if self._orchestrator is not None:
+        session_id = self._session_id or self._orchestrator.session_id
+      else:
+        session_id = self._session_id or "unknown"
+      self._task_state_service.sync_from_todowrite(
+        session_id=session_id,
+        todos=todos,
+      )
 
   @staticmethod
   def _summarize_stream_event(event: StreamEvent) -> dict[str, Any]:

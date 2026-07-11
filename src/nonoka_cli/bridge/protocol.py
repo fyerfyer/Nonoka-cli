@@ -113,6 +113,20 @@ class ApprovalRequestEvent(BaseModel):
   args: Any = None
 
 
+class DebugEvent(BaseModel):
+  """Structured debug information for adapter/frontend logs.
+
+  OpenCode does not render this event; it is emitted only when
+  ``NONOKA_DEBUG=1`` so that developers can inspect message order, tool
+  lists, and session state without polluting the TUI.
+  """
+
+  type: Literal["debug"] = "debug"
+  level: Literal["info", "warning", "error"] = "info"
+  message: str
+  payload: dict[str, Any] | None = None
+
+
 class ErrorEvent(BaseModel):
   """Fatal or terminal error."""
 
@@ -127,6 +141,7 @@ OutboundMessage = (
   | ToolResultEvent
   | ApprovalRequestEvent
   | FinishEvent
+  | DebugEvent
   | ErrorEvent
 )
 

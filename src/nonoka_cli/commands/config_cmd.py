@@ -138,9 +138,12 @@ _DEFAULT_DANGEROUS_TOOLS = [
   "execute_command",
 ]
 
-_DEFAULT_SYSTEM_PROMPT = """You are a helpful coding assistant. Be concise, direct, and helpful.
-
-Only use tools when the user explicitly asks you to perform an operation such as running a command, reading a file, creating a file, or modifying a file. For direct questions, greetings, math problems, translations, and general explanations, answer directly without invoking tools."""
+_DEFAULT_SYSTEM_PROMPT = (
+  "You are nonoka-cli, an autonomous coding assistant running inside OpenCode.\n"
+  "Use the tools available to you proactively to complete tasks.\n"
+  "For multi-step tasks, always start by calling the todowrite tool to create a plan.\n"
+  "Keep responses concise but thorough."
+)
 
 
 def _api_key_env_for_model(model: str) -> str:

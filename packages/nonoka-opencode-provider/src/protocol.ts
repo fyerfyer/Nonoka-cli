@@ -64,6 +64,7 @@ export const NONOKA_OUTBOUND_TYPES = {
   tool_call: 'tool_call',
   tool_result: 'tool_result',
   approval_request: 'approval_request',
+  debug: 'debug',
   finish: 'finish',
   error: 'error',
 } as const;
@@ -104,6 +105,13 @@ export interface NonokaApprovalRequestEvent {
   args?: unknown;
 }
 
+export interface NonokaDebugEvent {
+  type: typeof NONOKA_OUTBOUND_TYPES.debug;
+  level: 'info' | 'warning' | 'error';
+  message: string;
+  payload?: Record<string, unknown>;
+}
+
 export const NONOKA_FINISH_REASONS = {
   stop: 'stop',
   error: 'error',
@@ -130,6 +138,7 @@ export type NonokaOutboundEvent =
   | NonokaToolCallEvent
   | NonokaToolResultEvent
   | NonokaApprovalRequestEvent
+  | NonokaDebugEvent
   | NonokaFinishEvent
   | NonokaErrorEvent;
 

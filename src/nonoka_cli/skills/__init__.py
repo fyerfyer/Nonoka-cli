@@ -1,7 +1,9 @@
-"""Skill loading and application for nonoka-cli."""
+"""Skill loading and application for nonoka-cli.
+
+nonoka-cli now delegates skill discovery and lazy loading to
+nonoka-agent's ``SkillRegistry`` and the ``load_skill`` tool.
+"""
 
 from __future__ import annotations
 
-from nonoka_cli.skills.manager import SkillInfo, SkillManager
-
-__all__ = ["SkillInfo", "SkillManager"]
+__all__: list[str] = []

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from nonoka_cli.config.models import CLIConfig
 
@@ -15,3 +16,6 @@ class CLIContext:
   session_id: str
   config: CLIConfig
   working_dir: Path
+  task_state_service: Any = field(default=None, repr=False)
+  skill_manager: Any = field(default=None, repr=False)
+  mcp_manager: Any = field(default=None, repr=False)

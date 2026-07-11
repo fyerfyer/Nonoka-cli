@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
+from nonoka import SkillRegistry
+from nonoka.core.errors import ExternalToolExecutionRequiredError
 
 from nonoka_cli.config.models import CLIConfig
-from nonoka_cli.core.agent_factory import AgentFactory, _ExternalCapability
+from nonoka_cli.core.agent_factory import AgentFactory
 
 
 @pytest.fixture
@@ -39,7 +43,7 @@ async def test_external_capability_invoke_raises(factory):
     description="Run shell commands",
     parameters={"type": "object", "properties": {}},
   )
-  with pytest.raises(RuntimeError, match="External tool 'bash' must be executed by the host"):
+  with pytest.raises(ExternalToolExecutionRequiredError):
     await cap.invoke(None, {"command": "ls"})
 
 
@@ -111,3 +115,116 @@ async def test_build_with_external_tools_uses_host_system_prompt_fallback():
   )
   assert agent.system_prompt.startswith("Host OpenCode prompt.")
   assert "Current working directory: /tmp/workspace" in agent.system_prompt
+
+
+class _FakeMCPCapability:
+  """Minimal capability stand-in for MCP tool discovery tests."""
+
+  name = "list_directory"
+
+  async def invoke(self, ctx, arguments):
+    return {}
+
+  def to_json_schema(self):
+    return {
+      "type": "function",
+      "function": {"name": self.name, "description": "Lists files."},
+    }
+
+
+class _FakeMCPManager:
+  def get_tools(self):
+    return [("filesystem", _FakeMCPCapability())]
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_includes_skills(tmp_path):
+  skill_dir = tmp_path / ".nonoka" / "skills"
+  skill_dir.mkdir(parents=True)
+  skill_file = skill_dir / "code-review.md"
+  skill_file.write_text(
+    "---\n"
+    "name: code-review\n"
+    "description: Review code changes.\n"
+    "tools: []\n"
+    "---\n"
+    "Review the code carefully.\n"
+  )
+
+  config = CLIConfig(model="gpt-4o", skills=["code-review"])
+  factory = AgentFactory(
+    config,
+    skill_registry=SkillRegistry(
+      enabled=["code-review"],
+      search_paths=[skill_dir],
+    ),
+  )
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  agent = factory.build_with_external_tools(tools)
+  assert any(t.name == "bash" for t in agent.tools)
+  assert "code-review" in agent.system_prompt
+  assert "Review code changes" in agent.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_prefixes_mcp_tools():
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config, mcp_manager=_FakeMCPManager())
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  agent = factory.build_with_external_tools(tools)
+  tool_names = {t.name for t in agent.tools}
+  assert "bash" in tool_names
+  assert "mcp__filesystem__list_directory" in tool_names
+  # Sanitized names must be provider-safe.
+  assert all(re.match(r"^[a-zA-Z0-9_-]+$", n) for n in tool_names)
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_injects_namespace_block(tmp_path):
+  skill_dir = tmp_path / ".nonoka" / "skills"
+  skill_dir.mkdir(parents=True)
+  (skill_dir / "code-review.md").write_text(
+    "---\n"
+    "name: code-review\n"
+    "description: Review code changes.\n"
+    "tools: []\n"
+    "---\n"
+    "Review the code carefully.\n"
+  )
+  config = CLIConfig(model="gpt-4o", skills=["code-review"])
+  factory = AgentFactory(
+    config,
+    mcp_manager=_FakeMCPManager(),
+    skill_registry=SkillRegistry(
+      enabled=["code-review"],
+      search_paths=[skill_dir],
+    ),
+  )
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  agent = factory.build_with_external_tools(tools)
+  prompt = agent.system_prompt
+  assert "## Tool Namespaces" in prompt
+  assert "`bash`" in prompt
+  assert "`mcp__filesystem__list_directory`" in prompt
+  assert "MCP tools (call as" in prompt
+  assert "Use the EXACT tool names below" in prompt
+  # Colon-prefixed names are not passed to the LLM.
+  assert "mcp:filesystem:list_directory" not in prompt

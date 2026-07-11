@@ -28,6 +28,7 @@ def test_opencode_init_creates_file(tmp_path: Path):
   data = json.loads(opencode_path.read_text())
   assert data["model"] == "nonoka/default"
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
+  assert "--config" in " ".join(data["provider"]["nonoka"]["options"]["serverCommand"])
 
 
 def test_opencode_init_merges_existing(tmp_path: Path):
@@ -49,6 +50,7 @@ def test_opencode_init_merges_existing(tmp_path: Path):
   assert data["model"] == "other/model"
   assert data["custom"] is True
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
+  assert "--config" in " ".join(data["provider"]["nonoka"]["options"]["serverCommand"])
 
 
 def test_opencode_init_creates_agent_prompt(tmp_path: Path):

@@ -30,6 +30,34 @@ class MCPServerConfigModel(BaseModel):
   args: list[str] = Field(default_factory=list)
 
 
+class ContextConfig(BaseModel):
+  """In-context memory management configuration."""
+  enabled: bool = True
+  max_turns: int = 8
+  max_tokens: int | None = None
+
+
+class ToolOutputRuleConfig(BaseModel):
+  """Per-tool output pruning rule configuration."""
+  max_tokens: int = 4000
+  max_lines: int | None = 200
+  strategy: str = "tail_only"
+  spill_dir: str | None = None
+
+
+class ToolOutputConfig(BaseModel):
+  """Tool output pruning / spill configuration."""
+  enabled: bool = True
+  rules: dict[str, ToolOutputRuleConfig] = Field(default_factory=dict)
+  default_rule: ToolOutputRuleConfig = Field(default_factory=ToolOutputRuleConfig)
+
+
+class TaskStateConfig(BaseModel):
+  """Externalized task-state file configuration."""
+  enabled: bool = True
+  tasks_dir: str = ".nonoka/tasks"
+
+
 class CLIConfig(BaseModel):
   """Top-level configuration for nonoka-cli.
 
@@ -44,6 +72,9 @@ class CLIConfig(BaseModel):
   skills: list[str] = Field(default_factory=list)
   cli: CLIBehaviorConfig = Field(default_factory=CLIBehaviorConfig)
   hitl: HITLConfigModel = Field(default_factory=HITLConfigModel)
+  context: ContextConfig = Field(default_factory=ContextConfig)
+  tool_output: ToolOutputConfig = Field(default_factory=ToolOutputConfig)
+  task_state: TaskStateConfig = Field(default_factory=TaskStateConfig)
 
   @field_validator("tool_paths", mode="before")
   @classmethod

@@ -9,6 +9,8 @@ from typing import Any
 import structlog
 from nonoka import Runner
 from nonoka.backends.checkpoint.sqlite import SQLiteCheckpointStore
+from nonoka.core.hooks import Hooks
+from nonoka.core.llm import LLMMessageRole
 from nonoka.core.runner import StreamEvent
 from nonoka.core.types import Capability
 from nonoka.ext.hitl import HumanInTheLoopHooks
@@ -18,14 +20,16 @@ from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.context import CLIContext
+from nonoka_cli.core.context_trimmer import TurnBasedContextTrimmer
 from nonoka_cli.core.mcp_service import MCPService
 from nonoka_cli.core.runner_service import RunnerService
 from nonoka_cli.core.session_service import SessionService
+from nonoka_cli.core.task_state import TaskStateService
+from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.core.tool_service import ToolService
 from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.mcp.models import MCPStatus
 from nonoka_cli.sessions.models import SessionInfo
-from nonoka_cli.skills.manager import SkillManager
 from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import ConfigError, MCPRestartExhaustedError, OrchestratorError
 
@@ -58,7 +62,6 @@ class Orchestrator:
     session_service: SessionService | None = None,
     mcp_manager: MCPManager | None = None,
     tool_loader: ToolLoader | None = None,
-    skill_manager: SkillManager | None = None,
     db_path: Path | str | None = None,
   ):
     self._config = config
@@ -66,7 +69,6 @@ class Orchestrator:
     self._session_service = session_service or SessionService(db_path=db_path)
     self._mcp_manager = mcp_manager or MCPManager()
     self._tool_loader = tool_loader
-    self._skill_manager = skill_manager
     self._agent_factory: AgentFactory | None = None
     self._runner_service: RunnerService | None = None
     self._tool_service: ToolService | None = None
@@ -118,14 +120,11 @@ class Orchestrator:
 
     if self._tool_loader is None:
       self._tool_loader = ToolLoader(self._config.tool_paths)
-    if self._skill_manager is None:
-      self._skill_manager = SkillManager()
 
     self._agent_factory = AgentFactory(
       self._config,
       mcp_manager=self._mcp_manager,
       tool_loader=self._tool_loader,
-      skill_manager=self._skill_manager,
     )
     self._agent_factory.build()
     self._tool_service = ToolService(self._agent_factory, self._tool_loader)
@@ -134,7 +133,7 @@ class Orchestrator:
     db_path = self._session_service.manager.db_path
     runner = Runner(
       checkpoint=SQLiteCheckpointStore(db_path=str(db_path)),
-      hooks=self._build_hitl_hooks(),
+      hooks=self._build_hooks(),
     )
     self._runner_service = RunnerService(runner)
 
@@ -156,33 +155,62 @@ class Orchestrator:
     )
     self._initialized = True
 
-  def _build_hitl_hooks(self) -> HumanInTheLoopHooks | None:
-    """Build HITL hooks from CLI config, or None if approvals are disabled."""
+  def _build_hooks(self) -> HumanInTheLoopHooks | Hooks | None:
+    """Build combined hooks: HITL + context trimming + tool-output pruning."""
     if self._config is None:
       return None
 
     # Auto-approve disables HITL entirely.
-    if getattr(self._config.cli, "auto_approve", False):
-      return None
+    hitl = None
+    if not getattr(self._config.cli, "auto_approve", False):
+      policy = getattr(self._config.hitl, "policy", "interactive")
+      if policy != "auto":
+        dangerous = getattr(self._config.hitl, "dangerous_tools", None) or []
+        if dangerous:
+          rules = [
+            ToolRule(tool=name, action="approve", description=f"'{name}' requires approval.")
+            for name in dangerous
+          ]
+          hitl = HumanInTheLoopHooks(
+            approver=_DeferredApprover(),
+            rules=rules,
+            default_action="allow",
+            deferred=True,
+          )
 
-    policy = getattr(self._config.hitl, "policy", "interactive")
-    if policy == "auto":
-      return None
-
-    dangerous = getattr(self._config.hitl, "dangerous_tools", None) or []
-    if not dangerous:
-      return None
-
-    rules = [
-      ToolRule(tool=name, action="approve", description=f"'{name}' requires approval.")
-      for name in dangerous
-    ]
-    return HumanInTheLoopHooks(
-      approver=_DeferredApprover(),
-      rules=rules,
-      default_action="allow",
-      deferred=True,
+    trimmer = TurnBasedContextTrimmer.from_config(
+      self._config.context.model_dump()
     )
+    output_policy = ToolOutputPolicy.from_config(
+      self._config.tool_output.model_dump()
+    )
+
+    async def on_llm_request(ctx, messages, tools):
+      if self._config is None:
+        return
+      if self._config.context.enabled:
+        trimmed = trimmer.trim(messages)
+        messages[:] = trimmed
+      if output_policy.enabled:
+        for msg in messages:
+          if msg.role == LLMMessageRole.TOOL and msg.content:
+            pruned = output_policy.apply(
+              msg.name or "",
+              msg.content,
+              msg.tool_call_id,
+            )
+            if pruned != msg.content:
+              msg.content = pruned
+
+    if hitl is not None:
+      return HumanInTheLoopHooks(
+        approver=_DeferredApprover(),
+        rules=hitl.rules,
+        default_action="allow",
+        deferred=True,
+        on_llm_request=on_llm_request,
+      )
+    return Hooks(on_llm_request=on_llm_request)
 
   def _on_config_changed(self, config: CLIConfig) -> None:
     """ConfigManager hot-reload listener: update local reference only."""
@@ -210,11 +238,19 @@ class Orchestrator:
       working_dir=str(working_dir or Path.cwd()),
     )
 
+    cwd = working_dir or Path.cwd()
     deps = CLIContext(
       user="local",
       session_id=self.session_id,
       config=self._config,
-      working_dir=working_dir or Path.cwd(),
+      working_dir=cwd,
+      task_state_service=TaskStateService(
+        tasks_dir=self._config.task_state.tasks_dir,
+        enabled=self._config.task_state.enabled,
+        base_dir=cwd,
+      ),
+      skill_manager=None,
+      mcp_manager=self._mcp_manager,
     )
 
     try:
@@ -247,11 +283,19 @@ class Orchestrator:
       working_dir=str(working_dir or Path.cwd()),
     )
 
+    cwd = working_dir or Path.cwd()
     deps = CLIContext(
       user="local",
       session_id=session_id,
       config=self._config,
-      working_dir=working_dir or Path.cwd(),
+      working_dir=cwd,
+      task_state_service=TaskStateService(
+        tasks_dir=self._config.task_state.tasks_dir,
+        enabled=self._config.task_state.enabled,
+        base_dir=cwd,
+      ),
+      skill_manager=None,
+      mcp_manager=self._mcp_manager,
     )
 
     try:
@@ -292,11 +336,19 @@ class Orchestrator:
       working_dir=str(working_dir or Path.cwd()),
     )
 
+    cwd = working_dir or Path.cwd()
     deps = CLIContext(
       user="local",
       session_id=self.session_id,
       config=self._config,
-      working_dir=working_dir or Path.cwd(),
+      working_dir=cwd,
+      task_state_service=TaskStateService(
+        tasks_dir=self._config.task_state.tasks_dir,
+        enabled=self._config.task_state.enabled,
+        base_dir=cwd,
+      ),
+      skill_manager=None,
+      mcp_manager=self._mcp_manager,
     )
 
     try:
@@ -339,11 +391,19 @@ class Orchestrator:
       working_dir=str(working_dir or Path.cwd()),
     )
 
+    cwd = working_dir or Path.cwd()
     deps = CLIContext(
       user="local",
       session_id=session_id,
       config=self._config,
-      working_dir=working_dir or Path.cwd(),
+      working_dir=cwd,
+      task_state_service=TaskStateService(
+        tasks_dir=self._config.task_state.tasks_dir,
+        enabled=self._config.task_state.enabled,
+        base_dir=cwd,
+      ),
+      skill_manager=None,
+      mcp_manager=self._mcp_manager,
     )
 
     try:
@@ -424,9 +484,6 @@ class Orchestrator:
         Path(p).expanduser() for p in new_config.tool_paths
       ]
       self._tool_loader.reload()
-    if self._skill_manager is not None:
-      self._skill_manager.reload(new_config.skills)
-
     if self._agent_factory is not None:
       try:
         self._agent_factory.rebuild(new_config.model_dump())

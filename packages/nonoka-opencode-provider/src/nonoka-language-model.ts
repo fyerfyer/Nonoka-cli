@@ -21,9 +21,11 @@ import {
 import { createNonokaStreamTransformer } from './stream.js';
 import fs from 'fs';
 
+const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH || '/tmp/nonoka-provider.log';
+
 function providerLog(message: string) {
   try {
-    fs.appendFileSync('/tmp/nonoka-provider.log', `${new Date().toISOString()} ${message}\n`);
+    fs.appendFileSync(PROVIDER_LOG_PATH, `${new Date().toISOString()} ${message}\n`);
   } catch {
     // ignore logging errors
   }
@@ -181,7 +183,14 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     providerLog(`sending request: ${requestLine.trim()}`);
     await writeToStdin(child, requestLine);
 
-    const rawStream = this.createOutputStream(child, isTitle, options.abortSignal);
+    const allowedToolNames = new Set(
+      (options.tools ?? [])
+        .filter((t: any): t is { type: 'function'; name: string } => t.type === 'function')
+        .map((t) => t.name),
+    );
+    providerLog(`allowedToolNames count=${allowedToolNames.size} names=${JSON.stringify([...allowedToolNames])}`);
+
+    const rawStream = this.createOutputStream(child, isTitle, options.abortSignal, allowedToolNames);
 
     // Wrap the raw stream so we can guarantee it closes as soon as the
     // server signals the turn is finished. OpenCode will not schedule the
@@ -249,7 +258,8 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
     isTitle: boolean,
   ): NonokaChatRequest {
-    const messages = this.convertPromptMessages(options.prompt, isTitle);
+    const isResume = this.isExternalToolResume(options.prompt);
+    const messages = this.convertPromptMessages(options.prompt, isTitle, isResume);
 
     let sessionId: string | undefined;
     let newSession = false;
@@ -274,7 +284,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         description: tool.description ?? '',
         parameters: tool.inputSchema,
       }));
-    providerLog(`buildChatRequest isTitle=${isTitle} tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
+    providerLog(`buildChatRequest isTitle=${isTitle} isResume=${isResume} tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
     return {
       type: NONOKA_INBOUND_TYPES.chat,
       messages,
@@ -290,6 +300,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   private convertPromptMessages(
     prompt: LanguageModelV3CallOptions['prompt'],
     isTitle: boolean,
+    isResume: boolean,
   ): NonokaChatMessage[] {
     const messages: NonokaChatMessage[] = [];
 
@@ -366,19 +377,42 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       }
     }
 
+    if (isResume) {
+      // When resuming after external tool execution, nonoka's checkpoint already
+      // stores the full conversation. Sending the entire history again would
+      // duplicate messages and can reorder context. Keep only the system prompt
+      // (so the host's agent prompt is still forwarded) and the tool results
+      // that are needed to continue.
+      const systemMessages = messages.filter((m) => m.role === NONOKA_MESSAGE_ROLES.system);
+      const toolMessages = messages.filter((m) => m.role === NONOKA_MESSAGE_ROLES.tool);
+      providerLog(`resume message compaction: kept ${systemMessages.length} system + ${toolMessages.length} tool messages (dropped ${messages.length - systemMessages.length - toolMessages.length})`);
+      return [...systemMessages, ...toolMessages];
+    }
+
     return messages;
   }
 
   private isNewConversation(options: LanguageModelV3CallOptions): boolean {
     // OpenCode's /new resets the message history to system + user only.
     // If we see no prior assistant or tool messages, treat this as a fresh
-    // nonoka session.
+    // nonoka session. This also covers the very first request of a brand-new
+    // OpenCode conversation.
     for (const message of options.prompt) {
       if (message.role === 'assistant' || message.role === 'tool') {
         return false;
       }
     }
     return true;
+  }
+
+  private isExternalToolResume(
+    prompt: LanguageModelV3CallOptions['prompt'],
+  ): boolean {
+    // A resume after external tool execution is signaled by the most recent
+    // message being a tool result. In that case we should not re-send the full
+    // conversation history; the nonoka checkpoint already stores it.
+    const last = prompt[prompt.length - 1];
+    return last !== undefined && last.role === 'tool';
   }
 
   private spawnServer(): ChildProcessWithoutNullStreams {
@@ -425,6 +459,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     child: ChildProcessWithoutNullStreams,
     isTitle: boolean,
     abortSignal?: AbortSignal,
+    allowedToolNames?: Set<string>,
   ): ReadableStream<LanguageModelV3StreamPart> {
     let cleanupDone = false;
 
@@ -453,6 +488,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         this.chatSessionId = sessionId;
         saveChatSessionId(this.config.cwd, sessionId);
       },
+      allowedToolNames,
     });
 
     const readable = Readable.toWeb(

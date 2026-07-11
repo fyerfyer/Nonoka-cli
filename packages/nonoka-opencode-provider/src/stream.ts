@@ -6,9 +6,11 @@ import {
 } from './protocol.js';
 import fs from 'fs';
 
+const TIMELINE_PATH = process.env.NONOKA_TIMELINE_PATH || '/tmp/nonoka-tui-timeline.ndjson';
+
 function timelineLog(message: string) {
   try {
-    fs.appendFileSync('/tmp/nonoka-tui-timeline.ndjson', `${message}\n`);
+    fs.appendFileSync(TIMELINE_PATH, `${message}\n`);
   } catch {
     // ignore logging errors
   }
@@ -46,6 +48,7 @@ export function createNonokaStreamTransformer(
   options: {
     onSessionInit?: (sessionId: string) => void;
     onFinish?: () => void;
+    allowedToolNames?: Set<string>;
   } = {},
 ): TransformStream<string, LanguageModelV3StreamPart> {
   let textBlockId: string | null = null;
@@ -53,6 +56,10 @@ export function createNonokaStreamTransformer(
   // Buffer used to glue trailing whitespace to the next token so that OpenCode
   // does not drop leading spaces between text-delta chunks.
   let pendingText = '';
+  // Tool calls that are not in OpenCode's native tool list are executed locally
+  // by nonoka-cli. We must not forward them as tool-call parts to OpenCode;
+  // instead we render their results as inline text.
+  const suppressedToolCalls = new Set<string>();
 
   function startTextBlock(controller: TransformStreamDefaultController<LanguageModelV3StreamPart>) {
     if (textBlockId === null) {
@@ -104,13 +111,28 @@ export function createNonokaStreamTransformer(
 
         case NONOKA_OUTBOUND_TYPES.tool_call: {
           flushPendingText(controller);
+          const toolName = event.tool_name ?? '';
+          const toolCallId = event.tool_call_id ?? '';
+
+          // Only forward tool calls for tools that OpenCode itself can execute.
+          // MCP / skill tools executed locally by nonoka-cli are suppressed here
+          // and their results are rendered as inline text instead.
+          if (
+            options.allowedToolNames &&
+            toolName &&
+            !options.allowedToolNames.has(toolName)
+          ) {
+            suppressedToolCalls.add(toolCallId);
+            break;
+          }
+
           // In deferred HITL mode the backend emits tool_call before the tool
           // has actually executed; it is waiting for an approval decision.
           // providerExecuted must be false so OpenCode renders the approval UI.
           const part = {
             type: 'tool-call' as const,
-            toolCallId: event.tool_call_id,
-            toolName: event.tool_name,
+            toolCallId,
+            toolName,
             input: JSON.stringify(event.args ?? {}),
             providerExecuted: false,
             dynamic: true,
@@ -123,9 +145,22 @@ export function createNonokaStreamTransformer(
         case NONOKA_OUTBOUND_TYPES.tool_result: {
           flushPendingText(controller);
           const rawResult = event.result ?? event.content ?? '';
+          const toolCallId = event.tool_call_id ?? '';
+
+          // If the matching tool call was suppressed, render the locally
+          // executed result as inline text rather than a tool-result part.
+          if (suppressedToolCalls.has(toolCallId)) {
+            suppressedToolCalls.delete(toolCallId);
+            const text = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
+            const header = event.tool_name ? `[${event.tool_name} result]` : '[tool result]';
+            pendingText += `\n\n${header}\n${text}`;
+            flushPendingText(controller);
+            break;
+          }
+
           const part = {
             type: 'tool-result' as const,
-            toolCallId: event.tool_call_id,
+            toolCallId,
             toolName: event.tool_name,
             result: rawResult as any,
             isError: event.is_error ?? false,
