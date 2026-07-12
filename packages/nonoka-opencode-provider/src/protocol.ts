@@ -31,6 +31,20 @@ export interface ExternalToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+export interface ExternalMCPServerDefinition {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface ExternalSkillDefinition {
+  name: string;
+  package: string;
+  version?: string;
+  config?: Record<string, unknown>;
+}
+
 export const NONOKA_INBOUND_TYPES = {
   chat: 'chat',
   approval: 'approval',
@@ -42,6 +56,8 @@ export interface NonokaChatRequest {
   type: typeof NONOKA_INBOUND_TYPES.chat;
   messages: NonokaChatMessage[];
   tools?: ExternalToolDefinition[];
+  external_mcp_servers?: ExternalMCPServerDefinition[];
+  external_skills?: ExternalSkillDefinition[];
   session_id?: string;
   new_session?: boolean;
   cwd: string;
@@ -86,6 +102,7 @@ export interface NonokaToolCallEvent {
   tool_call_id: string;
   tool_name: string;
   args?: unknown;
+  metadata?: Record<string, unknown>;
 }
 
 export interface NonokaToolResultEvent {

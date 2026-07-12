@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test";
 import {
   encodeChatRequest,
   parseOutboundLine,
+  type ExternalMCPServerDefinition,
+  type ExternalSkillDefinition,
   type NonokaChatRequest,
+  type NonokaToolCallEvent,
 } from "../src/protocol";
 
 describe("encodeChatRequest", () => {
@@ -69,5 +72,42 @@ describe("parseOutboundLine", () => {
 
   it("throws on invalid json", () => {
     expect(() => parseOutboundLine("not json")).toThrow();
+  });
+
+  it("parses tool_call with metadata", () => {
+    const msg = parseOutboundLine(
+      '{"type":"tool_call","tool_call_id":"tc-1","tool_name":"skill__foo__bar","args":{"x":1},"metadata":{"kind":"skill","skill":"foo"}}',
+    );
+    expect(msg?.type).toBe("tool_call");
+    const tc = msg as NonokaToolCallEvent;
+    expect(tc.tool_call_id).toBe("tc-1");
+    expect(tc.tool_name).toBe("skill__foo__bar");
+    expect(tc.metadata).toEqual({ kind: "skill", skill: "foo" });
+  });
+
+  it("encodes external mcp servers and skills", () => {
+    const mcp: ExternalMCPServerDefinition = {
+      name: "memory",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-memory"],
+      env: { MEMORY_PATH: "/tmp/memory.json" },
+    };
+    const skill: ExternalSkillDefinition = {
+      name: "todo",
+      package: "nonoka-skill-todo",
+      version: "1.0.0",
+      config: { strict: true },
+    };
+    const req: NonokaChatRequest = {
+      type: "chat",
+      messages: [{ role: "user", content: "hi" }],
+      external_mcp_servers: [mcp],
+      external_skills: [skill],
+      cwd: "/tmp",
+    };
+    const line = encodeChatRequest(req);
+    const parsed = JSON.parse(line);
+    expect(parsed.external_mcp_servers).toEqual([mcp]);
+    expect(parsed.external_skills).toEqual([skill]);
   });
 });

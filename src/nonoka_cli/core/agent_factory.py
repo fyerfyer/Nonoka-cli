@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import structlog
-from nonoka import Agent, AgentBuilder, ExternalCapability, SkillRegistry, load_skill
+from nonoka import (
+  Agent,
+  AgentBuilder,
+  ExternalCapability,
+  ExternalMCPRegistry,
+  ExternalMCPServer,
+  ExternalMCPToolDefinition,
+  ExternalSkill,
+  ExternalSkillRegistry,
+  ExternalSkillToolDefinition,
+  SkillRegistry,
+  load_skill,
+)
 from nonoka.core.context import RunContext
 from nonoka.core.types import Capability
 
@@ -54,8 +67,14 @@ You operate in the user's current working directory.
 
 _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "You are nonoka-cli, an autonomous coding assistant running inside OpenCode.\n"
-  "Use only the tools provided by OpenCode to complete tasks.\n"
-  "OpenCode handles all tool execution and any required approvals.\n\n"
+  "Use only the tools provided to you by this environment to complete tasks.\n"
+  "OpenCode handles host native tool execution and any required approvals.\n\n"
+  "Skill and MCP namespace rules (important):\n"
+  "- nonoka-managed skills expose tools as ``skill__<skill>__<tool>``.\n"
+  "- nonoka-managed MCP servers expose tools as ``mcp__<server>__<tool>``.\n"
+  "- To activate a skill's full guidance, call the ``load_skill`` tool first.\n"
+  "- Do NOT use OpenCode's native ``skill:<name>`` syntax; it is disabled in\n"
+  "  this configuration to avoid conflicting with nonoka's skill tools.\n\n"
   "Guidelines:\n"
   "- Prefer reading files before editing them.\n"
   "- Run build/test commands when available and report the result.\n"
@@ -186,33 +205,55 @@ class AgentFactory:
     tools: list[Capability],
     cwd: str | Path | None = None,
     host_system_prompt: str | None = None,
+    external_mcp_servers: list[Any] | None = None,
+    external_skills: list[Any] | None = None,
   ) -> Agent:
-    """Build an Agent for OpenCode-hosted mode.
+    """Build an Agent for host-managed (e.g. OpenCode) mode.
 
-    OpenCode sends its native tool definitions; nonoka registers them as
-    opaque external capabilities and OpenCode executes the actual tool calls.
+    The host sends its native tool definitions; nonoka registers them as
+    opaque external capabilities and the host executes the actual tool calls.
     Configured skills and MCP servers are merged in with namespace prefixes
     (``skill__<skill>__<tool>`` and ``mcp__<server>__<tool>``) so they remain
-    available without colliding with OpenCode native tools.
+    available without colliding with host native tools.
+
+    External host-managed MCP servers and skills can also be supplied; their
+    tool schemas are registered as external capabilities whose execution is
+    delegated back to the host.
 
     Args:
-      tools: Tool definitions supplied by the OpenCode host.
+      tools: Tool definitions supplied by the host.
       cwd: Current working directory to inject into the system prompt.
-      host_system_prompt: Optional system prompt forwarded by the host
-        (e.g. OpenCode's agent file). Used only when the user has not
-        configured a custom ``system_prompt`` in nonoka.yaml.
+      host_system_prompt: Optional system prompt forwarded by the host.
+        Used only when the user has not configured a custom ``system_prompt``
+        in nonoka.yaml.
+      external_mcp_servers: Optional host-managed MCP server definitions.
+      external_skills: Optional host-managed skill definitions.
     """
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
     base = self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT
 
-    external_caps: list[Capability] = []
+    # If OpenCode's native skill tool is still enabled, warn the model directly in
+    # the system prompt so it does not confuse ``skill:<name>`` with nonoka's
+    # ``skill__<skill>__<tool>`` namespace.
+    if self._is_opencode_native_skill_enabled(cwd):
+      base = base.rstrip() + (
+        "\n\nWARNING: OpenCode's native skill tool is enabled in opencode.json. "
+        "To avoid conflicts with nonoka-managed skills, disable it by setting "
+        "\"tools\": {\"skill\": false} in opencode.json. Until then, ignore any "
+        "``skill:<name>`` instructions and use only ``skill__<skill>__<tool>`` "
+        "and ``load_skill``."
+      )
+      logger.warning("opencode_native_skill_enabled", cwd=str(cwd) if cwd else None)
+
+    # 1. Host native tools (external capabilities).
+    host_caps: list[Capability] = []
     for t in tools:
       if isinstance(t, Capability):
-        external_caps.append(t)
+        host_caps.append(t)
       else:
-        external_caps.append(
+        host_caps.append(
           self.create_external_tool_capability(
             name=t.name,
             description=t.description,
@@ -220,11 +261,56 @@ class AgentFactory:
           )
         )
 
-    native_tool_names = [c.name for c in external_caps]
+    host_tool_names = [c.name for c in host_caps]
 
+    # 2. External host-managed MCP servers.
+    external_mcp_registry: ExternalMCPRegistry | None = None
+    external_mcp_tool_names: list[str] = []
+    if external_mcp_servers:
+      external_mcp_registry = ExternalMCPRegistry([
+        ExternalMCPServer(
+          name=s.name,
+          description=s.description,
+          tools=[
+            ExternalMCPToolDefinition(
+              name=t.name,
+              description=t.description,
+              parameters=t.parameters,
+            )
+            for t in s.tools
+          ],
+        )
+        for s in external_mcp_servers
+      ])
+      external_mcp_tool_names = [cap.name for cap in external_mcp_registry.get_tools()]
+
+    # 3. External host-managed skills.
+    external_skill_registry: ExternalSkillRegistry | None = None
+    external_skill_tool_names: list[str] = []
+    if external_skills:
+      external_skill_registry = ExternalSkillRegistry([
+        ExternalSkill(
+          name=s.name,
+          description=s.description,
+          tools=[
+            ExternalSkillToolDefinition(
+              name=t.name,
+              description=t.description,
+              parameters=t.parameters,
+            )
+            for t in s.tools
+          ],
+          system_prompt=s.system_prompt,
+          activation_prompt=s.activation_prompt,
+        )
+        for s in external_skills
+      ])
+      external_skill_tool_names = [cap.name for cap in external_skill_registry.get_tools()]
+
+    # 4. Internal skills (configured in nonoka.yaml).
     skill_registry = self._skill_registry_for_build(cwd)
 
-    # MCP tools are prefixed with the server name to avoid collisions.
+    # 5. Internal MCP tools are prefixed with the server name to avoid collisions.
     mcp_tools: list[tuple[str, Capability]] = []
     mcp_tool_names: list[str] = []
     if self._mcp_manager is not None:
@@ -234,7 +320,7 @@ class AgentFactory:
         for server, cap in mcp_tools
       ]
 
-    # Skill tools are prefixed with the skill name.
+    # 6. Internal skill tools are prefixed with the skill name.
     skill_tool_names: list[str] = []
     if skill_registry is not None:
       for info in skill_registry.enabled:
@@ -249,17 +335,21 @@ class AgentFactory:
       base=base,
       model=self._config.model,
       cwd=cwd,
-      native_tools=native_tool_names,
-      mcp_tools=mcp_tool_names,
-      skill_tools=skill_tool_names,
+      host_tools=host_tool_names,
+      external_mcp_tools=external_mcp_tool_names,
+      external_skill_tools=external_skill_tool_names,
+      internal_mcp_tools=mcp_tool_names,
+      internal_skill_tools=skill_tool_names,
     ).build()
 
     logger.info(
       "building_agent_with_external_tools",
       model=self._config.model,
-      native_tool_count=len(native_tool_names),
-      mcp_tool_count=len(mcp_tool_names),
-      skill_tool_count=len(skill_tool_names),
+      host_tool_count=len(host_tool_names),
+      external_mcp_tool_count=len(external_mcp_tool_names),
+      external_skill_tool_count=len(external_skill_tool_names),
+      internal_mcp_tool_count=len(mcp_tool_names),
+      internal_skill_tool_count=len(skill_tool_names),
       system_prompt_length=len(system_prompt),
       cwd=str(cwd) if cwd else None,
     )
@@ -271,16 +361,23 @@ class AgentFactory:
       .max_turns(20)
     )
 
-    # Register lazy-load skills with prefixed tool names so they cannot clash
-    # with OpenCode native tools.
+    # Register lazy-load internal skills with prefixed tool names.
     if skill_registry is not None:
       builder = builder.skill_manager(_PrefixedSkillRegistry(skill_registry)).tool(load_skill)
 
-    # OpenCode native tools are external capabilities.
-    for cap in external_caps:
+    # Register external skills (also lazy-loaded).
+    if external_skill_registry is not None:
+      builder = builder.external_skill_registry(external_skill_registry).tool(load_skill)
+
+    # Register external MCP registry.
+    if external_mcp_registry is not None:
+      builder = builder.external_mcp_registry(external_mcp_registry)
+
+    # Host native tools are external capabilities.
+    for cap in host_caps:
       builder = builder.tool(cap)
 
-    # MCP tools are executed locally by nonoka-cli.
+    # Internal MCP tools are executed locally by nonoka-cli.
     for server, cap in mcp_tools:
       builder = builder.tool(_PrefixedCapability(cap, f"mcp__{server}__"))
 
@@ -316,18 +413,43 @@ class AgentFactory:
     name: str,
     description: str,
     parameters: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
   ) -> Capability:
-    """Create a lightweight Capability from an OpenCode tool definition.
+    """Create a lightweight Capability from a host tool definition.
 
     The returned capability carries the JSON schema the LLM sees. Its
-    ``invoke`` method must never be called: execution is delegated to OpenCode
+    ``invoke`` method must never be called: execution is delegated to the host
     via the ``external=True`` marker.
     """
     return ExternalCapability(
       name=name,
       description=description,
       parameters=parameters,
+      metadata=metadata or {"kind": "host_tool", "original_name": name},
     )
+
+  @staticmethod
+  def _is_opencode_native_skill_enabled(cwd: str | Path | None) -> bool:
+    """Return True if cwd/opencode.json leaves OpenCode's native skill enabled.
+
+    Defaults to False when the file is missing or unreadable, because this mode
+    is only used with OpenCode and a missing config is treated as safe. Defaults
+    to True when the file exists but does not explicitly disable ``tools.skill``,
+    matching OpenCode's default behavior.
+    """
+    if cwd is None:
+      return False
+    path = Path(cwd) / "opencode.json"
+    if not path.exists():
+      return False
+    try:
+      data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+      return False
+    tools = data.get("tools", {})
+    if not isinstance(tools, dict):
+      return True
+    return tools.get("skill", True) is not False
 
   def _collect_tools(self) -> list[Capability]:
     """Collect tools from all configured sources for listing/inspection."""
@@ -421,6 +543,7 @@ class _PrefixedCapability:
     self.description = getattr(wrapped, "description", "")
     self.parameters = getattr(wrapped, "parameters", {})
     self.external = getattr(wrapped, "external", False)
+    self.metadata = dict(getattr(wrapped, "metadata", {}) or {})
 
   async def invoke(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
     return await self._wrapped.invoke(ctx, arguments)

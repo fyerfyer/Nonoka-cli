@@ -1,15 +1,15 @@
-"""System prompt builder for nonoka-cli's OpenCode-hosted mode.
+"""System prompt builder for nonoka-cli's host-managed mode.
 
 Composes the final system prompt from:
 - user-configured or host-provided base prompt
 - model identity
 - current working directory / path guidance
-- OpenCode TODO workflow reminder
-- OpenCode native tool names + namespace guidance for MCP/skill tools
+- TODO workflow reminder
+- tool namespace guidance for host, MCP, and skill tools
 
 Skill registry blocks are handled by nonoka-agent's SkillRegistry and injected
-via ``Agent._expand_skills_lazy()``; this builder only deals with OpenCode-
-specific prompt segments.
+via ``Agent._expand_skills_lazy()``; this builder only deals with host-specific
+prompt segments.
 """
 
 from __future__ import annotations
@@ -39,31 +39,37 @@ Use these statuses exactly:
 
 
 class SystemPromptBuilder:
-  """Build the effective system prompt for the OpenCode-hosted agent."""
+  """Build the effective system prompt for the host-managed agent."""
 
   def __init__(
     self,
     base: str,
     model: str,
     cwd: str | Path | None = None,
-    native_tools: list[str] | None = None,
-    mcp_tools: list[str] | None = None,
-    skill_tools: list[str] | None = None,
+    host_tools: list[str] | None = None,
+    external_mcp_tools: list[str] | None = None,
+    external_skill_tools: list[str] | None = None,
+    internal_mcp_tools: list[str] | None = None,
+    internal_skill_tools: list[str] | None = None,
   ):
     """Args:
       base: Base system prompt (config, host, or default).
       model: Model identifier injected as an identity line.
       cwd: Current working directory to inject path guidance.
-      native_tools: OpenCode native tool names available to the model.
-      mcp_tools: Prefixed MCP tool names available to the model.
-      skill_tools: Prefixed skill tool names available to the model.
+      host_tools: Host native tool names available to the model.
+      external_mcp_tools: Prefixed external MCP tool names.
+      external_skill_tools: Prefixed external skill tool names.
+      internal_mcp_tools: Prefixed internal MCP tool names.
+      internal_skill_tools: Prefixed internal skill tool names.
     """
     self._base = base
     self._model = model.strip()
     self._cwd = cwd
-    self._native_tools = native_tools or []
-    self._mcp_tools = mcp_tools or []
-    self._skill_tools = skill_tools or []
+    self._host_tools = host_tools or []
+    self._external_mcp_tools = external_mcp_tools or []
+    self._external_skill_tools = external_skill_tools or []
+    self._internal_mcp_tools = internal_mcp_tools or []
+    self._internal_skill_tools = internal_skill_tools or []
 
   def build(self) -> str:
     """Assemble and return the final system prompt."""
@@ -113,7 +119,14 @@ class SystemPromptBuilder:
 
   def _build_namespaces_block(self) -> str:
     """Return a block describing exact tool names/namespaces."""
-    if not self._native_tools and not self._mcp_tools and not self._skill_tools:
+    has_any = (
+      self._host_tools
+      or self._external_mcp_tools
+      or self._external_skill_tools
+      or self._internal_mcp_tools
+      or self._internal_skill_tools
+    )
+    if not has_any:
       return ""
 
     lines: list[str] = [
@@ -122,26 +135,43 @@ class SystemPromptBuilder:
       "Namespace separators are encoded as double underscores (``:`` -> ``__``).",
     ]
 
-    if self._native_tools:
+    if self._host_tools:
       lines.append(
-        "- OpenCode native tools: "
-        + ", ".join(f"`{n}`" for n in self._native_tools)
+        "- Host native tools (OpenCode executes): "
+        + ", ".join(f"`{n}`" for n in self._host_tools)
       )
-    if self._mcp_tools:
+    if self._external_mcp_tools:
       lines.append(
-        "- MCP tools (call as ``mcp__<server>__<tool>``): "
-        + ", ".join(f"`{n}`" for n in self._mcp_tools)
+        "- External MCP tools (host executes, call as ``mcp__<server>__<tool>``): "
+        + ", ".join(f"`{n}`" for n in self._external_mcp_tools)
       )
-    if self._skill_tools:
+    if self._external_skill_tools:
       lines.append(
-        "- Skill tools (call as ``skill__<skill>__<tool>``): "
-        + ", ".join(f"`{n}`" for n in self._skill_tools)
+        "- External skill tools (host executes, call as ``skill__<skill>__<tool>``): "
+        + ", ".join(f"`{n}`" for n in self._external_skill_tools)
+      )
+    if self._internal_mcp_tools:
+      lines.append(
+        "- Internal MCP tools (nonoka executes, call as ``mcp__<server>__<tool>``): "
+        + ", ".join(f"`{n}`" for n in self._internal_mcp_tools)
+      )
+    if self._internal_skill_tools:
+      lines.append(
+        "- Internal skill tools (nonoka executes, call as ``skill__<skill>__<tool>``): "
+        + ", ".join(f"`{n}`" for n in self._internal_skill_tools)
       )
 
-    if self._mcp_tools:
+    if self._external_mcp_tools or self._internal_mcp_tools:
       lines.append(
         "When the user asks for something only an MCP tool can do, "
         "prefer the MCP tool over generic bash/file commands."
+      )
+
+    if self._external_skill_tools or self._internal_skill_tools:
+      lines.append(
+        "To use a skill, first call ``load_skill`` with the exact skill name. "
+        "After loading, use the skill's tools via the ``skill__<skill>__<tool>`` namespace. "
+        "Do NOT use ``skill:<name>``; OpenCode's native skill tool is disabled in this environment."
       )
 
     return "\n".join(lines)

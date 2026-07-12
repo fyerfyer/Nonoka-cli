@@ -277,18 +277,36 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       sessionId = this.chatSessionId;
     }
 
-    const tools = options.tools
+    let tools = options.tools
       ?.filter((tool): tool is { type: 'function'; name: string; description?: string; inputSchema: Record<string, unknown> } => tool.type === 'function')
       .map((tool) => ({
         name: tool.name,
         description: tool.description ?? '',
         parameters: tool.inputSchema,
       }));
+    // OpenCode 1.17.14 does not expose external MCP/skill definitions to
+    // providers. The bridge fields are reserved so the protocol is ready when
+    // a future OpenCode version (or a custom host) passes them.
+    let externalMcpServers: any[] = [];
+    let externalSkills: any[] = [];
+
+    // Title generation should receive the minimal prompt only. Exposing the
+    // full tool list (including load_skill) lets the model make tool calls in
+    // a context where OpenCode expects a plain title string, which breaks the
+    // subsequent resume turn.
+    if (isTitle) {
+      tools = undefined;
+      externalMcpServers = [];
+      externalSkills = [];
+    }
+
     providerLog(`buildChatRequest isTitle=${isTitle} isResume=${isResume} tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
     return {
       type: NONOKA_INBOUND_TYPES.chat,
       messages,
       tools,
+      external_mcp_servers: externalMcpServers,
+      external_skills: externalSkills,
       session_id: sessionId,
       new_session: newSession,
       cwd: this.config.cwd,
@@ -387,6 +405,19 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       const toolMessages = messages.filter((m) => m.role === NONOKA_MESSAGE_ROLES.tool);
       providerLog(`resume message compaction: kept ${systemMessages.length} system + ${toolMessages.length} tool messages (dropped ${messages.length - systemMessages.length - toolMessages.length})`);
       return [...systemMessages, ...toolMessages];
+    }
+
+    if (isTitle) {
+      // Title generation must stay minimal. The host's full agent prompt may
+      // expose tools and skill instructions that are not valid in a title-only
+      // turn, causing the model to emit tool_calls and break the API contract.
+      const userMessages = messages.filter((m) => m.role === NONOKA_MESSAGE_ROLES.user);
+      const titleSystem: NonokaChatMessage = {
+        role: NONOKA_MESSAGE_ROLES.system,
+        content: 'Generate a concise, plain-text title for the conversation. Do not call any tools.',
+      };
+      providerLog(`title message compaction: kept 1 system + ${userMessages.length} user messages (dropped ${messages.length - userMessages.length - 1})`);
+      return [titleSystem, ...userMessages];
     }
 
     return messages;

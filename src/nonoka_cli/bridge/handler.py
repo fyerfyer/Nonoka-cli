@@ -136,13 +136,15 @@ class ChatRequestHandler:
       },
     )
 
-    # When OpenCode forwards its native tool definitions, use the external-tool
-    # path so OpenCode can execute the tools and handle HITL itself.
+    # When the host forwards tool definitions, use the external-tool path so
+    # the host can execute the tools and handle HITL itself.
     external_tools = self._build_external_tools(msg)
+    external_mcp_servers = msg.external_mcp_servers
+    external_skills = msg.external_skills
     tool_results = self._extract_tool_results(msg)
     host_system_prompt = self._extract_host_system_prompt(msg)
 
-    if external_tools:
+    if external_tools or external_mcp_servers or external_skills:
       if tool_results:
         # Resume after external tool execution: do not re-inject old user or
         # assistant messages. The checkpoint already contains the pending
@@ -157,9 +159,11 @@ class ChatRequestHandler:
         stream = self._orchestrator.resume_external_tools(
           session_id=self._session_id or self._orchestrator.session_id,
           results=tool_results,
-          tools=external_tools,
+          tools=external_tools or [],
           working_dir=self._working_dir,
           host_system_prompt=host_system_prompt,
+          external_mcp_servers=external_mcp_servers,
+          external_skills=external_skills,
         )
       else:
         prompt = self._extract_prompt(msg)
@@ -168,9 +172,11 @@ class ChatRequestHandler:
           return
         stream = self._orchestrator.execute_with_external_tools(
           prompt=prompt,
-          tools=external_tools,
+          tools=external_tools or [],
           working_dir=self._working_dir,
           host_system_prompt=host_system_prompt,
+          external_mcp_servers=external_mcp_servers,
+          external_skills=external_skills,
         )
     else:
       # If the provider sent tool-approval-response parts, resume the paused turn.
@@ -191,9 +197,9 @@ class ChatRequestHandler:
     await self._emit_debug(
       "stream_prepared",
       payload={
-        "mode": "external_tools" if external_tools else "local",
+        "mode": "external_tools" if (external_tools or external_mcp_servers or external_skills) else "local",
         "is_resume": bool(tool_results),
-        "has_approvals": bool(self._extract_approvals(msg)) if not external_tools else False,
+        "has_approvals": bool(self._extract_approvals(msg)) if not (external_tools or external_mcp_servers or external_skills) else False,
         "session_id": self._session_id,
       },
     )

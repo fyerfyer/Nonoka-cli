@@ -312,11 +312,14 @@ class Orchestrator:
     tools: list[Capability],
     working_dir: Path | None = None,
     host_system_prompt: str | None = None,
+    external_mcp_servers: list[Any] | None = None,
+    external_skills: list[Any] | None = None,
   ) -> AsyncIterator[StreamEvent]:
-    """Execute *prompt* using only externally-supplied tools.
+    """Execute *prompt* using externally-supplied and configured tools.
 
-    The Agent is rebuilt for this turn so that local/MCP tools are excluded.
-    Tool execution itself is delegated to the external host (OpenCode).
+    The Agent is rebuilt for this turn. Tool execution for host-native and
+    host-managed MCP/skill tools is delegated to the external host; internal
+    MCP/skill tools are executed locally by nonoka-cli.
     """
     self._ensure_initialized()
     if self._agent_factory is None or self._runner_service is None:
@@ -326,6 +329,8 @@ class Orchestrator:
       tools,
       cwd=working_dir or Path.cwd(),
       host_system_prompt=host_system_prompt,
+      external_mcp_servers=external_mcp_servers,
+      external_skills=external_skills,
     )
 
     logger.info(
@@ -366,6 +371,8 @@ class Orchestrator:
     tools: list[Capability],
     working_dir: Path | None = None,
     host_system_prompt: str | None = None,
+    external_mcp_servers: list[Any] | None = None,
+    external_skills: list[Any] | None = None,
   ) -> AsyncIterator[StreamEvent]:
     """Resume a session paused for external tool execution.
 
@@ -381,6 +388,8 @@ class Orchestrator:
       tools,
       cwd=working_dir or Path.cwd(),
       host_system_prompt=host_system_prompt,
+      external_mcp_servers=external_mcp_servers,
+      external_skills=external_skills,
     )
 
     logger.info(

@@ -91,6 +91,29 @@ def test_translate_tool_call_start():
   assert messages[0].args == {"path": "/tmp/x"}
 
 
+def test_translate_tool_call_start_forwards_metadata():
+  event = StreamEvent(
+    type="tool_call_start",
+    data={
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "function": {"name": "mcp__fs__list", "arguments": '{"path": "/tmp"}'},
+          "metadata": {"kind": "mcp_tool", "server": "fs", "original_name": "list"},
+        }
+      ]
+    },
+  )
+  messages = translate_stream_event(event)
+  assert len(messages) == 1
+  assert isinstance(messages[0], ToolCallEvent)
+  assert messages[0].metadata == {
+    "kind": "mcp_tool",
+    "server": "fs",
+    "original_name": "list",
+  }
+
+
 def test_translate_tool_call_result():
   event = StreamEvent(
     type="tool_call_result",

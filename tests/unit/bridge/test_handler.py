@@ -9,7 +9,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nonoka_cli.bridge.handler import ChatRequestHandler
-from nonoka_cli.bridge.protocol import ChatMessage, ChatRequest, ExternalToolDefinition, ToolCall
+from nonoka_cli.bridge.protocol import (
+  ChatMessage,
+  ChatRequest,
+  ExternalMCPServerDefinition,
+  ExternalMCPToolDefinition,
+  ExternalSkillDefinition,
+  ExternalSkillToolDefinition,
+  ExternalToolDefinition,
+  ToolCall,
+)
 from nonoka_cli.core.task_state import TaskStateService
 
 
@@ -197,6 +206,61 @@ def test_extract_tool_results_accepts_all_when_no_pending_ids():
 async def async_empty() -> AsyncIterator[None]:
   if False:
     yield None
+
+
+async def test_handle_with_external_mcp_and_skills_passes_them_to_orchestrator(handler, sent):
+  with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
+    with patch.object(handler, "_apply_session", new=AsyncMock()):
+      orc = MagicMock()
+      orc.session_id = "sess-1"
+      orc.execute_with_external_tools = MagicMock(return_value=async_empty())
+      handler._orchestrator = orc
+      handler._session_id = "sess-1"
+
+      msg = ChatRequest(
+        messages=[ChatMessage(role="user", content="run ls")],
+        tools=[
+          ExternalToolDefinition(
+            name="bash",
+            description="Run commands",
+            parameters={"type": "object", "properties": {}},
+          )
+        ],
+        external_mcp_servers=[
+          ExternalMCPServerDefinition(
+            name="fs",
+            description="Filesystem",
+            tools=[
+              ExternalMCPToolDefinition(
+                name="list",
+                description="List",
+                parameters={"type": "object", "properties": {}},
+              )
+            ],
+          )
+        ],
+        external_skills=[
+          ExternalSkillDefinition(
+            name="code-review",
+            description="Review",
+            tools=[
+              ExternalSkillToolDefinition(
+                name="review_file",
+                description="Review",
+                parameters={"type": "object", "properties": {}},
+              )
+            ],
+          )
+        ],
+      )
+      await handler.handle(msg)
+
+      orc.execute_with_external_tools.assert_called_once()
+      call_kwargs = orc.execute_with_external_tools.call_args.kwargs
+      assert call_kwargs["external_mcp_servers"] == msg.external_mcp_servers
+      assert call_kwargs["external_skills"] == msg.external_skills
+      assert len(call_kwargs["tools"]) == 1
+      assert call_kwargs["tools"][0].name == "bash"
 
 
 async def test_sync_task_state_from_todowrite(tmp_path):

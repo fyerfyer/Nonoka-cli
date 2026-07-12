@@ -194,9 +194,16 @@ A typical generated `opencode.json` looks like:
         "write": "ask"
       }
     }
+  },
+  "tools": {
+    "skill": false
   }
 }
 ```
+
+The `"tools": {"skill": false}` line disables OpenCode's native `skill:<name>`
+tool so it does not collide with nonoka's `load_skill` / `skill__<name>__<tool>`
+workflow. `nonoka-cli opencode init` writes this automatically.
 
 ## Prompt ownership
 
@@ -264,12 +271,43 @@ skills:
 Both MCP tools and skill tools remain available in standalone mode without any
 prefixing.
 
+### Skill tool import paths
+
+A skill file lists its tools with an `import` entry in YAML frontmatter:
+
+```yaml
+---
+name: greet
+description: A simple greeting skill.
+tools:
+  - import: greet_tool:say_hello
+---
+When loaded, use the say_hello tool to greet the user by name.
+```
+
+`greet_tool:say_hello` is resolved by Python's normal import machinery, so the
+module must be importable from the project working directory (or from a directory
+on `PYTHONPATH`). Place the tool module next to your skill file or add the skill
+source directory to `PYTHONPATH` if you use a nested layout.
+
+### Avoiding OpenCode's native `skill` tool
+
+OpenCode has its own `skill:<name>` syntax that conflicts with nonoka's
+`skill__<name>__<tool>` namespace and `load_skill` tool. The generated
+`opencode.json` disables the native skill tool with `"tools": {"skill": false}`.
+If you hand-write `opencode.json`, keep that setting so the model only uses
+nonoka-managed skills.
+
 ## Known limitations
 
-These are current behaviors observed with OpenCode CLI 1.17.13. They are tracked
+These are current behaviors observed with OpenCode CLI 1.17.18. They are tracked
 here because they affect the TUI/HITL experience but cannot be fixed inside
 `nonoka-cli` or `nonoka-opencode-provider`.
 
+- [x] **OpenCode native `skill` tool conflicts with nonoka skills**: the
+  generated `opencode.json` disables it with `"tools": {"skill": false}`, and
+  the adapter prompt tells the model to use only `load_skill` and
+  `skill__<name>__<tool>`.
 - [x] **External directory rejection crashes OpenCode**: the adapter now injects
   the current working directory into the system prompt and instructs the model
   to use paths relative to it, so requests outside the workspace are rare. If

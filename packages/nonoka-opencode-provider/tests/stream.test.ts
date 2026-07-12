@@ -67,4 +67,19 @@ describe("createNonokaStreamTransformer", () => {
     const parts = await collectStream(input.pipeThrough(transformer));
     expect(parts).toHaveLength(0);
   });
+
+  it("forwards tool_call metadata on allowed tools", async () => {
+    const transformer = createNonokaStreamTransformer({
+      allowedToolNames: new Set(["skill__foo__bar"]),
+    });
+    const input = createInputStream([
+      '{"type":"tool_call","tool_call_id":"tc-1","tool_name":"skill__foo__bar","args":{"x":1},"metadata":{"kind":"skill","skill":"foo"}}',
+      '{"type":"finish","finish_reason":"tool_calls"}',
+    ]);
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const toolCall = parts.find((p: any) => p.type === "tool-call");
+    expect(toolCall).toBeDefined();
+    expect((toolCall as any).toolName).toBe("skill__foo__bar");
+    expect((toolCall as any).metadata).toEqual({ kind: "skill", skill: "foo" });
+  });
 });

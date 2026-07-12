@@ -34,11 +34,45 @@ class ChatMessage(BaseModel):
 
 
 class ExternalToolDefinition(BaseModel):
-  """A tool definition supplied by the OpenCode host."""
+  """A tool definition supplied by an external host (e.g. OpenCode)."""
 
   name: str
   description: str
   parameters: dict[str, Any]
+
+
+class ExternalMCPToolDefinition(BaseModel):
+  """A tool provided by an external host-managed MCP server."""
+
+  name: str
+  description: str
+  parameters: dict[str, Any]
+
+
+class ExternalMCPServerDefinition(BaseModel):
+  """An external host-managed MCP server definition."""
+
+  name: str
+  description: str = ""
+  tools: list[ExternalMCPToolDefinition]
+
+
+class ExternalSkillToolDefinition(BaseModel):
+  """A tool provided by an external host-managed skill."""
+
+  name: str
+  description: str
+  parameters: dict[str, Any]
+
+
+class ExternalSkillDefinition(BaseModel):
+  """An external host-managed skill definition."""
+
+  name: str
+  description: str = ""
+  tools: list[ExternalSkillToolDefinition]
+  system_prompt: str = ""
+  activation_prompt: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -47,6 +81,8 @@ class ChatRequest(BaseModel):
   type: Literal["chat"] = "chat"
   messages: list[ChatMessage]
   tools: list[ExternalToolDefinition] | None = None
+  external_mcp_servers: list[ExternalMCPServerDefinition] | None = None
+  external_skills: list[ExternalSkillDefinition] | None = None
   session_id: str | None = None
   new_session: bool = False
   cwd: str = Field(default=".")
@@ -90,6 +126,7 @@ class ToolCallEvent(BaseModel):
   tool_call_id: str
   tool_name: str
   args: Any = None
+  metadata: dict[str, Any] | None = None
 
 
 class ToolResultEvent(BaseModel):

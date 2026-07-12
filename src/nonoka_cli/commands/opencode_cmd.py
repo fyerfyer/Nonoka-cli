@@ -44,6 +44,13 @@ _DEFAULT_OPENCODE_CONFIG = {
       },
     }
   },
+  # Disable OpenCode's native skill tool. nonoka-cli registers its own
+  # skill__<skill>__<tool> and load_skill tools; leaving OpenCode's native
+  # skill enabled would cause the model to receive conflicting instructions
+  # (skill:<name> vs skill__<name>__<tool>).
+  "tools": {
+    "skill": False
+  },
 }
 
 _OPENCODE_PROMPT_GUIDELINES = (

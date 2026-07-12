@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import pytest
 from nonoka import SkillRegistry
@@ -224,7 +226,168 @@ async def test_build_with_external_tools_injects_namespace_block(tmp_path):
   assert "## Tool Namespaces" in prompt
   assert "`bash`" in prompt
   assert "`mcp__filesystem__list_directory`" in prompt
-  assert "MCP tools (call as" in prompt
+  assert "Internal MCP tools (nonoka executes" in prompt
   assert "Use the EXACT tool names below" in prompt
   # Colon-prefixed names are not passed to the LLM.
   assert "mcp:filesystem:list_directory" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_accepts_external_mcp_servers():
+  from nonoka_cli.bridge.protocol import (
+    ExternalMCPServerDefinition,
+    ExternalMCPToolDefinition,
+  )
+
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config)
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  external_mcp = [
+    ExternalMCPServerDefinition(
+      name="filesystem",
+      description="File access",
+      tools=[
+        ExternalMCPToolDefinition(
+          name="list_directory",
+          description="List files",
+          parameters={"type": "object", "properties": {}},
+        )
+      ],
+    )
+  ]
+  agent = factory.build_with_external_tools(
+    tools,
+    external_mcp_servers=external_mcp,
+  )
+  tool_names = {t.name for t in agent.tools}
+  assert "bash" in tool_names
+  assert "mcp__filesystem__list_directory" in tool_names
+
+  cap = next(t for t in agent.tools if t.name == "mcp__filesystem__list_directory")
+  assert cap.external is True
+  assert cap.metadata == {
+    "kind": "mcp_tool",
+    "server": "filesystem",
+    "original_name": "list_directory",
+  }
+
+  prompt = agent.system_prompt
+  assert "External MCP tools (host executes" in prompt
+  assert "`mcp__filesystem__list_directory`" in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_accepts_external_skills():
+  from nonoka_cli.bridge.protocol import (
+    ExternalSkillDefinition,
+    ExternalSkillToolDefinition,
+  )
+
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config)
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  external_skills = [
+    ExternalSkillDefinition(
+      name="code-review",
+      description="Review code",
+      tools=[
+        ExternalSkillToolDefinition(
+          name="review_file",
+          description="Review a file",
+          parameters={"type": "object", "properties": {}},
+        )
+      ],
+      system_prompt="You are a reviewer.",
+      activation_prompt="Review carefully.",
+    )
+  ]
+  agent = factory.build_with_external_tools(
+    tools,
+    external_skills=external_skills,
+  )
+  tool_names = {t.name for t in agent.tools}
+  assert "bash" in tool_names
+  assert "skill__code-review__review_file" in tool_names
+
+  cap = next(t for t in agent.tools if t.name == "skill__code-review__review_file")
+  assert cap.external is True
+  assert cap.metadata == {
+    "kind": "skill_tool",
+    "skill": "code-review",
+    "original_name": "review_file",
+  }
+
+  prompt = agent.system_prompt
+  assert "External skill tools (host executes" in prompt
+  assert "`skill__code-review__review_file`" in prompt
+
+
+def test_is_opencode_native_skill_enabled(tmp_path: Path):
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config)
+
+  # Missing cwd and missing file -> treated as safe (disabled / not OpenCode).
+  assert AgentFactory._is_opencode_native_skill_enabled(None) is False
+  assert AgentFactory._is_opencode_native_skill_enabled(tmp_path) is False
+
+  # Explicitly disabled.
+  (tmp_path / "opencode.json").write_text(json.dumps({"tools": {"skill": False}}))
+  assert AgentFactory._is_opencode_native_skill_enabled(tmp_path) is False
+
+  # Explicitly enabled.
+  (tmp_path / "opencode.json").write_text(json.dumps({"tools": {"skill": True}}))
+  assert AgentFactory._is_opencode_native_skill_enabled(tmp_path) is True
+
+  # Default when tools key exists but skill is omitted.
+  (tmp_path / "opencode.json").write_text(json.dumps({"tools": {}}))
+  assert AgentFactory._is_opencode_native_skill_enabled(tmp_path) is True
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_warns_when_native_skill_enabled(tmp_path: Path):
+  (tmp_path / "opencode.json").write_text(json.dumps({"tools": {"skill": True}}))
+
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config)
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  agent = factory.build_with_external_tools(tools, cwd=str(tmp_path))
+  prompt = agent.system_prompt
+  assert "OpenCode's native skill tool is enabled" in prompt
+  assert "skill:<name>" in prompt
+  assert "skill__<skill>__<tool>" in prompt
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_no_warning_when_native_skill_disabled(tmp_path: Path):
+  (tmp_path / "opencode.json").write_text(json.dumps({"tools": {"skill": False}}))
+
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config)
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  agent = factory.build_with_external_tools(tools, cwd=str(tmp_path))
+  prompt = agent.system_prompt
+  assert "OpenCode's native skill tool is enabled" not in prompt

@@ -111,3 +111,18 @@ def test_opencode_init_has_hitl_permissions(tmp_path: Path):
   assert data["permission"]["edit"] == "ask"
   assert data["permission"]["write"] == "ask"
   assert data["agent"]["build"]["permission"]["*"] == "ask"
+
+
+def test_opencode_init_disables_native_skill_tool(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
+
+  args = argparse.Namespace(
+    config=str(config_path),
+    cwd=str(tmp_path),
+    global_=False,
+  )
+  assert cmd_init(args) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  assert data.get("tools", {}).get("skill") is False

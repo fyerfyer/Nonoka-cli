@@ -170,4 +170,82 @@ describe('NonokaLanguageModel', () => {
       fs.rmSync(sessionFile, { force: true });
     }
   });
+
+  it('builds chat request with external mcp/skill placeholders', () => {
+    const model = new NonokaLanguageModel(
+      'deepseek-chat',
+      {},
+      {
+        provider: 'nonoka',
+        serverCommand: ['nonoka-cli', '--server'],
+        cwd: '/tmp/nonoka-external-test',
+      },
+    );
+
+    const request = (model as any).buildChatRequest(
+      { prompt: makeChatPrompt(true) },
+      false,
+    );
+    expect(request.external_mcp_servers).toEqual([]);
+    expect(request.external_skills).toEqual([]);
+  });
+
+  it('strips tools and external definitions during title generation', () => {
+    const model = new NonokaLanguageModel(
+      'deepseek-chat',
+      {},
+      {
+        provider: 'nonoka',
+        serverCommand: ['nonoka-cli', '--server'],
+        cwd: '/tmp/nonoka-title-tools-test',
+      },
+    );
+
+    const request = (model as any).buildChatRequest(
+      {
+        prompt: makeTitlePrompt(),
+        tools: [
+          {
+            type: 'function',
+            name: 'load_skill',
+            description: 'Load a skill',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      },
+      true,
+    );
+    expect(request.tools).toBeUndefined();
+    expect(request.external_mcp_servers).toEqual([]);
+    expect(request.external_skills).toEqual([]);
+  });
+
+  it('uses a minimal system prompt for title generation', () => {
+    const model = new NonokaLanguageModel(
+      'deepseek-chat',
+      {},
+      {
+        provider: 'nonoka',
+        serverCommand: ['nonoka-cli', '--server'],
+        cwd: '/tmp/nonoka-title-prompt-test',
+      },
+    );
+
+    const request = (model as any).buildChatRequest(
+      {
+        prompt: [
+          { role: 'system', content: 'You are nonoka-cli with load_skill tools.' },
+          { role: 'user', content: 'Generate a title for this conversation:\n' },
+          { role: 'user', content: 'hello world' },
+        ],
+      },
+      true,
+    );
+    expect(request.messages).toHaveLength(2);
+    expect(request.messages[0].role).toBe('system');
+    expect(request.messages[0].content).toContain('Generate a concise');
+    expect(request.messages[1].role).toBe('user');
+    expect(request.messages[1].content).toContain('Generate a title');
+    expect(request.messages[1].content).toContain('hello world');
+  });
 });

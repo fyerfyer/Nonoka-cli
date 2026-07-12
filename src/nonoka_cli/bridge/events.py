@@ -85,11 +85,13 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
             args = json.loads(args) if args else {}
           except json.JSONDecodeError:
             args = {"raw": args}
+        metadata = tc.get("metadata") or {}
         out.append(
           ToolCallEvent(
             tool_call_id=tc.get("id") or tc.get("tool_call_id", "unknown"),
             tool_name=name,
             args=args,
+            metadata=metadata if metadata else None,
           )
         )
       _timeline_log(event, out)

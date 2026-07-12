@@ -129,16 +129,19 @@ export function createNonokaStreamTransformer(
           // In deferred HITL mode the backend emits tool_call before the tool
           // has actually executed; it is waiting for an approval decision.
           // providerExecuted must be false so OpenCode renders the approval UI.
-          const part = {
+          const part: LanguageModelV3StreamPart & {
+            metadata?: Record<string, unknown>;
+          } = {
             type: 'tool-call' as const,
             toolCallId,
             toolName,
             input: JSON.stringify(event.args ?? {}),
             providerExecuted: false,
             dynamic: true,
+            metadata: event.metadata,
           };
           logStreamPart(part);
-          controller.enqueue(part);
+          controller.enqueue(part as LanguageModelV3StreamPart);
           break;
         }
 
