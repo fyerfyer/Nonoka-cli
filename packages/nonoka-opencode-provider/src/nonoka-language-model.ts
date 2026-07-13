@@ -98,6 +98,9 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   private readonly settings: NonokaLanguageModelSettings;
   private chatSessionId: string | undefined;
   private titleSessionId: string | undefined;
+  private cachedChatTools:
+    | { name: string; description: string; parameters: Record<string, unknown> }[]
+    | undefined;
 
   constructor(
     modelId: string,
@@ -284,6 +287,18 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         description: tool.description ?? '',
         parameters: tool.inputSchema,
       }));
+
+    // OpenCode sometimes sends resume requests without repeating the tool list.
+    // Cache the tools from the first real chat request so nonoka-cli can stay
+    // in external-tool mode across turns.
+    if (!isTitle && tools && tools.length > 0) {
+      this.cachedChatTools = tools;
+    }
+    if (!isTitle && isResume && (!tools || tools.length === 0) && this.cachedChatTools) {
+      tools = this.cachedChatTools;
+      providerLog(`buildChatRequest resumed with cached tools count=${tools.length}`);
+    }
+
     // OpenCode 1.17.14 does not expose external MCP/skill definitions to
     // providers. The bridge fields are reserved so the protocol is ready when
     // a future OpenCode version (or a custom host) passes them.

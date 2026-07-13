@@ -20,6 +20,30 @@ def factory():
   return AgentFactory(config)
 
 
+@pytest.mark.asyncio
+async def test_build_injects_execution_plan(factory):
+  agent = factory.build(execution_plan="1. Read foo.py\n2. Edit foo.py")
+  assert "## Execution Plan" in agent.system_prompt
+  assert "1. Read foo.py" in agent.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_injects_execution_plan(factory):
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+  agent = factory.build_with_external_tools(
+    tools,
+    execution_plan="1. Read foo.py\n2. Edit foo.py",
+  )
+  assert "## Execution Plan" in agent.system_prompt
+  assert "1. Read foo.py" in agent.system_prompt
+
+
 def test_create_external_tool_capability():
   cap = AgentFactory.create_external_tool_capability(
     name="bash",

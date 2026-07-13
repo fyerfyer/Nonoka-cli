@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from nonoka_cli.commands.opencode_cmd import cmd_init
+from nonoka_cli.commands.opencode_cmd import _OPENCODE_AUTO_APPROVED_TOOLS, cmd_init
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 
@@ -111,6 +111,31 @@ def test_opencode_init_has_hitl_permissions(tmp_path: Path):
   assert data["permission"]["edit"] == "ask"
   assert data["permission"]["write"] == "ask"
   assert data["agent"]["build"]["permission"]["*"] == "ask"
+
+
+def test_opencode_init_auto_approve_permissions(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(
+    CLIConfig(model="deepseek-chat", cli={"auto_approve": True}),
+    config_path,
+  )
+
+  args = argparse.Namespace(
+    config=str(config_path),
+    cwd=str(tmp_path),
+    global_=False,
+  )
+  assert cmd_init(args) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  for tool in _OPENCODE_AUTO_APPROVED_TOOLS:
+    assert data["permission"][tool] == "allow"
+    assert data["agent"]["build"]["permission"][tool] == "allow"
+  assert data["permission"]["*"] == "ask"
+
+  agent_file = tmp_path / ".opencode" / "agents" / "build.md"
+  content = agent_file.read_text()
+  assert "auto-approved" in content or "auto-approve" in content
 
 
 def test_opencode_init_disables_native_skill_tool(tmp_path: Path):

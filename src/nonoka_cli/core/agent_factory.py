@@ -20,10 +20,15 @@ from nonoka import (
   SkillRegistry,
   load_skill,
 )
-from nonoka.core.context import RunContext
 from nonoka.core.types import Capability
 
 from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.core.namespaces import (
+  PrefixedCapability,
+  mcp_tool_name,
+  sanitize_tool_name,
+  skill_tool_name,
+)
 from nonoka_cli.core.prompt_builder import SystemPromptBuilder
 from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.tools.loader import ToolLoader
@@ -100,6 +105,7 @@ class AgentFactory:
     mcp_manager: MCPManager | None = None,
     tool_loader: ToolLoader | None = None,
     skill_registry: SkillRegistry | None = None,
+    allowed_tools: list[str] | None = None,
   ):
     """Args:
       config: Validated CLI configuration.
@@ -108,12 +114,19 @@ class AgentFactory:
       tool_loader: Optional tool loader for local / built-in tools.
       skill_registry: Optional pre-built skill registry. If omitted, the
         factory constructs one from ``config.skills`` at build time.
+      allowed_tools: Optional whitelist of tool names that do not require
+        human approval. Non-listed tools are marked as requiring approval.
     """
     self._config = config
     self._mcp_manager = mcp_manager
     self._tool_loader = tool_loader
     self._skill_registry = skill_registry
+    self._allowed_tools = set(allowed_tools or [])
     self._agent: Agent | None = None
+    self._repo_map: str | None = None
+    self._git_summary: str | None = None
+    self._plugin_summary: str | None = None
+    self._execution_plan: str | None = None
 
   @property
   def config(self) -> CLIConfig:
@@ -130,11 +143,30 @@ class AgentFactory:
     """Current skill registry, if any."""
     return self._skill_registry
 
-  def build(self) -> Agent:
+  def _executor_max_turns(self) -> int:
+    """Return the configured executor max turns, falling back to 20."""
+    configured = getattr(
+      self._config.agents.executor, "max_turns", None
+    )
+    return configured if configured else 20
+
+  def build(
+    self,
+    *,
+    repo_map: str | None = None,
+    git_summary: str | None = None,
+    plugin_summary: str | None = None,
+    execution_plan: str | None = None,
+  ) -> Agent:
     """Build (or rebuild) an Agent from the current configuration.
 
     Injects the current model identifier into the system prompt so the
     model can accurately answer questions about its own identity.
+
+    Args:
+      repo_map: Optional repo-map block to inject into the system prompt.
+      git_summary: Optional git-checkpoint status summary.
+      plugin_summary: Optional loaded plugin manifest summary.
 
     Returns:
       A nonoka Agent instance.
@@ -145,7 +177,23 @@ class AgentFactory:
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
-    system_prompt = self._build_system_prompt()
+    # Keep the most recently supplied context blocks so rebuilds can reuse them
+    # when the caller does not pass fresh values.
+    if repo_map is not None:
+      self._repo_map = repo_map
+    if git_summary is not None:
+      self._git_summary = git_summary
+    if plugin_summary is not None:
+      self._plugin_summary = plugin_summary
+    if execution_plan is not None:
+      self._execution_plan = execution_plan
+
+    system_prompt = self._build_system_prompt(
+      repo_map=self._repo_map,
+      git_summary=self._git_summary,
+      plugin_summary=self._plugin_summary,
+      execution_plan=self._execution_plan,
+    )
 
     logger.info(
       "building_agent",
@@ -157,7 +205,7 @@ class AgentFactory:
       AgentBuilder()
       .model(self._config.model)
       .system_prompt(system_prompt)
-      .max_turns(20)
+      .max_turns(self._executor_max_turns())
     )
 
     # Local / built-in tools via ToolRegistry so runtime reloads are reflected
@@ -188,17 +236,25 @@ class AgentFactory:
     self._agent = builder.build()
     return self._agent
 
-  def _build_system_prompt(self) -> str:
+  def _build_system_prompt(
+    self,
+    *,
+    repo_map: str | None = None,
+    git_summary: str | None = None,
+    plugin_summary: str | None = None,
+    execution_plan: str | None = None,
+  ) -> str:
     """Build the effective system prompt, injecting the current model name."""
     base = self._config.system_prompt or _DEFAULT_CODING_SYSTEM_PROMPT
-    model = self._config.model.strip()
-
-    # Avoid injecting the identity line twice if the user already wrote one.
-    if f"Your current model is: {model}" in base:
-      return base
-
-    identity_line = f"\n\nYour current model is: {model}."
-    return base.rstrip() + identity_line
+    return SystemPromptBuilder(
+      base=base,
+      model=self._config.model,
+      repo_map=repo_map,
+      git_summary=git_summary,
+      plugin_summary=plugin_summary,
+      execution_plan=execution_plan,
+      allowed_tools=list(self._allowed_tools),
+    ).build()
 
   def build_with_external_tools(
     self,
@@ -207,6 +263,11 @@ class AgentFactory:
     host_system_prompt: str | None = None,
     external_mcp_servers: list[Any] | None = None,
     external_skills: list[Any] | None = None,
+    *,
+    repo_map: str | None = None,
+    git_summary: str | None = None,
+    plugin_summary: str | None = None,
+    execution_plan: str | None = None,
   ) -> Agent:
     """Build an Agent for host-managed (e.g. OpenCode) mode.
 
@@ -232,19 +293,19 @@ class AgentFactory:
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
 
-    base = self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT
+    # Keep the most recently supplied context blocks so rebuilds can reuse them.
+    if repo_map is not None:
+      self._repo_map = repo_map
+    if git_summary is not None:
+      self._git_summary = git_summary
+    if plugin_summary is not None:
+      self._plugin_summary = plugin_summary
+    if execution_plan is not None:
+      self._execution_plan = execution_plan
 
-    # If OpenCode's native skill tool is still enabled, warn the model directly in
-    # the system prompt so it does not confuse ``skill:<name>`` with nonoka's
-    # ``skill__<skill>__<tool>`` namespace.
-    if self._is_opencode_native_skill_enabled(cwd):
-      base = base.rstrip() + (
-        "\n\nWARNING: OpenCode's native skill tool is enabled in opencode.json. "
-        "To avoid conflicts with nonoka-managed skills, disable it by setting "
-        "\"tools\": {\"skill\": false} in opencode.json. Until then, ignore any "
-        "``skill:<name>`` instructions and use only ``skill__<skill>__<tool>`` "
-        "and ``load_skill``."
-      )
+    base = self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT
+    opencode_native_skill_enabled = self._is_opencode_native_skill_enabled(cwd)
+    if opencode_native_skill_enabled:
       logger.warning("opencode_native_skill_enabled", cwd=str(cwd) if cwd else None)
 
     # 1. Host native tools (external capabilities).
@@ -315,10 +376,7 @@ class AgentFactory:
     mcp_tool_names: list[str] = []
     if self._mcp_manager is not None:
       mcp_tools = self._mcp_manager.get_tools()
-      mcp_tool_names = [
-        _sanitize_tool_name(f"mcp__{server}__{cap.name}")
-        for server, cap in mcp_tools
-      ]
+      mcp_tool_names = [mcp_tool_name(server, cap.name) for server, cap in mcp_tools]
 
     # 6. Internal skill tools are prefixed with the skill name.
     skill_tool_names: list[str] = []
@@ -327,9 +385,8 @@ class AgentFactory:
         skill = skill_registry.get_skill(info.name)
         if skill is None:
           continue
-        prefix = f"skill__{skill.name}__"
         for tool in skill.tools:
-          skill_tool_names.append(_sanitize_tool_name(f"{prefix}{tool.name}"))
+          skill_tool_names.append(skill_tool_name(skill.name, tool.name))
 
     system_prompt = SystemPromptBuilder(
       base=base,
@@ -340,6 +397,12 @@ class AgentFactory:
       external_skill_tools=external_skill_tool_names,
       internal_mcp_tools=mcp_tool_names,
       internal_skill_tools=skill_tool_names,
+      opencode_native_skill_enabled=opencode_native_skill_enabled,
+      repo_map=self._repo_map,
+      git_summary=self._git_summary,
+      plugin_summary=self._plugin_summary,
+      execution_plan=self._execution_plan,
+      allowed_tools=list(self._allowed_tools),
     ).build()
 
     logger.info(
@@ -358,7 +421,7 @@ class AgentFactory:
       AgentBuilder()
       .model(self._config.model)
       .system_prompt(system_prompt)
-      .max_turns(20)
+      .max_turns(self._executor_max_turns())
     )
 
     # Register lazy-load internal skills with prefixed tool names.
@@ -379,7 +442,7 @@ class AgentFactory:
 
     # Internal MCP tools are executed locally by nonoka-cli.
     for server, cap in mcp_tools:
-      builder = builder.tool(_PrefixedCapability(cap, f"mcp__{server}__"))
+      builder = builder.tool(PrefixedCapability(cap, f"mcp__{server}__"))
 
     return builder.build()
 
@@ -507,61 +570,16 @@ class AgentFactory:
       data.update(config_patch)
       self._config = self._config.__class__.model_validate(data)
 
-    return self.build()
+    return self.build(
+      repo_map=self._repo_map,
+      git_summary=self._git_summary,
+      plugin_summary=self._plugin_summary,
+      execution_plan=self._execution_plan,
+    )
 
   def get_agent(self) -> Agent | None:
     """Return the currently built Agent, if any."""
     return self._agent
-
-
-def _sanitize_tool_name(name: str) -> str:
-  """Return a provider-safe tool name.
-
-  OpenAI function names must match ``^[a-zA-Z0-9_-]+$``. We replace namespace
-  separators (``:``) with ``__`` and replace any remaining invalid characters
-  with underscores. Double underscores are preserved as the namespace marker.
-  """
-  import re
-
-  sanitized = name.replace(":", "__")
-  sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", sanitized)
-  # Avoid leading/trailing underscores.
-  return sanitized.strip("_")
-
-
-class _PrefixedCapability:
-  """Wraps a capability with a namespace prefix to avoid name collisions.
-
-  This is used for MCP tools (``mcp__<server>__<tool>``) and skill tools
-  (``skill__<skill>__<tool>``) when they are exposed alongside OpenCode's
-  native tools in external-tools mode.
-  """
-
-  def __init__(self, wrapped: Capability, prefix: str):
-    self._wrapped = wrapped
-    self.name = _sanitize_tool_name(f"{prefix}{wrapped.name}")
-    self.description = getattr(wrapped, "description", "")
-    self.parameters = getattr(wrapped, "parameters", {})
-    self.external = getattr(wrapped, "external", False)
-    self.metadata = dict(getattr(wrapped, "metadata", {}) or {})
-
-  async def invoke(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
-    return await self._wrapped.invoke(ctx, arguments)
-
-  def to_json_schema(self) -> dict[str, Any]:
-    schema = self._wrapped.to_json_schema()
-    if not isinstance(schema, dict):
-      schema = {}
-    if (
-      schema.get("type") == "function"
-      and isinstance(schema.get("function"), dict)
-    ):
-      schema["function"]["name"] = self.name
-    return schema
-
-  def __getattr__(self, name: str) -> Any:
-    """Forward any unknown attributes to the wrapped capability."""
-    return getattr(self._wrapped, name)
 
 
 class _PrefixedSkillRegistry(SkillRegistry):
@@ -596,9 +614,8 @@ class _PrefixedSkillRegistry(SkillRegistry):
       skill = self.get_skill(info.name)
       if skill is None:
         continue
-      prefix = f"skill__{skill.name}__"
       for tool in skill.tools:
-        tools.append(_PrefixedCapability(tool, prefix))
+        tools.append(PrefixedCapability(tool, f"skill__{skill.name}__"))
     return tools
 
   def build_registry_block(self) -> str:

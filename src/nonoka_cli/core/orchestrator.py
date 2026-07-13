@@ -9,19 +9,29 @@ from typing import Any
 import structlog
 from nonoka import Runner
 from nonoka.backends.checkpoint.sqlite import SQLiteCheckpointStore
+from nonoka.core.context import RunContext
 from nonoka.core.hooks import Hooks
 from nonoka.core.llm import LLMMessageRole
 from nonoka.core.runner import StreamEvent
 from nonoka.core.types import Capability
 from nonoka.ext.hitl import HumanInTheLoopHooks
 from nonoka.ext.hitl.core import HumanApprover, ToolRule
+from nonoka.skills.registry import SkillRegistry
 
 from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.context import CLIContext
 from nonoka_cli.core.context_trimmer import TurnBasedContextTrimmer
+from nonoka_cli.core.git_service import GitService, build_git_service
 from nonoka_cli.core.mcp_service import MCPService
+from nonoka_cli.core.planning_service import PlanningService, build_planning_service
+from nonoka_cli.core.plugin_manifest import (
+  PluginManifestLoader,
+  format_manifest_summary,
+  merge_manifests,
+)
+from nonoka_cli.core.repo_map_service import RepoMapService, build_repo_map_service
 from nonoka_cli.core.runner_service import RunnerService
 from nonoka_cli.core.session_service import SessionService
 from nonoka_cli.core.task_state import TaskStateService
@@ -52,6 +62,18 @@ class _DeferredApprover(HumanApprover):
     return True
 
 
+def _paths_from_tool_arguments(arguments: dict[str, Any] | None) -> list[str]:
+  """Extract relative file paths from write-tool arguments for cleanup."""
+  if not arguments:
+    return []
+  paths: list[str] = []
+  for key in ("path", "file_path", "filePath", "file", "filename"):
+    value = arguments.get(key)
+    if isinstance(value, str) and value:
+      paths.append(value)
+  return paths
+
+
 class Orchestrator:
   """High-level facade: config → agent → runner → sessions → MCP."""
 
@@ -73,6 +95,10 @@ class Orchestrator:
     self._runner_service: RunnerService | None = None
     self._tool_service: ToolService | None = None
     self._mcp_service: MCPService | None = None
+    self._git_service: GitService | None = None
+    self._repo_map_service: RepoMapService | None = None
+    self._planning_service: PlanningService | None = None
+    self._plugin_manifests: list[Any] = []
     self._initialized = False
 
   @property
@@ -121,12 +147,45 @@ class Orchestrator:
     if self._tool_loader is None:
       self._tool_loader = ToolLoader(self._config.tool_paths)
 
+    # Services that depend only on config/working_dir are created eagerly.
+    self._git_service = build_git_service(
+      working_dir=Path.cwd(),
+      config=self._config,
+    )
+    self._repo_map_service = build_repo_map_service(
+      working_dir=Path.cwd(),
+      config=self._config,
+    )
+    self._planning_service = build_planning_service(
+      working_dir=Path.cwd(),
+      config=self._config,
+    )
+
+    # Load project plugin manifests before building the Agent so that
+    # allowed_tools / plugin summary can be taken into account.
+    manifest_loader = PluginManifestLoader(
+      extra_paths=list(self._config.plugins.manifests)
+    )
+    self._plugin_manifests = manifest_loader.load(Path.cwd())
+    allowed_tools = self._effective_allowed_tools()
+
     self._agent_factory = AgentFactory(
       self._config,
       mcp_manager=self._mcp_manager,
       tool_loader=self._tool_loader,
+      allowed_tools=allowed_tools,
     )
-    self._agent_factory.build()
+
+    # Build optional context blocks for the system prompt.
+    repo_map_block = await self._build_repo_map_block()
+    git_summary = await self._git_service.status_summary() if self._git_service else None
+    plugin_summary = self._build_plugin_summary()
+
+    self._agent_factory.build(
+      repo_map=repo_map_block,
+      git_summary=git_summary,
+      plugin_summary=plugin_summary,
+    )
     self._tool_service = ToolService(self._agent_factory, self._tool_loader)
     self._mcp_service = MCPService(self._mcp_manager, self._agent_factory)
 
@@ -202,20 +261,145 @@ class Orchestrator:
             if pruned != msg.content:
               msg.content = pruned
 
+    async def on_tool_start(hook_ctx, tool_name, arguments):
+      deps = getattr(hook_ctx.session, "deps", None)
+      git_service = getattr(deps, "git_service", None) if deps else None
+      if git_service is None:
+        return
+      try:
+        run_ctx = RunContext(hook_ctx.session)
+        checkpoint = await git_service.checkpoint_before(run_ctx, tool_name, arguments)
+        if checkpoint:
+          hook_ctx.extra.setdefault("git_checkpoint_before", {})[tool_name] = checkpoint
+      except Exception as exc:
+        logger.warning("git_checkpoint_hook_failed", error=str(exc), tool=tool_name)
+
+    async def on_tool_end(hook_ctx, tool_name, arguments, result, error):
+      deps = getattr(hook_ctx.session, "deps", None)
+      git_service = getattr(deps, "git_service", None) if deps else None
+      if git_service is None:
+        return
+
+      run_ctx = RunContext(hook_ctx.session)
+      before_hash = hook_ctx.extra.get("git_checkpoint_before", {}).get(tool_name)
+
+      if error is not None:
+        try:
+          paths = _paths_from_tool_arguments(arguments)
+          await git_service.rollback_last(
+            run_ctx,
+            to_hash=before_hash,
+            paths=paths,
+          )
+        except Exception as exc:
+          logger.warning("git_rollback_hook_failed", error=str(exc), tool=tool_name)
+        return
+
+      if git_service.should_checkpoint_after(tool_name):
+        try:
+          await git_service.checkpoint_after(run_ctx, tool_name, arguments)
+        except Exception as exc:
+          logger.warning("git_checkpoint_after_hook_failed", error=str(exc), tool=tool_name)
+
+    hooks_kwargs: dict[str, Any] = {
+      "on_llm_request": on_llm_request,
+      "on_tool_start": on_tool_start,
+      "on_tool_end": on_tool_end,
+    }
+
     if hitl is not None:
       return HumanInTheLoopHooks(
         approver=_DeferredApprover(),
         rules=hitl.rules,
         default_action="allow",
         deferred=True,
-        on_llm_request=on_llm_request,
+        **hooks_kwargs,
       )
-    return Hooks(on_llm_request=on_llm_request)
+    return Hooks(**hooks_kwargs)
+
+  async def _build_repo_map_block(self) -> str | None:
+    """Build the repo-map system-prompt block, if enabled."""
+    if self._repo_map_service is None:
+      return None
+    return await self._repo_map_service.build_system_prompt_block()
+
+  async def _build_repo_map_block_for_dir(self, cwd: Path) -> str | None:
+    """Build the repo-map block for an arbitrary working directory."""
+    service = build_repo_map_service(working_dir=cwd, config=self._config)
+    return await service.build_system_prompt_block()
+
+  async def _git_status_summary_for_dir(self, cwd: Path) -> str | None:
+    """Build the git status summary for an arbitrary working directory."""
+    service = build_git_service(working_dir=cwd, config=self._config)
+    return await service.status_summary()
+
+  def _build_plugin_summary(self) -> str | None:
+    """Build the plugin-manifest system-prompt summary, if any manifests loaded."""
+    if not self._plugin_manifests:
+      return None
+    merged = merge_manifests(self._plugin_manifests)
+    return format_manifest_summary(merged)
+
+  def _effective_allowed_tools(self) -> list[str]:
+    """Return the merged allowed-tools list from all loaded plugin manifests."""
+    if not self._plugin_manifests:
+      return []
+    merged = merge_manifests(self._plugin_manifests)
+    return merged.allowed_tools
 
   def _on_config_changed(self, config: CLIConfig) -> None:
     """ConfigManager hot-reload listener: update local reference only."""
     self._config = config
     logger.info("config_reference_updated", model=config.model)
+
+  def _build_skill_registry(
+    self,
+    cwd: Path | None = None,
+  ) -> SkillRegistry | None:
+    """Build a SkillRegistry from config, optionally scoped to a cwd."""
+    if not self._config.skills:
+      return None
+    if cwd is None and self._agent_factory is not None:
+      return self._agent_factory.skill_registry
+    search_paths: list[Path] = []
+    if cwd is not None:
+      search_paths.extend([
+        cwd / ".nonoka" / "skills",
+        cwd / "skills",
+      ])
+    return SkillRegistry(
+      enabled=list(self._config.skills),
+      search_paths=search_paths,
+    )
+
+  def _build_cli_context(
+    self,
+    session_id: str,
+    working_dir: Path,
+  ) -> CLIContext:
+    """Construct a consistent CLIContext for all execution paths."""
+    return CLIContext(
+      user="local",
+      session_id=session_id,
+      config=self._config,
+      working_dir=working_dir,
+      task_state_service=TaskStateService(
+        tasks_dir=self._config.task_state.tasks_dir,
+        enabled=self._config.task_state.enabled,
+        base_dir=working_dir,
+      ),
+      skill_manager=self._build_skill_registry(working_dir),
+      mcp_manager=self._mcp_manager,
+      git_service=build_git_service(
+        working_dir=working_dir,
+        config=self._config,
+      ),
+      repo_map_service=build_repo_map_service(
+        working_dir=working_dir,
+        config=self._config,
+      ),
+      plugin_manifests=self._plugin_manifests,
+    )
 
   async def execute(
     self,
@@ -231,6 +415,25 @@ class Orchestrator:
     if agent is None:
       raise OrchestratorError("No Agent available. Build failed during initialization.")
 
+    # Optional two-stage Planner/Executor workflow: when a planner model is
+    # configured, generate a plan first and rebuild the executor Agent with the
+    # plan injected into its system prompt.
+    logger.info(
+      "execute_planning_check",
+      planning_service_exists=self._planning_service is not None,
+      planning_enabled=self._planning_service.enabled if self._planning_service else False,
+      planner_model=self._planning_service.planner_model if self._planning_service else None,
+    )
+    if self._planning_service is not None and self._planning_service.enabled:
+      try:
+        plan = await self._planning_service.plan(prompt)
+        logger.info("execute_plan_result", plan_preview=plan[:200] if plan else None)
+        if plan and not plan.startswith(("Error", "Planning is disabled")):
+          logger.info("execution_plan_generated", plan_length=len(plan))
+          agent = self._agent_factory.build(execution_plan=plan)
+      except Exception as exc:
+        logger.warning("execution_plan_generation_failed", error=str(exc))
+
     logger.info(
       "executing_prompt",
       prompt_length=len(prompt),
@@ -239,19 +442,7 @@ class Orchestrator:
     )
 
     cwd = working_dir or Path.cwd()
-    deps = CLIContext(
-      user="local",
-      session_id=self.session_id,
-      config=self._config,
-      working_dir=cwd,
-      task_state_service=TaskStateService(
-        tasks_dir=self._config.task_state.tasks_dir,
-        enabled=self._config.task_state.enabled,
-        base_dir=cwd,
-      ),
-      skill_manager=None,
-      mcp_manager=self._mcp_manager,
-    )
+    deps = self._build_cli_context(self.session_id, cwd)
 
     try:
       async for event in self._runner_service.run(
@@ -284,19 +475,7 @@ class Orchestrator:
     )
 
     cwd = working_dir or Path.cwd()
-    deps = CLIContext(
-      user="local",
-      session_id=session_id,
-      config=self._config,
-      working_dir=cwd,
-      task_state_service=TaskStateService(
-        tasks_dir=self._config.task_state.tasks_dir,
-        enabled=self._config.task_state.enabled,
-        base_dir=cwd,
-      ),
-      skill_manager=None,
-      mcp_manager=self._mcp_manager,
-    )
+    deps = self._build_cli_context(session_id, cwd)
 
     try:
       async for event in self._runner_service.resume_approval(
@@ -325,12 +504,39 @@ class Orchestrator:
     if self._agent_factory is None or self._runner_service is None:
       raise OrchestratorError("Orchestrator not fully initialized.")
 
+    cwd = working_dir or Path.cwd()
+    repo_map_block = await self._build_repo_map_block_for_dir(cwd)
+    git_summary = await self._git_status_summary_for_dir(cwd)
+    plugin_summary = self._build_plugin_summary()
+
+    # Optional two-stage planning for host-managed (OpenCode) mode.
+    execution_plan: str | None = None
+    logger.info(
+      "external_tools_planning_check",
+      planning_service_exists=self._planning_service is not None,
+      planning_enabled=self._planning_service.enabled if self._planning_service else False,
+      planner_model=self._planning_service.planner_model if self._planning_service else None,
+    )
+    if self._planning_service is not None and self._planning_service.enabled:
+      try:
+        plan = await self._planning_service.plan(prompt)
+        logger.info("external_tools_plan_result", plan_preview=plan[:200] if plan else None)
+        if plan and not plan.startswith(("Error", "Planning is disabled")):
+          logger.info("external_execution_plan_generated", plan_length=len(plan))
+          execution_plan = plan
+      except Exception as exc:
+        logger.warning("external_execution_plan_generation_failed", error=str(exc))
+
     agent = self._agent_factory.build_with_external_tools(
       tools,
-      cwd=working_dir or Path.cwd(),
+      cwd=cwd,
       host_system_prompt=host_system_prompt,
       external_mcp_servers=external_mcp_servers,
       external_skills=external_skills,
+      repo_map=repo_map_block,
+      git_summary=git_summary,
+      plugin_summary=plugin_summary,
+      execution_plan=execution_plan,
     )
 
     logger.info(
@@ -338,23 +544,11 @@ class Orchestrator:
       prompt_length=len(prompt),
       session_id=self.session_id,
       tool_count=len(tools),
-      working_dir=str(working_dir or Path.cwd()),
+      working_dir=str(cwd),
     )
 
     cwd = working_dir or Path.cwd()
-    deps = CLIContext(
-      user="local",
-      session_id=self.session_id,
-      config=self._config,
-      working_dir=cwd,
-      task_state_service=TaskStateService(
-        tasks_dir=self._config.task_state.tasks_dir,
-        enabled=self._config.task_state.enabled,
-        base_dir=cwd,
-      ),
-      skill_manager=None,
-      mcp_manager=self._mcp_manager,
-    )
+    deps = self._build_cli_context(self.session_id, cwd)
 
     try:
       async for event in self._runner_service.run(
@@ -384,12 +578,22 @@ class Orchestrator:
     if self._agent_factory is None or self._runner_service is None:
       raise OrchestratorError("Orchestrator not fully initialized.")
 
+    cwd = working_dir or Path.cwd()
+    repo_map_block = await self._build_repo_map_block_for_dir(cwd)
+    git_summary = await self._git_status_summary_for_dir(cwd)
+    plugin_summary = self._build_plugin_summary()
+
+    # Rebuild the external-tools agent. Planning is not re-run on resume because
+    # the plan was already generated before the initial turn.
     agent = self._agent_factory.build_with_external_tools(
       tools,
-      cwd=working_dir or Path.cwd(),
+      cwd=cwd,
       host_system_prompt=host_system_prompt,
       external_mcp_servers=external_mcp_servers,
       external_skills=external_skills,
+      repo_map=repo_map_block,
+      git_summary=git_summary,
+      plugin_summary=plugin_summary,
     )
 
     logger.info(
@@ -397,23 +601,11 @@ class Orchestrator:
       session_id=session_id,
       tool_results=list(results.keys()),
       tool_count=len(tools),
-      working_dir=str(working_dir or Path.cwd()),
+      working_dir=str(cwd),
     )
 
     cwd = working_dir or Path.cwd()
-    deps = CLIContext(
-      user="local",
-      session_id=session_id,
-      config=self._config,
-      working_dir=cwd,
-      task_state_service=TaskStateService(
-        tasks_dir=self._config.task_state.tasks_dir,
-        enabled=self._config.task_state.enabled,
-        base_dir=cwd,
-      ),
-      skill_manager=None,
-      mcp_manager=self._mcp_manager,
-    )
+    deps = self._build_cli_context(session_id, cwd)
 
     try:
       async for event in self._runner_service.resume_external_tools(

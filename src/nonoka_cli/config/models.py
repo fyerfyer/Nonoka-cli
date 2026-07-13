@@ -58,6 +58,84 @@ class TaskStateConfig(BaseModel):
   tasks_dir: str = ".nonoka/tasks"
 
 
+class GitConfig(BaseModel):
+  """Git checkpoint / rollback configuration."""
+  enabled: bool = True
+  auto_checkpoint: bool = True
+  rollback_on_error: bool = True
+  commit_message: str = "auto"  # auto | simple | custom template
+  attribution: bool = True
+
+
+class RepoMapConfig(BaseModel):
+  """Repo map / symbol indexing configuration."""
+  enabled: bool = True
+  max_tokens: int = 2048
+  languages: list[str] = Field(default_factory=list)
+  index_path: str = ".nonoka/repo_map.jsonl"
+  include: list[str] = Field(default_factory=list)
+  lsp_languages: dict[str, str] = Field(
+    default_factory=lambda: {
+      ".py": "python",
+      ".js": "javascript",
+      ".jsx": "javascript",
+      ".ts": "typescript",
+      ".tsx": "typescript",
+      ".rs": "rust",
+      ".go": "go",
+      ".java": "java",
+      ".c": "c",
+      ".cpp": "cpp",
+      ".h": "c",
+      ".hpp": "cpp",
+      ".cs": "csharp",
+      ".rb": "ruby",
+      ".php": "php",
+    }
+  )
+  exclude: list[str] = Field(
+    default_factory=lambda: [
+      ".git",
+      "node_modules",
+      ".venv",
+      "venv",
+      "__pycache__",
+      ".pytest_cache",
+      ".mypy_cache",
+      ".tox",
+      "dist",
+      "build",
+      ".eggs",
+    ]
+  )
+
+
+class AgentRoleConfig(BaseModel):
+  """Configuration for a single agent role (planner / executor)."""
+  model: str = ""
+  max_turns: int = 5
+  system_prompt: str = ""
+
+
+class AgentsConfig(BaseModel):
+  """Multi-agent role configuration."""
+  planner: AgentRoleConfig = Field(default_factory=AgentRoleConfig)
+  executor: AgentRoleConfig = Field(default_factory=AgentRoleConfig)
+
+
+class PluginConfig(BaseModel):
+  """Plugin manifest discovery configuration."""
+  enabled: bool = True
+  manifests: list[Path] = Field(default_factory=list)
+
+  @field_validator("manifests", mode="before")
+  @classmethod
+  def _resolve_manifests(cls, v: Any) -> list[Path]:
+    if v is None:
+      return []
+    return [Path(p).expanduser() for p in v]
+
+
 class CLIConfig(BaseModel):
   """Top-level configuration for nonoka-cli.
 
@@ -75,6 +153,10 @@ class CLIConfig(BaseModel):
   context: ContextConfig = Field(default_factory=ContextConfig)
   tool_output: ToolOutputConfig = Field(default_factory=ToolOutputConfig)
   task_state: TaskStateConfig = Field(default_factory=TaskStateConfig)
+  git: GitConfig = Field(default_factory=GitConfig)
+  repo_map: RepoMapConfig = Field(default_factory=RepoMapConfig)
+  agents: AgentsConfig = Field(default_factory=AgentsConfig)
+  plugins: PluginConfig = Field(default_factory=PluginConfig)
 
   @field_validator("tool_paths", mode="before")
   @classmethod

@@ -11,6 +11,27 @@ from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.utils.errors import ConfigError
 
+# Tool categories that nonoka-cli needs OpenCode to auto-approve when
+# ``cli.auto_approve`` is enabled. These are OpenCode's native permission
+# keys, not nonoka-cli's internal tool names.
+_OPENCODE_AUTO_APPROVED_TOOLS = ["read", "bash", "edit", "write", "todowrite"]
+
+
+def _build_opencode_permission(config: CLIConfig) -> dict[str, str]:
+  """Build an OpenCode permission block from nonoka's CLI behavior config.
+
+  When ``cli.auto_approve`` is true, allow the core coding tools so the
+  agent can edit files and run commands without a HITL prompt. Otherwise
+  require explicit approval for mutating operations.
+  """
+  auto_approve = getattr(config.cli, "auto_approve", False)
+  action = "allow" if auto_approve else "ask"
+  permission: dict[str, str] = {"*": "ask"}
+  for tool in _OPENCODE_AUTO_APPROVED_TOOLS:
+    permission[tool] = action
+  return permission
+
+
 _DEFAULT_OPENCODE_CONFIG = {
   "$schema": "https://opencode.ai/config.json",
   "model": "nonoka/default",
@@ -27,20 +48,26 @@ _DEFAULT_OPENCODE_CONFIG = {
       }
     }
   },
+  # Permission is regenerated from nonoka.yaml in cmd_init.
   "permission": {
     "*": "ask",
+    "read": "ask",
     "bash": "ask",
     "edit": "ask",
     "write": "ask",
+    "todowrite": "ask",
   },
   "agent": {
     "build": {
       "mode": "primary",
+      # Permission is regenerated from nonoka.yaml in cmd_init.
       "permission": {
         "*": "ask",
+        "read": "ask",
         "bash": "ask",
         "edit": "ask",
         "write": "ask",
+        "todowrite": "ask",
       },
     }
   },
@@ -57,17 +84,16 @@ _OPENCODE_PROMPT_GUIDELINES = (
   "\n"
   "OpenCode-specific guidelines:\n"
   "- You are running inside OpenCode. Use only the tools provided by OpenCode.\n"
-  "- Tool names available in this environment include bash, read, write, and edit.\n"
+  "- Tool names available in this environment include bash, read, write, edit, and todowrite.\n"
+  "- For multi-step tasks, keep the OpenCode TODO panel up to date using the todowrite tool.\n"
   "- Do not explore directories or read files unless the user explicitly requests it.\n"
   "- When writing or editing files, use absolute paths under the current working directory "
   "unless the user provides a different path.\n"
   "- Prefer reading a file before editing it when you need context.\n"
-  "- Every tool call requires user approval in this environment, so choose the simplest "
-  "and most direct way to satisfy the request.\n"
 )
 
 
-def _build_opencode_agent_prompt(system_prompt: str) -> str:
+def _build_opencode_agent_prompt(config: CLIConfig) -> str:
   """Wrap the canonical nonoka system prompt for OpenCode's agent file.
 
   nonoka owns the system prompt (via ``system_prompt`` in nonoka.yaml). The
@@ -75,17 +101,23 @@ def _build_opencode_agent_prompt(system_prompt: str) -> str:
   OpenCode-specific tool guidelines so the model behaves correctly inside
   OpenCode without leaking frontend details into nonoka's core prompt.
   """
-  body = system_prompt.strip() or "You are a helpful coding assistant."
+  body = config.system_prompt.strip() or "You are a helpful coding assistant."
+  permission = _build_opencode_permission(config)
+  yaml_lines = "\n".join(
+    f"  {json.dumps(k)}: {v}" if k == "*" else f"  {k}: {v}"
+    for k, v in permission.items()
+  )
+  hitl_note = (
+    "- Tool calls are auto-approved because nonoka.yaml has cli.auto_approve enabled.\n"
+    if getattr(config.cli, "auto_approve", False)
+    else "- Tool calls require user approval; keep changes focused and explain commands.\n"
+  )
   return f"""---
 permission:
-  "*": ask
-  bash: ask
-  edit: ask
-  write: ask
+{yaml_lines}
 ---
 
-{body}{_OPENCODE_PROMPT_GUIDELINES}
-"""
+{body}{_OPENCODE_PROMPT_GUIDELINES}{hitl_note}"""
 
 
 def _load_config(args: argparse.Namespace) -> CLIConfig:
@@ -145,6 +177,13 @@ def cmd_init(args: argparse.Namespace) -> int:
   merged.setdefault("provider", {})
   merged["provider"]["nonoka"] = provider_block
 
+  # Reflect nonoka.yaml's cli.auto_approve in OpenCode's permission layer.
+  permission_block = _build_opencode_permission(config)
+  merged["permission"] = permission_block
+  merged.setdefault("agent", {})
+  merged["agent"].setdefault("build", {})
+  merged["agent"]["build"]["permission"] = dict(permission_block)
+
   # Only set the top-level model if it is not already configured.
   if not existing.get("model"):
     merged["model"] = "nonoka/default"
@@ -164,7 +203,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     agent_file = agent_dir / "build.md"
     if not agent_file.exists():
       agent_file.write_text(
-        _build_opencode_agent_prompt(config.system_prompt),
+        _build_opencode_agent_prompt(config),
         encoding="utf-8",
       )
       print(f"Agent prompt saved to {agent_file}")

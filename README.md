@@ -298,6 +298,80 @@ OpenCode has its own `skill:<name>` syntax that conflicts with nonoka's
 If you hand-write `opencode.json`, keep that setting so the model only uses
 nonoka-managed skills.
 
+## Git safety net
+
+`nonoka-cli` can automatically create a git checkpoint before each file change
+and roll back on failure. Enable it in `nonoka.yaml`:
+
+```yaml
+git:
+  auto_checkpoint: true
+  auto_commit: true
+```
+
+When enabled, the model can call `git_checkpoint` before dangerous operations
+and `git_rollback` to restore the last checkpoint if something goes wrong.
+
+## Repo map
+
+For large repositories, `nonoka-cli` builds a lightweight symbol index and
+injects a repo map into the system prompt. This reduces blind file reads by
+giving the model a structural overview of classes, functions, and exports.
+
+Configure it in `nonoka.yaml`:
+
+```yaml
+repo_map:
+  enabled: true
+  max_tokens: 4000
+```
+
+The `build_repo_map` and `search_repo_map` tools let the model refresh or
+query the index on demand.
+
+## Planner / Executor workflow
+
+Complex tasks can be split into two phases:
+
+1. **Planner** — analyzes the request and outputs a TODO list plus a file-level
+   execution plan.
+2. **Executor** — carries out the plan by calling tools.
+
+Configure the agents in `nonoka.yaml`:
+
+```yaml
+agents:
+  planner:
+    model: deepseek-chat
+    system_prompt: "You are a planning agent..."
+  executor:
+    model: deepseek-chat
+    system_prompt: "You are a coding agent..."
+```
+
+`nonoka-cli` runs the planner first, injects the resulting plan into the
+executor's system prompt, and then continues execution.
+
+## Plugin manifest
+
+Projects can declare their own Nonoka plugins via `.nonoka/plugin.json`:
+
+```json
+{
+  "name": "my-plugin",
+  "skills": ["code-review"],
+  "agents": {
+    "planner": { "system_prompt": "..." }
+  },
+  "mcpServers": {},
+  "allowedTools": ["read", "edit", "bash"]
+}
+```
+
+The manifest is merged with user-level config and converted into OpenCode's
+skill/permission format when `nonoka-cli opencode init` runs. See
+`.nonoka/plugin.json.example` for a full example.
+
 ## Known limitations
 
 These are current behaviors observed with OpenCode CLI 1.17.18. They are tracked
@@ -377,12 +451,18 @@ src/nonoka_cli/
 ├── commands/        # CLI subcommands (config, doctor, opencode)
 ├── config/          # YAML config loading and Pydantic models
 ├── core/            # Orchestrator, RunnerService, SessionService, ToolService,
-│                    # MCPService, AgentFactory, prompt/context/task-state/output pruning
-│                    #   agent_factory.py      # Build nonoka Agent from CLI config
-│                    #   prompt_builder.py     # System prompt assembly for OpenCode mode
-│                    #   context_trimmer.py    # Turn-based context window trimming
-│                    #   task_state.py         # Local TODO state mirror
-│                    #   tool_output_policy.py # Tool output pruning / spill policy
+│                    # MCPService, AgentFactory, prompt/context/task-state/output pruning,
+│                    # git safety net, repo map, planning, and plugin manifest
+│                    #   agent_factory.py              # Build nonoka Agent from CLI config
+│                    #   prompt_builder.py             # System prompt assembly for OpenCode mode
+│                    #   context_trimmer.py            # Turn-based context window trimming
+│                    #   task_state.py                 # Local TODO state mirror
+│                    #   tool_output_policy.py         # Tool output pruning / spill policy
+│                    #   git_service.py                # Git checkpoint / rollback helpers
+│                    #   repo_map_service.py           # Symbol index generation and search
+│                    #   planning_service.py           # Planner / Executor workflow
+│                    #   plugin_manifest.py            # .nonoka/plugin.json loader
+│                    #   plugin_manifest_converter.py  # OpenCode skill/permission conversion
 ├── mcp/             # MCP server lifecycle manager (thin wrapper around nonoka-agent)
 ├── sessions/        # Session metadata persistence
 ├── skills/          # Skill loading shim (delegates to nonoka-agent SkillRegistry)

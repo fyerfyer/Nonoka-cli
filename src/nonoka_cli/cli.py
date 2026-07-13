@@ -13,11 +13,20 @@ from pathlib import Path
 # any downstream import pulls it in.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+# Downstream dependencies (litellm, tree-sitter, etc.) assume a valid cwd.
+# If nonoka-cli is spawned from a directory that has been deleted, chdir to
+# a safe fallback before any heavy imports run.
+if hasattr(os, "getcwd"):
+  try:
+    os.getcwd()
+  except FileNotFoundError:
+    os.chdir(os.path.expanduser("~"))
+
 import structlog
 from dotenv import load_dotenv
 
 from nonoka_cli.bridge.server import main as server_main
-from nonoka_cli.commands import config_cmd, doctor_cmd, opencode_cmd
+from nonoka_cli.commands import config_cmd, doctor_cmd, opencode_cmd, plugin_cmd
 from nonoka_cli.utils.logging import setup_logging
 
 logger = structlog.get_logger("nonoka_cli.cli")
@@ -78,6 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
   config_cmd.add_subparser(subparsers)
   doctor_cmd.add_subparser(subparsers)
   opencode_cmd.add_subparser(subparsers)
+  plugin_cmd.add_subparser(subparsers)
 
   return parser
 
