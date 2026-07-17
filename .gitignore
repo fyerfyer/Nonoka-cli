@@ -62,3 +62,6 @@ verdaccio-storage/
 # Private planning documents
 DESIGN.md
 REFACTOR.md
+# Runtime nonoka project artifacts
+.nonoka/repo_map.jsonl
+.nonoka/tasks/

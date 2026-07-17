@@ -15,6 +15,8 @@ YES=false
 USE_UV=false
 DEV_MODE=false
 NO_OPENCODE=false
+GLOBAL_OPENCODE=false
+SMOKE=false
 OPENCODE_INSTALLER="curl"   # "curl" | "npm"
 OPENCODE_VERSION=""
 CLI_VERSION=""
@@ -77,6 +79,14 @@ while [ $# -gt 0 ]; do
       NO_OPENCODE=true
       shift
       ;;
+    --global-opencode)
+      GLOBAL_OPENCODE=true
+      shift
+      ;;
+    --smoke)
+      SMOKE=true
+      shift
+      ;;
     --npm-opencode)
       OPENCODE_INSTALLER="npm"
       shift
@@ -106,6 +116,8 @@ Options:
       --uv               Use uv to install nonoka-cli (falls back to pip)
       --dev              Install nonoka-cli from the local repo (implies --uv if uv is present)
       --no-opencode      Skip installing OpenCode
+      --global-opencode  Write OpenCode config to ~/.config/opencode (default: ./opencode.json)
+      --smoke            Run a quick "hello" smoke test after setup (requires API key)
       --npm-opencode     Install OpenCode via npm instead of the official curl installer
       --curl-opencode    Install OpenCode via the official curl installer (default)
       --opencode-version VER  Install a specific opencode-ai version (only with --npm-opencode)
@@ -209,6 +221,20 @@ install_nonoka_cli() {
       error "--dev requires running install.sh from the nonoka-cli repo root."
       exit 1
     fi
+
+    # In dev mode also install the local nonoka-agent core if available, so
+    # that nonoka-cli uses the matching framework version.
+    local agent_root
+    agent_root="${NONOKA_AGENT_ROOT:-$script_dir/../nonoka-agent}"
+    if [ -f "$agent_root/pyproject.toml" ]; then
+      info "Installing nonoka-agent in editable mode from $agent_root"
+      if [ "$USE_UV" = true ] && command_exists uv; then
+        uv pip install -e "$agent_root"
+      else
+        pip install -e "$agent_root"
+      fi
+    fi
+
     info "Installing nonoka-cli in editable mode from $script_dir"
     if [ "$USE_UV" = true ] && command_exists uv; then
       uv pip install -e "$script_dir"
@@ -242,9 +268,17 @@ fi
 # nonoka-opencode-provider
 # --------------------------------------------------------------------------- #
 
+# OpenCode 1.18+ resolves custom providers from the project's node_modules.
+# For project-level installs, nonoka-cli opencode init installs the provider
+# locally. For global installs, we fall back to a global npm package.
 install_provider() {
+  if [ "$GLOBAL_OPENCODE" = false ]; then
+    info "Provider will be installed locally by 'nonoka-cli opencode init'."
+    return
+  fi
+
   if ! command_exists npm; then
-    warn "npm not found; skipping global provider install (OpenCode will install it on first run)."
+    warn "npm not found; skipping global provider install."
     return
   fi
 
@@ -255,9 +289,9 @@ install_provider() {
 
   info "Installing $pkg_spec globally..."
   if npm install -g "$pkg_spec"; then
-    info "Provider installed."
+    info "Provider installed globally."
   else
-    warn "Failed to install provider globally. OpenCode can install it automatically on first run."
+    warn "Failed to install provider globally. You may need to install it manually."
   fi
 }
 
@@ -278,10 +312,43 @@ if command_exists nonoka-cli; then
   fi
 
   info "Generating OpenCode configuration..."
-  nonoka-cli opencode init --global --config "$NONOKA_CONFIG_PATH"
+  if [ "$GLOBAL_OPENCODE" = true ]; then
+    nonoka-cli opencode init --global --config "$NONOKA_CONFIG_PATH"
+  else
+    nonoka-cli opencode init --config "$NONOKA_CONFIG_PATH"
+  fi
 else
   warn "nonoka-cli not found in PATH; skipping configuration generation."
 fi
+
+# --------------------------------------------------------------------------- #
+# Smoke test
+# --------------------------------------------------------------------------- #
+
+run_smoke() {
+  if [ "$SMOKE" = false ]; then
+    return
+  fi
+
+  if ! command_exists opencode; then
+    warn "opencode not found; skipping smoke test."
+    return
+  fi
+
+  if [ -z "${DEEPSEEK_API_KEY:-}${OPENAI_API_KEY:-}" ]; then
+    warn "No API key found; skipping smoke test."
+    return
+  fi
+
+  info "Running smoke test: opencode run --auto hello"
+  if opencode run --auto "hello"; then
+    info "Smoke test passed."
+  else
+    warn "Smoke test failed. Check the logs above for details."
+  fi
+}
+
+run_smoke
 
 # --------------------------------------------------------------------------- #
 # Summary
@@ -291,14 +358,14 @@ info "Installation complete!"
 cat <<EOF
 
 Next steps:
-  1. Export your model API key, e.g.:
+  1. Export your model API key if you haven't already, e.g.:
        export DEEPSEEK_API_KEY=<your-key>
   2. Run diagnostics:
        nonoka-cli doctor
   3. Start OpenCode:
        opencode
 
-If [1mopencode[0m or [1mnonoka-cli[0m are not found, open a new shell or add the
+If opencode or nonoka-cli are not found, open a new shell or add the
 following directories to your PATH:
   - ~/.opencode/bin
   - ~/.local/bin
