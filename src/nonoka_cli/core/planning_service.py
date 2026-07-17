@@ -1,23 +1,17 @@
 """Planning service for nonoka-cli.
 
-Wraps the nonoka-agent ``plan_task`` tool and wires it to CLI configuration
-(``agents.planner``). The planner tool itself lives in nonoka-agent so other
-front-ends can reuse it; this service only adapts config and provides helpers
-for the orchestrator.
+Wires planner/executor configuration (``agents.planner``) to the orchestrator.
+The actual planner implementation has been removed from nonoka-agent in 1.3.4;
+nonoka-cli will provide its own LLM-based planner here in a future release.
+For now the service reports itself as disabled when invoked so the orchestrator
+falls back to single-agent execution.
 """
 
 from __future__ import annotations
 
-import structlog
 from pathlib import Path
-from typing import Any
-
-from nonoka.core.context import RunContext
-from nonoka.tools.planning import plan_task
 
 from nonoka_cli.config.models import AgentsConfig, CLIConfig
-
-logger = structlog.get_logger("nonoka_cli.core")
 
 
 class PlanningService:
@@ -68,48 +62,17 @@ class PlanningService:
   async def plan(self, task: str, max_steps: int = 10) -> str:
     """Generate a structured plan for *task*.
 
-    Returns a human-readable plan or an error message.
+    Returns a human-readable plan or an error message. The planner tool has
+    been removed from nonoka-agent in 1.3.4; a CLI-native planner will replace
+    this stub in a future release.
     """
     if not self.enabled:
       return "Planning is disabled: no planner model configured."
-
-    ctx = self._run_context()
-    try:
-      return await plan_task(
-        ctx,
-        task=task,
-        max_steps=max_steps,
-        max_turns=self.planner_max_turns,
-      )
-    except Exception as exc:
-      logger.warning("plan_task_failed", error=str(exc))
-      return f"Error generating plan: {exc}"
-
-  def _run_context(self) -> RunContext:
-    from nonoka.core.agent import Agent
-    from nonoka.core.session import Session
-
-    agent = Agent(model=self.planner_model or "planner")
-    session = Session(
-      session_id="planner",
-      agent=agent,
-      deps=_PlanningDeps(
-        working_dir=str(self._working_dir),
-        config=_PlannerConfigStub(model=self.planner_model),
-      ),
+    return (
+      "Planning is disabled: the built-in planner tool was removed from "
+      "nonoka-agent 1.3.4. Configure a planner model to opt into the future "
+      "CLI-native planner implementation."
     )
-    return RunContext(session)
-
-
-class _PlannerConfigStub:
-  def __init__(self, model: str):
-    self.model = model
-
-
-class _PlanningDeps:
-  def __init__(self, working_dir: str, config: Any):
-    self.working_dir = working_dir
-    self.config = config
 
 
 def build_planning_service(

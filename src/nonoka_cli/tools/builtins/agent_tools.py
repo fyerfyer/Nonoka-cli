@@ -15,7 +15,6 @@ from nonoka.tools import (
   git_rollback,
   git_status,
   lsp_document_symbols,
-  plan_task,
   search_repo_map,
 )
 
@@ -29,5 +28,4 @@ def get_tools() -> list[Capability]:
     build_repo_map,
     search_repo_map,
     lsp_document_symbols,
-    plan_task,
   ]

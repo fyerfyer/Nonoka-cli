@@ -26,7 +26,7 @@ import structlog
 from dotenv import load_dotenv
 
 from nonoka_cli.bridge.server import main as server_main
-from nonoka_cli.commands import config_cmd, doctor_cmd, opencode_cmd, plugin_cmd
+from nonoka_cli.commands import config_cmd, doctor_cmd, opencode_cmd, plugin_cmd, run_cmd
 from nonoka_cli.utils.logging import setup_logging
 
 logger = structlog.get_logger("nonoka_cli.cli")
@@ -88,6 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
   doctor_cmd.add_subparser(subparsers)
   opencode_cmd.add_subparser(subparsers)
   plugin_cmd.add_subparser(subparsers)
+  run_cmd.add_subparser(subparsers)
 
   return parser
 
@@ -116,16 +117,14 @@ def main() -> int:
     setup_logging(level=log_level, console=args.verbose or args.debug)
     return args.func(args)
 
+  # No subcommand given: launch the OpenCode TUI by default.
   log_level = (
     logging.DEBUG if args.debug
     else logging.INFO if args.verbose
     else logging.WARNING
   )
   setup_logging(level=log_level, console=args.verbose or args.debug)
-
-  print("nonoka-cli: use --server to start the OpenCode backend.", file=sys.stderr)
-  parser.print_help(sys.stderr)
-  return 0
+  return run_cmd.launch_tui(args)
 
 
 if __name__ == "__main__":

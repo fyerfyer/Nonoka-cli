@@ -181,19 +181,11 @@ class SystemPromptBuilder:
   def _build_planner_block(self) -> str:
     """Return guidance for the planner/executor workflow.
 
-    The ``plan_task`` tool is always registered; the workflow reminder is
-    included so the model knows to split complex tasks into planned steps
-    before execution.
+    The built-in ``plan_task`` tool was removed from nonoka-agent in 1.3.4; the
+    planner block is currently suppressed until nonoka-cli provides its own
+    LLM-based planner implementation.
     """
-    if "plan_task" in self._base.lower():
-      return ""
-    return (
-      "## Planner / Executor Workflow\n"
-      "For complex multi-file or multi-step tasks, first call the ``plan_task`` "
-      "tool to produce a structured plan. Then execute the steps using the "
-      "file, search, and run-command tools. Update task state with ``todowrite`` "
-      "so the user can follow progress."
-    )
+    return ""
 
   def _build_execution_plan_block(self) -> str:
     """Return the concrete execution plan produced by the planner agent."""

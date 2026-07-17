@@ -4,12 +4,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.utils.errors import ConfigError
+
+
+_PROVIDER_PACKAGE = "nonoka-opencode-provider"
+
+
+def _resolve_provider_version() -> str | None:
+  """Read the provider version from the monorepo package.json when available."""
+  candidate = Path(__file__).resolve().parents[4] / "packages" / _PROVIDER_PACKAGE / "package.json"
+  if candidate.exists():
+    try:
+      data = json.loads(candidate.read_text(encoding="utf-8"))
+      return data.get("version")
+    except (json.JSONDecodeError, OSError):
+      pass
+  return None
+
+
+_PROVIDER_VERSION = _resolve_provider_version()
 
 # Tool categories that nonoka-cli needs OpenCode to auto-approve when
 # ``cli.auto_approve`` is enabled. These are OpenCode's native permission
@@ -18,23 +38,35 @@ _OPENCODE_AUTO_APPROVED_TOOLS = ["read", "bash", "edit", "write", "todowrite"]
 
 
 def _build_opencode_permission(config: CLIConfig) -> dict[str, str]:
-  """Build an OpenCode permission block from nonoka's CLI behavior config.
+  """Build an OpenCode permission block from nonoka's CLI config.
 
   When ``cli.auto_approve`` is true, allow the core coding tools so the
   agent can edit files and run commands without a HITL prompt. Otherwise
   require explicit approval for mutating operations.
+
+  User-supplied ``permissions`` in nonoka.yaml override the defaults, letting
+  nonoka.yaml remain the single source of truth for tool policies.
   """
   auto_approve = getattr(config.cli, "auto_approve", False)
   action = "allow" if auto_approve else "ask"
   permission: dict[str, str] = {"*": "ask"}
   for tool in _OPENCODE_AUTO_APPROVED_TOOLS:
     permission[tool] = action
+
+  # nonoka.yaml permissions take precedence over auto_approve defaults.
+  user_permissions = getattr(config, "permissions", None)
+  if user_permissions:
+    permission.update(user_permissions)
   return permission
 
 
 _DEFAULT_OPENCODE_CONFIG = {
   "$schema": "https://opencode.ai/config.json",
   "model": "nonoka/default",
+  # Disable OpenCode's auto-updater so that a verified provider version keeps
+  # working. Silent upgrades have broken custom provider initialization in the
+  # past (e.g. 1.17 -> 1.18 changed provider resolution).
+  "autoupdate": False,
   "provider": {
     "nonoka": {
       "npm": "nonoka-opencode-provider",
@@ -79,6 +111,48 @@ _DEFAULT_OPENCODE_CONFIG = {
     "skill": False
   },
 }
+
+def _install_provider_locally(cwd: Path, version: str | None = None) -> bool:
+  """Try to install the OpenCode provider package into the project directory.
+
+  OpenCode 1.18+ resolves custom providers from the project's node_modules
+  instead of auto-installing them into its own cache. We therefore install the
+  provider as a dev dependency in the directory where opencode.json lives.
+  """
+  pkg_spec = _PROVIDER_PACKAGE
+  if version:
+    pkg_spec = f"{_PROVIDER_PACKAGE}@{version}"
+
+  # Prefer bun for speed, then npm/pnpm/yarn.
+  managers = [
+    ("bun", ["add", "-d", pkg_spec]),
+    ("npm", ["install", "--save-dev", "--no-audit", "--no-fund", pkg_spec]),
+    ("pnpm", ["add", "-D", pkg_spec]),
+    ("yarn", ["add", "-D", pkg_spec]),
+  ]
+
+  for manager, args in managers:
+    if not shutil.which(manager):
+      continue
+    print(f"Installing provider with {manager}...")
+    try:
+      result = subprocess.run(
+        [manager, *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=120,
+      )
+      if result.returncode == 0:
+        print(f"Provider installed locally at {cwd / 'node_modules' / _PROVIDER_PACKAGE}")
+        return True
+      print(f"{manager} install failed:\n{result.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+      print(f"{manager} install timed out.")
+    except OSError as exc:
+      print(f"{manager} install error: {exc}")
+  return False
+
 
 _OPENCODE_PROMPT_GUIDELINES = (
   "\n"
@@ -211,7 +285,20 @@ def cmd_init(args: argparse.Namespace) -> int:
       print(f"Agent prompt already exists at {agent_file}; not overwriting.")
 
   print(f"OpenCode config saved to {target}")
-  print("Install the provider with: npm install -g nonoka-opencode-provider")
+
+  # OpenCode 1.18+ needs the provider package resolvable from the project
+  # node_modules. Install it locally when possible; fall back to printing
+  # manual instructions.
+  if not args.global_:
+    installed = _install_provider_locally(Path(args.cwd), _PROVIDER_VERSION)
+    if not installed:
+      print("\nCould not install the provider automatically. To finish setup, run one of:")
+      print(f"  bun add -d {_PROVIDER_PACKAGE}")
+      print(f"  npm install --save-dev {_PROVIDER_PACKAGE}")
+      print(f"  pnpm add -D {_PROVIDER_PACKAGE}")
+  else:
+    print(f"\nFor global installs, ensure the provider is available: npm install -g {_PROVIDER_PACKAGE}")
+
   print("Then run: opencode")
   return 0
 

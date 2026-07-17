@@ -22,7 +22,7 @@ The installer will:
 3. Install `nonoka-cli` and the OpenCode provider.
 4. Generate `~/.config/nonoka/config.yaml` and `~/.config/opencode/opencode.json`.
 
-After installing, configure your API key and run `opencode`:
+After installing, configure your API key and run `nonoka`:
 
 ```bash
 # Interactive: it will ask for your key and save it to ~/.config/nonoka/.env
@@ -32,8 +32,12 @@ nonoka-cli config init
 export DEEPSEEK_API_KEY=<your-key>
 
 nonoka-cli doctor
-opencode
+nonoka
 ```
+
+`nonoka` is a shortcut for `nonoka-cli run` and starts the OpenCode TUI with the
+Nonoka backend. You can also use `nonoka run --message "<task>"` for one-shot
+CLI usage.
 
 `nonoka-cli` automatically loads `~/.config/nonoka/.env` and `./.env` on startup,
 so you don't need to `export` every time if you save the key in `.env`.
@@ -82,7 +86,7 @@ nonoka-cli opencode init --global
 3. Make sure your model API key is exported, then run:
 
 ```bash
-opencode
+nonoka
 ```
 
 ## `nonoka-cli doctor`
@@ -97,10 +101,10 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.4
+✓ nonoka-cli 0.2.5
 ✓ Python 3.11
-✓ opencode 1.17.13
-✓ provider nonoka-opencode-provider@0.2.4
+✓ opencode 1.18.2
+✓ provider nonoka-opencode-provider@0.2.12
 ✓ config ~/.config/nonoka/config.yaml
 ✓ API key DEEPSEEK_API_KEY set
 ✓ OpenCode provider config in /home/user/.config/opencode/opencode.json
@@ -222,9 +226,21 @@ When running inside OpenCode, HITL is handled by OpenCode itself. The generated
 Nonoka forwards OpenCode's native tool definitions to the model, approval
 dialogs render natively for `bash`, `read`, `write`, and `edit` operations.
 
-If you prefer auto-approval, change the permissions in `opencode.json` or set
-`cli.auto_approve: true` / `hitl.policy: auto` in `nonoka.yaml` for Nonoka's
-standalone mode.
+`nonoka-cli`'s own `cli.auto_approve` and `hitl.policy` settings only apply to
+standalone server / CLI mode. In OpenCode mode, permissions are governed by the
+`permission` block in `opencode.json`. To keep `nonoka.yaml` as the single
+source of truth, add a `permissions` block and re-run `nonoka-cli opencode init`:
+
+```yaml
+permissions:
+  read: allow
+  bash: ask
+  write: ask
+  edit: ask
+```
+
+`cli.auto_approve: true` still auto-allows the core coding tools when no
+`permissions` block is present. For standalone mode, use `hitl.policy: auto`.
 
 ## External-tools mode
 
@@ -329,28 +345,57 @@ repo_map:
 The `build_repo_map` and `search_repo_map` tools let the model refresh or
 query the index on demand.
 
-## Planner / Executor workflow
+## Sub-agent workflow
 
-Complex tasks can be split into two phases:
+`nonoka-cli` can optionally expose two sub-agent tools that the main agent can
+call for complex tasks:
 
-1. **Planner** — analyzes the request and outputs a TODO list plus a file-level
-   execution plan.
-2. **Executor** — carries out the plan by calling tools.
+- `plan_task` — delegates planning to a dedicated **planner** agent and returns a
+  numbered, file-level execution plan.
+- `review_changes` — delegates final review to a dedicated **reviewer** agent and
+  returns a structured review with issues, suggestions, and an approval flag.
 
-Configure the agents in `nonoka.yaml`:
+Both are disabled by default. Enable them by setting their model in `nonoka.yaml`:
 
 ```yaml
+model: deepseek-chat
+max_turns: 20
+
 agents:
   planner:
     model: deepseek-chat
     system_prompt: "You are a planning agent..."
-  executor:
+  reviewer:
     model: deepseek-chat
-    system_prompt: "You are a coding agent..."
+    system_prompt: "You are a senior code reviewer..."
 ```
 
-`nonoka-cli` runs the planner first, injects the resulting plan into the
-executor's system prompt, and then continues execution.
+`max_turns` at the top level controls the main executor agent. The
+`planner`/`reviewer` roles each have their own `max_turns` inside
+`agents.<role>`.
+
+When enabled, these tools are injected into the main agent's tool list
+alongside OpenCode's native tools. The main agent decides when to call them;
+the planner/reviewer run inside their own short-lived `nonoka` agent invocation
+and return their results as tool output.
+
+`review_changes` accepts an optional `files` argument. When the main agent
+passes file paths, the reviewer reads those files and prepends their contents
+to the review context automatically:
+
+```yaml
+# In the conversation the model can call:
+# review_changes({
+#   "task": "Review the changes against the goal: add logging",
+#   "context": "<diff or summary>",
+#   "files": ["src/main.py", "src/utils.py"]
+# })
+```
+
+> **Note:** `plan_task` and `review_changes` used to live in `nonoka-agent`. They
+> have been moved to `nonoka-cli` so that sub-agent configuration (model, system
+> prompt, max turns) is controlled by the CLI config and can use different
+> models from the main agent.
 
 ## Plugin manifest
 
@@ -460,7 +505,8 @@ src/nonoka_cli/
 │                    #   tool_output_policy.py         # Tool output pruning / spill policy
 │                    #   git_service.py                # Git checkpoint / rollback helpers
 │                    #   repo_map_service.py           # Symbol index generation and search
-│                    #   planning_service.py           # Planner / Executor workflow
+│                    #   planning_service.py           # Planner sub-agent (AgentTool)
+│                    #   review_service.py             # Reviewer sub-agent (AgentTool)
 │                    #   plugin_manifest.py            # .nonoka/plugin.json loader
 │                    #   plugin_manifest_converter.py  # OpenCode skill/permission conversion
 ├── mcp/             # MCP server lifecycle manager (thin wrapper around nonoka-agent)
