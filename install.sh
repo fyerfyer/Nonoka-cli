@@ -11,12 +11,17 @@ set -euo pipefail
 # Configuration defaults
 # --------------------------------------------------------------------------- #
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 YES=false
 USE_UV=false
 DEV_MODE=false
 NO_OPENCODE=false
 GLOBAL_OPENCODE=false
 SMOKE=false
+VERIFY=false
+LOCAL_DIST_DIR=""
+LOCAL_DIST_AGENT_DIR=""
 OPENCODE_INSTALLER="curl"   # "curl" | "npm"
 OPENCODE_VERSION=""
 CLI_VERSION=""
@@ -87,6 +92,22 @@ while [ $# -gt 0 ]; do
       SMOKE=true
       shift
       ;;
+    --verify)
+      VERIFY=true
+      shift
+      ;;
+    --local-dist)
+      LOCAL_DIST_DIR="${2:-}"
+      if [ -z "$LOCAL_DIST_DIR" ] || [ ! -d "$LOCAL_DIST_DIR" ]; then
+        error "--local-dist requires an existing directory containing nonoka_cli-*.whl"
+        exit 1
+      fi
+      # Also look for the matching nonoka-agent wheel next to this repo.
+      if [ -d "$SCRIPT_DIR/../nonoka-agent/dist" ]; then
+        LOCAL_DIST_AGENT_DIR="$SCRIPT_DIR/../nonoka-agent/dist"
+      fi
+      shift 2
+      ;;
     --npm-opencode)
       OPENCODE_INSTALLER="npm"
       shift
@@ -115,9 +136,11 @@ Options:
   -y, --yes              Non-interactive mode
       --uv               Use uv to install nonoka-cli (falls back to pip)
       --dev              Install nonoka-cli from the local repo (implies --uv if uv is present)
+      --local-dist DIR   Install nonoka-agent and nonoka-cli from local wheel files in DIR
       --no-opencode      Skip installing OpenCode
       --global-opencode  Write OpenCode config to ~/.config/opencode (default: ./opencode.json)
       --smoke            Run a quick "hello" smoke test after setup (requires API key)
+      --verify           Run nonoka-cli doctor --check-llm after setup (requires API key)
       --npm-opencode     Install OpenCode via npm instead of the official curl installer
       --curl-opencode    Install OpenCode via the official curl installer (default)
       --opencode-version VER  Install a specific opencode-ai version (only with --npm-opencode)
@@ -209,6 +232,29 @@ fi
 # --------------------------------------------------------------------------- #
 
 install_nonoka_cli() {
+  # Local dist install: pick up nonoka-agent + nonoka-cli wheels from the
+  # supplied directories. Useful for validating a release before pushing to PyPI.
+  if [ -n "$LOCAL_DIST_DIR" ]; then
+    local agent_whl cli_whl
+    if [ -z "$LOCAL_DIST_AGENT_DIR" ] || [ ! -d "$LOCAL_DIST_AGENT_DIR" ]; then
+      error "Could not find nonoka-agent wheels. Use a standard repo layout or set LOCAL_DIST_AGENT_DIR."
+      exit 1
+    fi
+    agent_whl=$(ls -1 "$LOCAL_DIST_AGENT_DIR"/nonoka-*.whl 2>/dev/null | head -n1)
+    cli_whl=$(ls -1 "$LOCAL_DIST_DIR"/nonoka_cli-*.whl 2>/dev/null | head -n1)
+    if [ -z "$agent_whl" ] || [ -z "$cli_whl" ]; then
+      error "Could not find nonoka-*.whl in $LOCAL_DIST_AGENT_DIR and/or nonoka_cli-*.whl in $LOCAL_DIST_DIR"
+      exit 1
+    fi
+    info "Installing from local wheels: $agent_whl $cli_whl"
+    if command_exists uv && [ -n "${VIRTUAL_ENV:-}" ]; then
+      uv pip install "$agent_whl" "$cli_whl"
+    else
+      pip install --user "$agent_whl" "$cli_whl"
+    fi
+    return
+  fi
+
   local pkg_spec="nonoka-cli"
   if [ -n "$CLI_VERSION" ]; then
     pkg_spec="nonoka-cli==$CLI_VERSION"
@@ -325,14 +371,49 @@ fi
 # Smoke test
 # --------------------------------------------------------------------------- #
 
+run_verify() {
+  if [ "$VERIFY" = false ]; then
+    return
+  fi
+
+  if ! command_exists nonoka-cli; then
+    warn "nonoka-cli not found; skipping verification."
+    return
+  fi
+
+  # Load the same .env files nonoka-cli loads for the API-key check.
+  if [ -f "$HOME/.config/nonoka/.env" ]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.config/nonoka/.env"
+  fi
+
+  if [ -z "${DEEPSEEK_API_KEY:-}${OPENAI_API_KEY:-}" ]; then
+    warn "No API key found; skipping verification."
+    return
+  fi
+
+  info "Running nonoka-cli doctor --check-llm..."
+  if nonoka-cli doctor --check-llm; then
+    info "Verification passed."
+  else
+    warn "Verification failed. Check the logs above for details."
+  fi
+}
+
 run_smoke() {
   if [ "$SMOKE" = false ]; then
     return
   fi
 
-  if ! command_exists opencode; then
-    warn "opencode not found; skipping smoke test."
+  if ! command_exists nonoka; then
+    warn "nonoka not found; skipping smoke test."
     return
+  fi
+
+  # Load the same .env files nonoka-cli loads for the API-key check.
+  if [ -f "$HOME/.config/nonoka/.env" ]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.config/nonoka/.env"
   fi
 
   if [ -z "${DEEPSEEK_API_KEY:-}${OPENAI_API_KEY:-}" ]; then
@@ -340,14 +421,15 @@ run_smoke() {
     return
   fi
 
-  info "Running smoke test: opencode run --auto hello"
-  if opencode run --auto "hello"; then
+  info "Running smoke test: nonoka run --message hello"
+  if nonoka run --message "hello"; then
     info "Smoke test passed."
   else
     warn "Smoke test failed. Check the logs above for details."
   fi
 }
 
+run_verify
 run_smoke
 
 # --------------------------------------------------------------------------- #
