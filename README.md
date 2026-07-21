@@ -117,6 +117,72 @@ key with a real (small) call, use:
 nonoka-cli doctor --check-llm
 ```
 
+## Agent evaluation
+
+`nonoka eval` is a thin frontend for the framework-owned benchmark engine. Its
+scored built-ins are the open HumanEval and MBPP datasets. The bundled
+`tool_use` suite is deliberately labelled as deterministic smoke/regression
+coverage; it is not presented as a substitute for an open benchmark. Results
+are stored under `.nonoka/eval/` in the current project and can be compared
+locally:
+
+```bash
+nonoka eval list
+nonoka eval run --dataset humaneval --model deepseek-chat --limit 20
+nonoka eval run --dataset mbpp --model deepseek-chat --limit 20
+nonoka eval leaderboard
+```
+
+Each built-in run records a normal Nonoka agent and a same-model direct
+baseline, including pass@1, turns, tool calls, token usage, wall time, and the
+agent lift. Live model calls are opt-in and are never part of the default test
+suite.
+
+For a release comparison, create a manifest before incurring any model cost.
+It pins the model policy and includes HumanEval, MBPP sanitized, EvalPlus,
+τ³ retail/airline, and Terminal-Bench. EvalPlus runs in a separate environment
+because it owns the official strengthened verifier:
+
+```bash
+nonoka eval matrix plan --model deepseek-chat --output .nonoka/eval/release-matrix.json
+export NONOKA_EVALPLUS_PYTHON=/path/to/evalplus-python
+nonoka eval matrix run --manifest .nonoka/eval/release-matrix.json --include evalplus-humaneval
+```
+
+For complex agent tasks, the framework delegates to official harnesses instead
+of reimplementing their verifiers. τ³-bench (the `tau2-bench` package) provides
+multi-turn customer-service tasks with policies, simulated users, environment
+tools, and action-level reward; it runs from an isolated Python 3.12
+environment because of its dependency pins:
+
+```bash
+export NONOKA_TAU2_PYTHON=/path/to/tau2-python
+nonoka eval external run --benchmark tau2-bench --model deepseek-chat --domain retail --limit 10
+```
+
+For complex terminal-agent tasks, Terminal-Bench delegates Docker lifecycle and
+verification to its official `tb` harness rather than replacing its verifier.
+Install the public `terminal-bench` package and the local checkout of
+`nonoka-agent` in the same isolated Python environment, then point the CLI at
+that environment's executable:
+
+```bash
+uv venv .venv-terminal-bench --python 3.13
+uv pip install --python .venv-terminal-bench/bin/python -e ../nonoka-agent terminal-bench
+export NONOKA_TERMINAL_BENCH_BIN="$PWD/.venv-terminal-bench/bin/tb"
+# Optional: use an official dataset checkout pinned by your release manifest.
+export NONOKA_TERMINAL_BENCH_DATASET_PATH=/path/to/terminal-bench/tasks
+nonoka eval doctor
+nonoka eval external run --benchmark terminal-bench --model deepseek-chat --limit 10
+# A reproducible smoke task; --task-id can be supplied more than once.
+nonoka eval external run --benchmark terminal-bench --model deepseek-chat --task-id fix-git
+```
+
+The adapter is `nonoka.ext.eval.terminal_bench:NonokaTerminalBenchAgent`; it
+only exposes the official task tmux session as Nonoka terminal tools. Docker
+access is required. SWE-bench remains an external harness because its official
+local evaluation requires substantially more host resources.
+
 ## Configuration
 
 ### `nonoka-cli config init`

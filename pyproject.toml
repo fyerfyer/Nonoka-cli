@@ -54,6 +54,7 @@ markers = [
   "integration: tests that start real subprocesses or external services",
   "e2e: end-to-end workflow tests",
   "live: tests that call real LLM/API (not CI-stable)",
+  "eval: deterministic agent-evaluation tests; live evals are opt-in",
 ]
 
 [tool.coverage.run]
