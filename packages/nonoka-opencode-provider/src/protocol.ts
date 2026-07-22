@@ -23,6 +23,7 @@ export interface NonokaChatMessage {
   content: string;
   tool_call_id?: string;
   tool_calls?: NonokaChatToolCall[];
+  result?: unknown;
 }
 
 export interface ExternalToolDefinition {
@@ -48,6 +49,7 @@ export interface ExternalSkillDefinition {
 export const NONOKA_INBOUND_TYPES = {
   chat: 'chat',
   approval: 'approval',
+  cancel: 'cancel',
 } as const;
 
 export type NonokaInboundEventType = keyof typeof NONOKA_INBOUND_TYPES;
@@ -62,6 +64,10 @@ export interface NonokaChatRequest {
   new_session?: boolean;
   cwd: string;
   model?: string;
+  temperature?: number;
+  max_turns?: number;
+  timeout_seconds?: number;
+  tool_budget?: number;
   request_id?: string;
 }
 
@@ -72,7 +78,12 @@ export interface NonokaApprovalMessage {
   modified_args?: Record<string, unknown>;
 }
 
-export type NonokaInboundMessage = NonokaChatRequest | NonokaApprovalMessage;
+export interface NonokaCancelMessage {
+  type: typeof NONOKA_INBOUND_TYPES.cancel;
+  request_id?: string;
+}
+
+export type NonokaInboundMessage = NonokaChatRequest | NonokaApprovalMessage | NonokaCancelMessage;
 
 export const NONOKA_OUTBOUND_TYPES = {
   session_init: 'session_init',
@@ -170,5 +181,9 @@ export function encodeChatRequest(req: NonokaChatRequest): string {
 }
 
 export function encodeApprovalMessage(req: NonokaApprovalMessage): string {
+  return JSON.stringify(req);
+}
+
+export function encodeCancelMessage(req: NonokaCancelMessage): string {
   return JSON.stringify(req);
 }

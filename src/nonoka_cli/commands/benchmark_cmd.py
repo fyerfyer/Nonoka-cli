@@ -1,0 +1,514 @@
+"""Reproducible OpenCode bridge benchmark commands."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from nonoka_cli.config.loader import ConfigLoader
+from nonoka_cli.config.models import CLIConfig
+
+TERMINAL_BENCH_TASKS = (
+    "adaptive-rejection-sampler",
+    "break-filter-js-from-html",
+    "cancel-async-tasks",
+    "configure-git-webserver",
+    "count-dataset-tokens",
+    "db-wal-recovery",
+    "query-optimize",
+    "regex-log",
+    "sanitize-git-repo",
+    "sqlite-db-truncate",
+)
+
+_SECRET_PATTERNS = (
+    re.compile(r"\b(?:sk|rk|AIza)[-_A-Za-z0-9]{16,}\b"),
+    re.compile(r"(?i)(api[_-]?key|authorization|token)\s*[:=]\s*[^\s\"']+"),
+)
+
+
+def _redact_text(value: str) -> str:
+    """Remove common credential forms before persisting a benchmark artifact."""
+    for pattern in _SECRET_PATTERNS:
+        value = pattern.sub("[REDACTED]", value)
+    return value
+
+
+def _version(command: list[str]) -> str | None:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _artifact_dir(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser().resolve()
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return (Path.cwd() / ".nonoka" / "eval" / "opencode" / stamp).resolve()
+
+
+def _write_manifest(directory: Path, args: argparse.Namespace, command: list[str]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "mode": args.mode,
+        "model": args.model,
+        "temperature": args.temperature,
+        "max_turns": args.max_turns,
+        "timeout_seconds": args.timeout,
+        "tool_budget": args.tool_budget,
+        "cwd": str(Path(args.cwd).resolve()),
+        "config": getattr(
+            args,
+            "_benchmark_config",
+            str(Path(args.config).expanduser().resolve()) if args.config else None,
+        ),
+        "provider_source": getattr(
+            args,
+            "_resolved_provider_source",
+            str(Path(args.provider_source).resolve()) if args.provider_source else None,
+        ),
+        "runtime_artifacts": getattr(args, "_runtime_artifacts", None),
+        "opencode_version": _version(["opencode", "--version"]),
+        "harbor_version": _version(["harbor", "--version"]),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "tasks": list(getattr(args, "tasks", None) or TERMINAL_BENCH_TASKS),
+        "command": command,
+        "credential_policy": (
+            "Credentials are supplied only through environment variables and are "
+            "excluded from artifacts."
+        ),
+    }
+    (directory / "manifest.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _common_env(directory: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["NONOKA_TRACE_DIR"] = str(directory / "bridge-events")
+    env["NONOKA_TIMELINE_PATH"] = str(directory / "timeline.ndjson")
+    env["NONOKA_PROVIDER_LOG_PATH"] = str(directory / "provider.log")
+    env["NONOKA_LOG_FILE"] = str(directory / "server.log")
+    env["XDG_CONFIG_HOME"] = str(directory / "xdg-config")
+    return env
+
+
+def _harbor_env(directory: Path) -> dict[str, str]:
+    """Return Harbor's environment with its unsupported SOCKS proxy removed.
+
+    Harbor's registry client currently constructs an httpx client without SOCKS
+    transport support. A local ``ALL_PROXY=socks://...`` therefore prevents
+    even public dataset metadata from loading. Scope this workaround to the
+    Harbor child process; it never changes the user's shell environment.
+    """
+    env = _common_env(directory)
+    for key in ("ALL_PROXY", "all_proxy"):
+        if env.get(key, "").lower().startswith("socks://"):
+            env.pop(key, None)
+    return env
+
+
+def _default_provider_source() -> Path | None:
+    """Return this checkout's built provider package when available."""
+    source = Path(__file__).resolve().parents[3] / "packages" / "nonoka-opencode-provider"
+    return source if (source / "package.json").is_file() and (source / "dist").is_dir() else None
+
+
+def _checkout_root() -> Path:
+    """Return the nonoka-cli checkout containing this benchmark command."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _build_runtime_wheel(
+    *, directory: Path, project: Path, distribution: str
+) -> Path:
+    """Build a current wheel without modifying the checkout's ``dist/`` directory."""
+    uv = shutil.which("uv")
+    if not uv:
+        raise ValueError("uv is required to build isolated Harbor runtime wheels")
+    if not (project / "pyproject.toml").is_file():
+        raise ValueError(f"Cannot build {distribution}; missing pyproject.toml at {project}")
+
+    wheel_dir = directory / "runtime-wheels"
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    command = [uv, "build", "--wheel", "--out-dir", str(wheel_dir)]
+    result = subprocess.run(command, cwd=project, capture_output=True, text=True, check=False)
+    with (directory / "runtime-build.log").open("a", encoding="utf-8") as log:
+        log.write(f"$ {' '.join(command)}  # cwd={project}\n")
+        log.write(_redact_text(result.stdout))
+        log.write(_redact_text(result.stderr))
+    if result.returncode:
+        raise ValueError(f"Failed to build {distribution} runtime wheel; see runtime-build.log")
+
+    normalized = distribution.replace("-", "_")
+    candidates = sorted(
+        wheel_dir.glob(f"{normalized}-*.whl"), key=lambda item: item.stat().st_mtime
+    )
+    if not candidates:
+        raise ValueError(f"uv build did not produce a {distribution} wheel")
+    return candidates[-1]
+
+
+def _stage_provider_source(args: argparse.Namespace, directory: Path) -> Path:
+    """Copy the built, self-contained provider required inside Harbor tasks."""
+    source = (
+        Path(args.provider_source).expanduser().resolve()
+        if args.provider_source
+        else _default_provider_source()
+    )
+    if source is None:
+        raise ValueError("No built local provider is available; pass --provider-source with dist/.")
+    if not (source / "package.json").is_file() or not (source / "dist").is_dir():
+        raise ValueError("--provider-source must contain package.json and a built dist/ directory")
+    if not (source / "node_modules").is_dir():
+        raise ValueError(
+            "--provider-source must include node_modules for offline Harbor execution; "
+            "run `bun install` in the provider directory first"
+        )
+
+    staged = directory / "runtime-provider"
+    if staged.exists():
+        shutil.rmtree(staged)
+    staged.mkdir(parents=True)
+    shutil.copy2(source / "package.json", staged / "package.json")
+    shutil.copytree(source / "dist", staged / "dist")
+    shutil.copytree(source / "node_modules", staged / "node_modules", symlinks=True)
+    return staged
+
+
+def _stage_uv_binary(directory: Path) -> Path:
+    """Copy the host UV executable so task Python setup is UV-managed."""
+    uv = shutil.which("uv")
+    if not uv:
+        raise ValueError("uv is required to provision the Harbor bridge runtime")
+    source = Path(uv).resolve()
+    if not source.is_file():
+        raise ValueError(f"uv executable was not found: {source}")
+    staged = directory / "runtime-uv"
+    staged.mkdir(parents=True, exist_ok=True)
+    target = staged / "uv"
+    shutil.copy2(source, target)
+    target.chmod(target.stat().st_mode | 0o111)
+    return target
+
+
+def _stage_opencode_binary(directory: Path) -> Path:
+    """Copy a verified host OpenCode executable for network-free task setup."""
+    opencode = shutil.which("opencode")
+    if not opencode:
+        raise ValueError("opencode is required to provision the Harbor bridge runtime")
+    source = Path(opencode).resolve()
+    if not source.is_file():
+        raise ValueError(f"opencode executable was not found: {source}")
+    staged = directory / "runtime-opencode"
+    staged.mkdir(parents=True, exist_ok=True)
+    target = staged / "opencode"
+    shutil.copy2(source, target)
+    target.chmod(target.stat().st_mode | 0o111)
+    return target
+
+
+def _prepare_harbor_runtime(args: argparse.Namespace, directory: Path) -> dict[str, str]:
+    """Build and stage the exact bridge bits copied into every task container."""
+    root = _checkout_root()
+    agent_root = root.parent / "nonoka-agent"
+    cli_wheel = _build_runtime_wheel(directory=directory, project=root, distribution="nonoka-cli")
+    agent_wheel = _build_runtime_wheel(
+        directory=directory, project=agent_root, distribution="nonoka"
+    )
+    provider = _stage_provider_source(args, directory)
+    uv_binary = _stage_uv_binary(directory)
+    opencode_binary = _stage_opencode_binary(directory)
+    return {
+        "cli_wheel": str(cli_wheel),
+        "agent_wheel": str(agent_wheel),
+        "provider_source": str(provider),
+        "uv_binary": str(uv_binary),
+        "opencode_binary": str(opencode_binary),
+    }
+
+
+def _api_key_env_for_model(model: str) -> str:
+    """Map common model names to the environment key consumed by nonoka."""
+    lowered = model.lower()
+    if "deepseek" in lowered:
+        return "DEEPSEEK_API_KEY"
+    if "anthropic" in lowered or "claude" in lowered:
+        return "ANTHROPIC_API_KEY"
+    if "openrouter" in lowered:
+        return "OPENROUTER_API_KEY"
+    if "gemini" in lowered or "google" in lowered:
+        return "GOOGLE_API_KEY"
+    return "OPENAI_API_KEY"
+
+
+def _prepare_provider_source(args: argparse.Namespace) -> Path | None:
+    """Expose a locally built provider package to OpenCode for an eval run."""
+    source = (
+        Path(args.provider_source).expanduser().resolve()
+        if args.provider_source
+        else _default_provider_source()
+    )
+    if source is None:
+        return None
+    package = source / "package.json"
+    build = source / "dist"
+    if not package.is_file() or not build.is_dir():
+        raise ValueError("--provider-source must contain package.json and a built dist/ directory")
+    link = Path(args.cwd).resolve() / "node_modules" / "nonoka-opencode-provider"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.exists() or link.is_symlink():
+        if link.resolve() != source:
+            raise ValueError(f"Provider path already exists and does not point to {source}: {link}")
+        return source
+    link.symlink_to(source, target_is_directory=True)
+    return source
+
+
+def _benchmark_config(args: argparse.Namespace, directory: Path) -> Path:
+    """Create a self-contained config when no user config was supplied."""
+    if args.config:
+        path = Path(args.config).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"--config does not exist: {path}")
+        return path
+    path = directory / "nonoka.benchmark.yaml"
+    ConfigLoader.save(
+        CLIConfig(
+            model=args.model,
+            cli={"auto_approve": True},
+            agents={"executor": {"max_turns": args.max_turns}},
+        ),
+        path,
+    )
+    return path
+
+
+def _write_opencode_profile(
+    args: argparse.Namespace,
+    directory: Path,
+    config_path: Path,
+    provider_source: Path,
+) -> Path:
+    """Write a temporary project profile that pins the local bridge process."""
+    workspace = Path(args.cwd).resolve()
+    profile = workspace / "opencode.json"
+    if profile.exists():
+        raise ValueError(
+            f"Benchmark workspace already has {profile}; use a clean --cwd so the run is isolated."
+        )
+    payload = {
+        "$schema": "https://opencode.ai/config.json",
+        "autoupdate": False,
+        "model": "nonoka/default",
+        "provider": {
+            "nonoka": {
+                "npm": f"file:{provider_source}",
+                "name": "Nonoka benchmark bridge",
+                "options": {
+                    "serverCommand": [sys.executable, "-m", "nonoka_cli", "--server"],
+                    "cwd": str(workspace),
+                    "configPath": str(config_path),
+                    "model": args.model,
+                    "temperature": args.temperature,
+                    "maxTurns": args.max_turns,
+                    "timeoutSeconds": args.timeout,
+                    "toolBudget": args.tool_budget,
+                },
+                "models": {"default": {"name": f"Nonoka {args.model}"}},
+            }
+        },
+        "permission": {"*": "allow"},
+        "tools": {"skill": False},
+    }
+    profile.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (directory / "opencode.profile.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return profile
+
+
+def cmd_smoke(args: argparse.Namespace) -> int:
+    if not shutil.which("opencode"):
+        print("Error: opencode is not installed.", file=sys.stderr)
+        return 2
+    directory = _artifact_dir(args.artifact_dir)
+    temporary_profile: Path | None = None
+    try:
+        if args.mode == "opencode-nonoka":
+            source = _prepare_provider_source(args)
+            if source is None:
+                raise ValueError(
+                    "No built local provider is available; pass --provider-source to a package "
+                    "with dist/."
+                )
+            args._resolved_provider_source = str(source)
+            config_path = _benchmark_config(args, directory)
+            args._benchmark_config = str(config_path)
+            temporary_profile = _write_opencode_profile(args, directory, config_path, source)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    command = ["opencode", "run", "--format", "json", "--dir", str(Path(args.cwd).resolve())]
+    if args.mode == "opencode-nonoka":
+        command.extend(["--model", "nonoka/default"])
+    elif args.model:
+        command.extend(["--model", args.model])
+    command.append(args.message)
+    _write_manifest(directory, args, command)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=args.cwd,
+            capture_output=True,
+            text=True,
+            env=_common_env(directory),
+            check=False,
+        )
+        (directory / "opencode.stdout.ndjson").write_text(
+            _redact_text(result.stdout), encoding="utf-8"
+        )
+        (directory / "opencode.stderr.log").write_text(
+            _redact_text(result.stderr), encoding="utf-8"
+        )
+        (directory / "result.json").write_text(
+            json.dumps({"returncode": result.returncode}, indent=2) + "\n", encoding="utf-8"
+        )
+    finally:
+        if temporary_profile is not None:
+            temporary_profile.unlink(missing_ok=True)
+    print(f"Artifacts: {directory}")
+    return result.returncode
+
+
+def cmd_terminal_bench(args: argparse.Namespace) -> int:
+    if not shutil.which("harbor"):
+        print(
+            "Error: harbor is not installed. Run `nonoka-cli doctor --check-benchmarks`.",
+            file=sys.stderr,
+        )
+        return 2
+    docker = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
+    if docker.returncode:
+        print("Error: Docker daemon is unavailable for Harbor.", file=sys.stderr)
+        return 2
+    workspace = Path(args.cwd).expanduser().resolve()
+    if workspace.exists() and not workspace.is_dir():
+        print(f"Error: --cwd is not a directory: {workspace}", file=sys.stderr)
+        return 2
+    workspace.mkdir(parents=True, exist_ok=True)
+    args.cwd = str(workspace)
+    directory = _artifact_dir(args.artifact_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    agent = (
+        "nonoka_cli.benchmark.harbor:OpenCodeHarborAgent"
+        if args.mode == "opencode-nonoka"
+        else "nonoka.ext.eval.harbor:NonokaHarborAgent"
+    )
+    try:
+        runtime = _prepare_harbor_runtime(args, directory) if args.mode == "opencode-nonoka" else {}
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    args._runtime_artifacts = runtime or None
+    command = [
+        "harbor",
+        "run",
+        "--dataset",
+        "terminal-bench@2.0",
+        "--agent",
+        agent,
+        "--model",
+        args.model,
+        "--n-concurrent",
+        "1",
+        "--yes",
+        "--jobs-dir",
+        str(directory / "harbor-jobs"),
+    ]
+    if args.mode == "opencode-nonoka":
+        for key, value in runtime.items():
+            command.extend(["--agent-kwarg", f"{key}={value}"])
+        command.extend(
+            [
+                "--agent-kwarg",
+                f"temperature={args.temperature}",
+                "--agent-kwarg",
+                f"max_turns={args.max_turns}",
+                "--agent-kwarg",
+                f"timeout_seconds={args.timeout}",
+                "--agent-kwarg",
+                f"tool_budget={args.tool_budget}",
+            ]
+        )
+        api_key_env = _api_key_env_for_model(args.model)
+        command.extend(["--agent-env", f"{api_key_env}=${{{api_key_env}}}"])
+    if getattr(args, "install_only", False):
+        command.append("--install-only")
+    for task in (getattr(args, "tasks", None) or TERMINAL_BENCH_TASKS):
+        command.extend(["--include-task-name", task])
+    _write_manifest(directory, args, command)
+    result = subprocess.run(command, cwd=args.cwd, env=_harbor_env(directory), check=False)
+    (directory / "result.json").write_text(
+        json.dumps({"returncode": result.returncode, "official_artifact": "harbor-jobs"}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"Artifacts: {directory}")
+    return result.returncode
+
+
+def add_subparser(subparsers: Any) -> None:
+    parser = subparsers.add_parser("benchmark", help="Run reproducible OpenCode bridge benchmarks")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config")
+    common.add_argument("--cwd", default=".")
+    common.add_argument("--model", default="deepseek-chat")
+    common.add_argument("--temperature", type=float, default=0.0)
+    common.add_argument("--max-turns", type=int, default=24)
+    common.add_argument("--timeout", type=float, default=180.0)
+    common.add_argument("--tool-budget", type=int, default=64)
+    common.add_argument("--artifact-dir")
+    common.add_argument("--provider-source")
+    modes = ("opencode-nonoka", "opencode-direct", "nonoka-framework")
+    children = parser.add_subparsers(dest="benchmark_command", required=True)
+    smoke = children.add_parser("smoke", parents=[common], help="Run OpenCode JSON-mode smoke test")
+    smoke.add_argument("--mode", choices=modes[:2], default="opencode-nonoka")
+    smoke.add_argument(
+        "--message",
+        default="Create smoke.txt containing exactly nonoka bridge smoke, then read it.",
+    )
+    smoke.set_defaults(func=cmd_smoke)
+    terminal = children.add_parser(
+        "terminal-bench", parents=[common], help="Run the pinned Terminal-Bench 2 slice"
+    )
+    terminal.add_argument(
+        "--mode", choices=("opencode-nonoka", "nonoka-framework"), default="opencode-nonoka"
+    )
+    terminal.add_argument(
+        "--task",
+        dest="tasks",
+        action="append",
+        choices=TERMINAL_BENCH_TASKS,
+        help="Run one or more tasks from the pinned slice (defaults to all ten).",
+    )
+    terminal.add_argument(
+        "--install-only",
+        action="store_true",
+        help="Provision the adapter in the selected task containers without scoring them.",
+    )
+    terminal.set_defaults(func=cmd_terminal_bench)

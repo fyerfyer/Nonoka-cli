@@ -65,3 +65,4 @@ REFACTOR.md
 # Runtime nonoka project artifacts
 .nonoka/repo_map.jsonl
 .nonoka/tasks/
+.nonoka/eval/

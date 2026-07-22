@@ -17,8 +17,10 @@ import structlog
 
 from nonoka_cli.bridge.handler import ChatRequestHandler, build_sender
 from nonoka_cli.bridge.protocol import (
+  CancelRequest,
   ChatRequest,
   ErrorEvent,
+  FinishEvent,
   parse_inbound_line,
 )
 from nonoka_cli.utils.logging import setup_logging
@@ -51,6 +53,7 @@ class BridgeServer:
     )
     self._running = True
     self._chat_lock = asyncio.Lock()
+    self._active_chat: asyncio.Task[None] | None = None
 
   # ------------------------------------------------------------------ #
   # Public API
@@ -79,7 +82,17 @@ class BridgeServer:
         if isinstance(msg, ChatRequest):
           # Chat turns are processed sequentially so the single orchestrator
           # state stays consistent.
-          await self._handle_chat(msg)
+          if self._active_chat is not None:
+            if not self._active_chat.done():
+              await self._handler.send(ErrorEvent(message="A chat turn is already running."))
+              continue
+            await self._active_chat
+            self._active_chat = None
+          # Do not await here: an AbortSignal arrives as a subsequent NDJSON
+          # line and must be read while the agent turn is still running.
+          self._active_chat = asyncio.create_task(self._handle_chat(msg))
+        elif isinstance(msg, CancelRequest):
+          await self._cancel_active_chat()
         else:
           logger.warning("unexpected_inbound_type", type=type(msg).__name__)
     finally:
@@ -103,12 +116,25 @@ class BridgeServer:
         except Exception:
           pass
 
+  async def _cancel_active_chat(self) -> None:
+    """Cancel an in-flight turn and emit a terminal protocol event."""
+    if self._active_chat is None or self._active_chat.done():
+      return
+    self._active_chat.cancel()
+    try:
+      await self._active_chat
+    except asyncio.CancelledError:
+      await self._handler.send(FinishEvent(finish_reason="cancel"))
+    finally:
+      self._active_chat = None
+
   # ------------------------------------------------------------------ #
   # Lifecycle
   # ------------------------------------------------------------------ #
 
   async def _shutdown(self) -> None:
     """Shutdown the handler and close the stdout writer."""
+    await self._cancel_active_chat()
     await self._handler.shutdown()
 
     try:

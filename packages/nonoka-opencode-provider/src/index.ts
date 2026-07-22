@@ -29,6 +29,12 @@ export interface NonokaProviderSettings {
    */
   model?: string;
 
+  /** Optional per-turn generation controls forwarded to nonoka-cli. */
+  temperature?: number;
+  maxTurns?: number;
+  timeoutSeconds?: number;
+  toolBudget?: number;
+
   /**
    * Additional environment variables for the server process.
    */
@@ -72,6 +78,10 @@ export function createNonoka(
     cwd,
     configPath: settings.configPath,
     model: settings.model,
+    temperature: settings.temperature,
+    maxTurns: settings.maxTurns,
+    timeoutSeconds: settings.timeoutSeconds,
+    toolBudget: settings.toolBudget,
     env: settings.env,
   };
 

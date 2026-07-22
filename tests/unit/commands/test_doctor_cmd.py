@@ -10,6 +10,8 @@ from nonoka_cli.commands.doctor_cmd import (
   _api_key_env_for_model,
   check_api_key,
   check_config,
+  check_docker,
+  check_harbor,
   check_nonoka_cli_version,
   check_opencode,
   check_opencode_config,
@@ -131,6 +133,20 @@ class TestCheckOpencodeConfig:
     monkeypatch.chdir(tmp_path)
     result = check_opencode_config()
     assert result.status == "error"
+
+
+class TestBenchmarkPrerequisites:
+  def test_harbor_missing(self):
+    with mock.patch("nonoka_cli.commands.doctor_cmd.shutil.which", return_value=None):
+      assert check_harbor().status == "warn"
+
+  def test_docker_daemon_ready(self):
+    with mock.patch("nonoka_cli.commands.doctor_cmd.shutil.which", return_value="/bin/docker"):
+      with mock.patch(
+        "nonoka_cli.commands.doctor_cmd._run",
+        return_value=mock.MagicMock(returncode=0, stdout="29.0.2\n"),
+      ):
+        assert check_docker().status == "ok"
 
   def test_valid_global_config(self, tmp_path: Path, monkeypatch):
     config_dir = tmp_path / ".config" / "opencode"

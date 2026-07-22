@@ -48,9 +48,9 @@ class ChatRequestHandler:
     model: str | None = None,
   ):
     """Args:
-      send: Async callable accepting an outbound message and writing it to stdout.
-      config_path: Optional explicit path to the nonoka config file.
-      model: Optional model override.
+    send: Async callable accepting an outbound message and writing it to stdout.
+    config_path: Optional explicit path to the nonoka config file.
+    model: Optional model override.
     """
     self._send = send
     self._config_path = config_path
@@ -197,9 +197,13 @@ class ChatRequestHandler:
     await self._emit_debug(
       "stream_prepared",
       payload={
-        "mode": "external_tools" if (external_tools or external_mcp_servers or external_skills) else "local",
+        "mode": "external_tools"
+        if (external_tools or external_mcp_servers or external_skills)
+        else "local",
         "is_resume": bool(tool_results),
-        "has_approvals": bool(self._extract_approvals(msg)) if not (external_tools or external_mcp_servers or external_skills) else False,
+        "has_approvals": bool(self._extract_approvals(msg))
+        if not (external_tools or external_mcp_servers or external_skills)
+        else False,
         "session_id": self._session_id,
       },
     )
@@ -209,12 +213,26 @@ class ChatRequestHandler:
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
     """Initialize the orchestrator on first request."""
     if self._orchestrator is not None:
+      if self._has_generation_options(msg):
+        self._orchestrator.set_generation_options(
+          max_turns=msg.max_turns,
+          temperature=msg.temperature,
+          timeout_seconds=msg.timeout_seconds,
+          tool_budget=msg.tool_budget,
+        )
       return
 
     self._working_dir = Path(msg.cwd or ".").resolve()
 
     self._orchestrator = Orchestrator()
     await self._orchestrator.initialize(config_path=self._config_path)
+    if self._has_generation_options(msg):
+      self._orchestrator.set_generation_options(
+        max_turns=msg.max_turns,
+        temperature=msg.temperature,
+        timeout_seconds=msg.timeout_seconds,
+        tool_budget=msg.tool_budget,
+      )
 
     self._task_state_service = TaskStateService(
       tasks_dir=self._orchestrator.config.task_state.tasks_dir,
@@ -227,6 +245,14 @@ class ChatRequestHandler:
       await self._orchestrator.switch_model(msg.model)
 
     self._session_id = self._orchestrator.session_id
+
+  @staticmethod
+  def _has_generation_options(msg: ChatRequest) -> bool:
+    """Return whether this request carries a non-default benchmark override."""
+    return any(
+      value is not None
+      for value in (msg.max_turns, msg.temperature, msg.timeout_seconds, msg.tool_budget)
+    )
 
   async def _apply_session(self, session_id: str | None) -> None:
     """Switch orchestrator session if the provider sent a different one."""
@@ -380,7 +406,7 @@ class ChatRequestHandler:
           pending_ids=list(pending_ids),
         )
         continue
-      results[m.tool_call_id] = m.content
+      results[m.tool_call_id] = m.result if m.result is not None else m.content
 
     return results if results else None
 

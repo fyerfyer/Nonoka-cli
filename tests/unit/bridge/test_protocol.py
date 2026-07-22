@@ -3,6 +3,7 @@ import json
 import pytest
 
 from nonoka_cli.bridge.protocol import (
+  CancelRequest,
   ChatRequest,
   ErrorEvent,
   ExternalToolDefinition,
@@ -58,6 +59,20 @@ def test_parse_chat_request_with_tools():
   assert "command" in msg.tools[0].parameters["properties"]
 
 
+def test_parse_structured_external_tool_receipt():
+  msg = parse_inbound_line(json.dumps({
+    "type": "chat", "cwd": "/tmp",
+    "messages": [{
+      "role": "tool", "content": "done", "tool_call_id": "call-1",
+      "result": {"result": "done", "host": "opencode", "workspace": {
+        "root": "/tmp", "before_digest": "a", "after_digest": "b",
+      }},
+    }],
+  }))
+  assert isinstance(msg, ChatRequest)
+  assert msg.messages[0].result["workspace"]["after_digest"] == "b"
+
+
 def test_external_tool_definition_roundtrip():
   tool = ExternalToolDefinition(
     name="write_file",
@@ -78,6 +93,12 @@ def test_parse_unknown_type():
 def test_parse_invalid_json():
   with pytest.raises(ValueError):
     parse_inbound_line("not json")
+
+
+def test_parse_cancel_request():
+  msg = parse_inbound_line('{"type":"cancel","request_id":"req-1"}')
+  assert isinstance(msg, CancelRequest)
+  assert msg.request_id == "req-1"
 
 
 def test_encode_text_delta():

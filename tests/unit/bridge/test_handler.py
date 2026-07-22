@@ -52,6 +52,28 @@ async def test_handle_new_session(handler, sent):
       assert any(m.type == "session_init" for m in sent)
 
 
+async def test_existing_orchestrator_receives_generation_overrides(handler):
+  orchestrator = MagicMock()
+  handler._orchestrator = orchestrator
+
+  await handler._ensure_orchestrator(
+    ChatRequest(
+      messages=[ChatMessage(role="user", content="hello")],
+      temperature=0.0,
+      max_turns=12,
+      timeout_seconds=90.0,
+      tool_budget=30,
+    )
+  )
+
+  orchestrator.set_generation_options.assert_called_once_with(
+    temperature=0.0,
+    max_turns=12,
+    timeout_seconds=90.0,
+    tool_budget=30,
+  )
+
+
 async def test_handle_resume_approval(handler, sent):
   with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
     with patch.object(handler, "_apply_session", new=AsyncMock()):

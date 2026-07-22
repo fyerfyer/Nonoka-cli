@@ -364,8 +364,8 @@ class Orchestrator:
     search_paths: list[Path] = []
     if cwd is not None:
       search_paths.extend([
-        cwd / ".nonoka" / "skills",
-        cwd / "skills",
+          cwd / ".nonoka" / "skills",
+          cwd / "skills",
       ])
     return SkillRegistry(
       enabled=list(self._config.skills),
@@ -664,6 +664,26 @@ class Orchestrator:
       new_model=self._config.model,
       session_id=self.session_id,
     )
+
+  def set_generation_options(
+    self,
+    *,
+    max_turns: int | None = None,
+    temperature: float | None = None,
+    timeout_seconds: float | None = None,
+    tool_budget: int | None = None,
+  ) -> None:
+    """Apply non-persistent per-run options and rebuild the active Agent."""
+    self._ensure_initialized()
+    if self._agent_factory is None:
+      raise OrchestratorError("Agent factory not available.")
+    self._agent_factory.set_generation_options(
+      max_turns=max_turns,
+      temperature=temperature,
+      timeout_seconds=timeout_seconds,
+      tool_budget=tool_budget,
+    )
+    self._agent_factory.build()
 
   async def reload_config(self) -> CLIConfig:
     """Hot-reload configuration from disk and rebuild the Agent."""

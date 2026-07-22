@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,30 @@ from nonoka import (
 )
 from nonoka.core.types import Capability
 
+try:
+  from nonoka.core.execution import ToolExecution
+except ImportError:  # nonoka<=1.3.5; retain conservative metadata locally.
+
+  @dataclass(frozen=True)
+  class ToolExecution:  # type: ignore[no-redef]
+    read_only: bool = False
+    mutates_workspace: bool = False
+    exclusive: bool = False
+    stateful_action: bool = False
+    pagination: bool = False
+
+    @property
+    def parallel_safe(self) -> bool:
+      return self.read_only and not self.mutates_workspace and not self.stateful_action
+
+  _SUPPORTS_EXECUTION_METADATA = False
+else:
+  _SUPPORTS_EXECUTION_METADATA = True
+
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.namespaces import (
   PrefixedCapability,
   mcp_tool_name,
-  sanitize_tool_name,
   skill_tool_name,
 )
 from nonoka_cli.core.prompt_builder import SystemPromptBuilder
@@ -108,14 +128,14 @@ class AgentFactory:
     allowed_tools: list[str] | None = None,
   ):
     """Args:
-      config: Validated CLI configuration.
-      mcp_manager: Optional MCP manager whose discovered tools are registered
-        with the Agent.
-      tool_loader: Optional tool loader for local / built-in tools.
-      skill_registry: Optional pre-built skill registry. If omitted, the
-        factory constructs one from ``config.skills`` at build time.
-      allowed_tools: Optional whitelist of tool names that do not require
-        human approval. Non-listed tools are marked as requiring approval.
+    config: Validated CLI configuration.
+    mcp_manager: Optional MCP manager whose discovered tools are registered
+     with the Agent.
+    tool_loader: Optional tool loader for local / built-in tools.
+    skill_registry: Optional pre-built skill registry. If omitted, the
+     factory constructs one from ``config.skills`` at build time.
+    allowed_tools: Optional whitelist of tool names that do not require
+     human approval. Non-listed tools are marked as requiring approval.
     """
     self._config = config
     self._mcp_manager = mcp_manager
@@ -127,6 +147,10 @@ class AgentFactory:
     self._git_summary: str | None = None
     self._plugin_summary: str | None = None
     self._execution_plan: str | None = None
+    self._generation_max_turns: int | None = None
+    self._generation_temperature: float | None = None
+    self._generation_timeout_seconds: float | None = None
+    self._generation_tool_budget: int | None = None
 
   @property
   def config(self) -> CLIConfig:
@@ -145,10 +169,51 @@ class AgentFactory:
 
   def _executor_max_turns(self) -> int:
     """Return the configured executor max turns, falling back to 20."""
+    if self._generation_max_turns is not None:
+      return self._generation_max_turns
     configured = getattr(
       self._config.agents.executor, "max_turns", None
     )
     return configured if configured else 20
+
+  def set_generation_options(
+    self,
+    *,
+    max_turns: int | None = None,
+    temperature: float | None = None,
+    timeout_seconds: float | None = None,
+    tool_budget: int | None = None,
+  ) -> None:
+    """Apply per-run generation limits used by the OpenCode bridge.
+
+    These settings are deliberately held outside the persisted CLI config so
+    benchmark runs can be reproduced without mutating a user's configuration.
+    ``max_steps`` is the framework's total tool-call budget.
+    """
+    self._generation_max_turns = max_turns
+    self._generation_temperature = temperature
+    self._generation_timeout_seconds = timeout_seconds
+    self._generation_tool_budget = tool_budget
+
+  def _apply_generation_options(self, builder: AgentBuilder) -> AgentBuilder:
+    """Attach optional bridge generation settings with old-framework fallback."""
+    if self._generation_tool_budget is not None and hasattr(builder, "max_steps"):
+      builder = builder.max_steps(self._generation_tool_budget)
+    if self._generation_timeout_seconds is not None and hasattr(builder, "timeout"):
+      builder = builder.timeout(self._generation_timeout_seconds)
+    return builder
+
+  def _finalize_agent(self, agent: Agent) -> Agent:
+    """Set temperature after builder construction across supported frameworks."""
+    if self._generation_temperature is None:
+      return agent
+    try:
+      return replace(agent, temperature=self._generation_temperature)
+    except (AttributeError, TypeError):
+      # Released framework versions predate generation metadata. They remain
+      # usable, but cannot safely mutate a frozen Agent instance.
+      logger.warning("generation_temperature_not_supported")
+      return agent
 
   def build(
     self,
@@ -164,15 +229,15 @@ class AgentFactory:
     model can accurately answer questions about its own identity.
 
     Args:
-      repo_map: Optional repo-map block to inject into the system prompt.
-      git_summary: Optional git-checkpoint status summary.
-      plugin_summary: Optional loaded plugin manifest summary.
+     repo_map: Optional repo-map block to inject into the system prompt.
+     git_summary: Optional git-checkpoint status summary.
+     plugin_summary: Optional loaded plugin manifest summary.
 
     Returns:
-      A nonoka Agent instance.
+     A nonoka Agent instance.
 
     Raises:
-      AgentBuildError: If model is not configured.
+     AgentBuildError: If model is not configured.
     """
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
@@ -233,7 +298,7 @@ class AgentFactory:
           builder = builder.tool(capability)
         logger.debug("agent_factory_mcp_tools", count=len(mcp_tools))
 
-    self._agent = builder.build()
+    self._agent = self._finalize_agent(self._apply_generation_options(builder).build())
     return self._agent
 
   def _build_system_prompt(
@@ -282,13 +347,13 @@ class AgentFactory:
     delegated back to the host.
 
     Args:
-      tools: Tool definitions supplied by the host.
-      cwd: Current working directory to inject into the system prompt.
-      host_system_prompt: Optional system prompt forwarded by the host.
-        Used only when the user has not configured a custom ``system_prompt``
-        in nonoka.yaml.
-      external_mcp_servers: Optional host-managed MCP server definitions.
-      external_skills: Optional host-managed skill definitions.
+     tools: Tool definitions supplied by the host.
+     cwd: Current working directory to inject into the system prompt.
+     host_system_prompt: Optional system prompt forwarded by the host.
+      Used only when the user has not configured a custom ``system_prompt``
+      in nonoka.yaml.
+     external_mcp_servers: Optional host-managed MCP server definitions.
+     external_skills: Optional host-managed skill definitions.
     """
     if not self._config.model:
       raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
@@ -329,19 +394,19 @@ class AgentFactory:
     external_mcp_tool_names: list[str] = []
     if external_mcp_servers:
       external_mcp_registry = ExternalMCPRegistry([
-        ExternalMCPServer(
-          name=s.name,
-          description=s.description,
-          tools=[
-            ExternalMCPToolDefinition(
-              name=t.name,
-              description=t.description,
-              parameters=t.parameters,
-            )
-            for t in s.tools
-          ],
-        )
-        for s in external_mcp_servers
+          ExternalMCPServer(
+            name=s.name,
+            description=s.description,
+            tools=[
+              ExternalMCPToolDefinition(
+                name=t.name,
+                description=t.description,
+                parameters=t.parameters,
+              )
+              for t in s.tools
+            ],
+          )
+          for s in external_mcp_servers
       ])
       external_mcp_tool_names = [cap.name for cap in external_mcp_registry.get_tools()]
 
@@ -350,21 +415,21 @@ class AgentFactory:
     external_skill_tool_names: list[str] = []
     if external_skills:
       external_skill_registry = ExternalSkillRegistry([
-        ExternalSkill(
-          name=s.name,
-          description=s.description,
-          tools=[
-            ExternalSkillToolDefinition(
-              name=t.name,
-              description=t.description,
-              parameters=t.parameters,
-            )
-            for t in s.tools
-          ],
-          system_prompt=s.system_prompt,
-          activation_prompt=s.activation_prompt,
-        )
-        for s in external_skills
+          ExternalSkill(
+            name=s.name,
+            description=s.description,
+            tools=[
+              ExternalSkillToolDefinition(
+                name=t.name,
+                description=t.description,
+                parameters=t.parameters,
+              )
+              for t in s.tools
+            ],
+            system_prompt=s.system_prompt,
+            activation_prompt=s.activation_prompt,
+          )
+          for s in external_skills
       ])
       external_skill_tool_names = [cap.name for cap in external_skill_registry.get_tools()]
 
@@ -444,7 +509,8 @@ class AgentFactory:
     for server, cap in mcp_tools:
       builder = builder.tool(PrefixedCapability(cap, f"mcp__{server}__"))
 
-    return builder.build()
+    self._agent = self._finalize_agent(self._apply_generation_options(builder).build())
+    return self._agent
 
   def _skill_registry_for_build(
     self,
@@ -462,8 +528,8 @@ class AgentFactory:
     if cwd is not None:
       cwd_path = Path(cwd).expanduser().resolve()
       search_paths.extend([
-        cwd_path / ".nonoka" / "skills",
-        cwd_path / "skills",
+          cwd_path / ".nonoka" / "skills",
+          cwd_path / "skills",
       ])
 
     return SkillRegistry(
@@ -484,12 +550,38 @@ class AgentFactory:
     ``invoke`` method must never be called: execution is delegated to the host
     via the ``external=True`` marker.
     """
-    return ExternalCapability(
+    lowered = name.lower()
+    read_only = lowered in {"read", "list", "glob", "grep", "search", "webfetch"}
+    mutates_workspace = lowered in {
+      "bash",
+      "write",
+      "edit",
+      "delete",
+      "apply_patch",
+      "write_file",
+      "edit_file",
+      "delete_file",
+      "execute_command",
+    }
+    execution = ToolExecution(
+      read_only=read_only,
+      mutates_workspace=mutates_workspace,
+      stateful_action=not read_only,
+    )
+    kwargs: dict[str, Any] = {}
+    if _SUPPORTS_EXECUTION_METADATA:
+      kwargs["execution"] = execution
+    capability = ExternalCapability(
       name=name,
       description=description,
       parameters=parameters,
       metadata=metadata or {"kind": "host_tool", "original_name": name},
+      **kwargs,
     )
+    if not _SUPPORTS_EXECUTION_METADATA:
+      capability.execution = execution
+      capability.requires_workspace_attestation = execution.mutates_workspace
+    return capability
 
   @staticmethod
   def _is_opencode_native_skill_enabled(cwd: str | Path | None) -> bool:
@@ -559,10 +651,10 @@ class AgentFactory:
     """Rebuild Agent with an optional configuration patch.
 
     Args:
-      config_patch: Dict of config overrides (e.g. {"model": "gpt-4o"}).
+     config_patch: Dict of config overrides (e.g. {"model": "gpt-4o"}).
 
     Returns:
-      The rebuilt Agent.
+     The rebuilt Agent.
     """
     if config_patch:
       # Apply patch by creating a new config

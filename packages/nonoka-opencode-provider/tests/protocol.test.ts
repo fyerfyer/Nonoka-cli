@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   encodeChatRequest,
+  encodeCancelMessage,
   parseOutboundLine,
   type ExternalMCPServerDefinition,
   type ExternalSkillDefinition,
@@ -37,6 +38,18 @@ describe("encodeChatRequest", () => {
     expect(parsed.cwd).toBe(".");
     expect(parsed.session_id).toBeUndefined();
     expect(parsed.model).toBeUndefined();
+  });
+
+  it("encodes a structured external-tool receipt", () => {
+    const req: NonokaChatRequest = {
+      type: "chat",
+      messages: [{
+        role: "tool", content: "done", tool_call_id: "call-1",
+        result: { result: "done", workspace: { root: "/tmp", before_digest: "a", after_digest: "b" } },
+      }],
+      cwd: "/tmp",
+    };
+    expect(JSON.parse(encodeChatRequest(req)).messages[0].result.workspace.after_digest).toBe("b");
   });
 });
 
@@ -109,5 +122,13 @@ describe("parseOutboundLine", () => {
     const parsed = JSON.parse(line);
     expect(parsed.external_mcp_servers).toEqual([mcp]);
     expect(parsed.external_skills).toEqual([skill]);
+  });
+});
+
+describe("encodeCancelMessage", () => {
+  it("encodes a cancellation request", () => {
+    expect(JSON.parse(encodeCancelMessage({ type: "cancel", request_id: "req-1" }))).toEqual({
+      type: "cancel", request_id: "req-1",
+    });
   });
 });

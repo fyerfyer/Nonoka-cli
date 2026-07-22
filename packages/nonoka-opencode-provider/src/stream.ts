@@ -5,10 +5,12 @@ import {
   type NonokaOutboundEvent,
 } from './protocol.js';
 import fs from 'fs';
+import { recordWorkspaceBefore } from './workspace.js';
 
-const TIMELINE_PATH = process.env.NONOKA_TIMELINE_PATH || '/tmp/nonoka-tui-timeline.ndjson';
+const TIMELINE_PATH = process.env.NONOKA_TIMELINE_PATH;
 
 function timelineLog(message: string) {
+  if (!TIMELINE_PATH) return;
   try {
     fs.appendFileSync(TIMELINE_PATH, `${message}\n`);
   } catch {
@@ -49,6 +51,7 @@ export function createNonokaStreamTransformer(
     onSessionInit?: (sessionId: string) => void;
     onFinish?: () => void;
     allowedToolNames?: Set<string>;
+    cwd?: string;
   } = {},
 ): TransformStream<string, LanguageModelV3StreamPart> {
   let textBlockId: string | null = null;
@@ -113,6 +116,7 @@ export function createNonokaStreamTransformer(
           flushPendingText(controller);
           const toolName = event.tool_name ?? '';
           const toolCallId = event.tool_call_id ?? '';
+          if (options.cwd) recordWorkspaceBefore(options.cwd, toolCallId, toolName);
 
           // Only forward tool calls for tools that OpenCode itself can execute.
           // MCP / skill tools executed locally by nonoka-cli are suppressed here

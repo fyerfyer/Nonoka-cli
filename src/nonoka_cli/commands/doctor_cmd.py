@@ -163,6 +163,36 @@ def check_provider() -> CheckResult:
   )
 
 
+def check_harbor() -> CheckResult:
+  """Check whether the official Terminal-Bench 2 runner is available."""
+  harbor = shutil.which("harbor")
+  if not harbor:
+    return CheckResult(
+      "warn",
+      "harbor not found",
+      "Install it in an isolated benchmark environment: uv tool install harbor",
+    )
+  result = _run([harbor, "--version"], timeout=10.0)
+  if result.returncode == 0:
+    return CheckResult("ok", f"harbor {result.stdout.strip()}")
+  return CheckResult("warn", "harbor is installed but did not report a version")
+
+
+def check_docker() -> CheckResult:
+  """Verify real Docker daemon access, not merely the client binary."""
+  docker = shutil.which("docker")
+  if not docker:
+    return CheckResult("error", "docker not found", "Install Docker before running Terminal-Bench.")
+  result = _run([docker, "info", "--format", "{{.ServerVersion}}"], timeout=10.0)
+  if result.returncode == 0:
+    return CheckResult("ok", f"docker daemon {result.stdout.strip()}")
+  return CheckResult(
+    "error",
+    "docker daemon is unavailable",
+    "Start Docker and grant the current user access to the Docker socket.",
+  )
+
+
 def check_config(config_path: str | None) -> tuple[CheckResult, CLIConfig | None]:
   """Check whether a nonoka config file exists and is valid."""
   try:
@@ -313,10 +343,13 @@ def run_doctor(args: argparse.Namespace) -> int:
   results.append(config_result)
   results.append(check_api_key(config))
 
-  if args.check_llm:
+  if getattr(args, "check_llm", False) is True:
     results.append(check_llm(config))
 
   results.append(check_opencode_config())
+  if getattr(args, "check_benchmarks", False) is True:
+    results.append(check_harbor())
+    results.append(check_docker())
 
   for result in results:
     icon = _STATUS_ICONS.get(result.status, "?")
@@ -333,6 +366,11 @@ def _add_config_arg(parser: argparse.ArgumentParser) -> None:
     "--config",
     dest="config",
     help="Path to the nonoka config file (default: auto-detect)",
+  )
+  parser.add_argument(
+    "--check-benchmarks",
+    action="store_true",
+    help="Check Harbor and Docker prerequisites for Terminal-Bench 2.",
   )
 
 

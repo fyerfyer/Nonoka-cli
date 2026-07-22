@@ -6,9 +6,18 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
+from nonoka_cli.commands import opencode_cmd
 from nonoka_cli.commands.opencode_cmd import _OPENCODE_AUTO_APPROVED_TOOLS, cmd_init
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
+
+
+@pytest.fixture(autouse=True)
+def _skip_provider_install(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Keep config-generation unit tests independent of npm/bun and network."""
+  monkeypatch.setattr(opencode_cmd, "_install_provider_locally", lambda *_args: True)
 
 
 def test_opencode_init_creates_file(tmp_path: Path):

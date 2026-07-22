@@ -190,6 +190,31 @@ describe('NonokaLanguageModel', () => {
     expect(request.external_skills).toEqual([]);
   });
 
+  it('forwards configured generation limits to the bridge', () => {
+    const model = new NonokaLanguageModel(
+      'deepseek-chat',
+      {},
+      {
+        provider: 'nonoka',
+        serverCommand: ['nonoka-cli', '--server'],
+        cwd: '/tmp/nonoka-generation-test',
+        temperature: 0,
+        maxTurns: 12,
+        timeoutSeconds: 90,
+        toolBudget: 30,
+      },
+    );
+
+    const request = (model as any).buildChatRequest(
+      { prompt: makeChatPrompt(true) },
+      false,
+    );
+    expect(request.temperature).toBe(0);
+    expect(request.max_turns).toBe(12);
+    expect(request.timeout_seconds).toBe(90);
+    expect(request.tool_budget).toBe(30);
+  });
+
   it('strips tools and external definitions during title generation', () => {
     const model = new NonokaLanguageModel(
       'deepseek-chat',

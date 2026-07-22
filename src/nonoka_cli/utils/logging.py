@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -27,10 +28,10 @@ def setup_logging(
   """
   # Default log file path
   if log_file is None:
-    log_file = Path.home() / ".local" / "share" / "nonoka" / "logs" / "nonoka-cli.log"
-
-  # Ensure log directory exists
-  log_file.parent.mkdir(parents=True, exist_ok=True)
+    configured = os.environ.get("NONOKA_LOG_FILE")
+    log_file = Path(configured).expanduser() if configured else (
+      Path.home() / ".local" / "share" / "nonoka" / "logs" / "nonoka-cli.log"
+    )
 
   shared_processors = [
     structlog.stdlib.add_logger_name,
@@ -40,9 +41,14 @@ def setup_logging(
     structlog.processors.format_exc_info,
   ]
 
-  handlers: list[logging.Handler] = [
-    logging.FileHandler(log_file, encoding="utf-8"),
-  ]
+  # A command line tool must still run in a read-only container or sandbox.
+  # Logging is diagnostic only, so fall back to stderr rather than failing the
+  # command before it can report useful work.
+  try:
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
+  except OSError:
+    handlers = [logging.StreamHandler(sys.stderr)]
 
   if console:
     handlers.append(logging.StreamHandler(sys.stderr))

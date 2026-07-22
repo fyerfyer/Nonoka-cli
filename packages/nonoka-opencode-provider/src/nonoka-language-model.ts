@@ -12,6 +12,7 @@ import path from 'path';
 import { Readable } from 'stream';
 import {
   NONOKA_INBOUND_TYPES,
+  encodeCancelMessage,
   NONOKA_MESSAGE_ROLES,
   encodeChatRequest,
   type NonokaChatMessage,
@@ -20,10 +21,12 @@ import {
 } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
 import fs from 'fs';
+import { receiptForWorkspaceResult } from './workspace.js';
 
-const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH || '/tmp/nonoka-provider.log';
+const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH;
 
 function providerLog(message: string) {
+  if (!PROVIDER_LOG_PATH) return;
   try {
     fs.appendFileSync(PROVIDER_LOG_PATH, `${new Date().toISOString()} ${message}\n`);
   } catch {
@@ -82,6 +85,10 @@ export interface NonokaLanguageModelConfig {
   cwd: string;
   configPath?: string;
   model?: string;
+  temperature?: number;
+  maxTurns?: number;
+  timeoutSeconds?: number;
+  toolBudget?: number;
   env?: Record<string, string | undefined>;
 }
 
@@ -183,7 +190,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
     const request = this.buildChatRequest(options, isTitle);
     const requestLine = encodeChatRequest(request) + '\n';
-    providerLog(`sending request: ${requestLine.trim()}`);
+    providerLog(`sending request bytes=${Buffer.byteLength(requestLine)}`);
     await writeToStdin(child, requestLine);
 
     const allowedToolNames = new Set(
@@ -326,6 +333,10 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       new_session: newSession,
       cwd: this.config.cwd,
       model: this.config.model,
+      temperature: this.config.temperature,
+      max_turns: this.config.maxTurns,
+      timeout_seconds: this.config.timeoutSeconds,
+      tool_budget: this.config.toolBudget,
       request_id: generateRequestId(),
     };
   }
@@ -378,6 +389,12 @@ export class NonokaLanguageModel implements LanguageModelV3 {
                 role: NONOKA_MESSAGE_ROLES.tool,
                 content: outputText,
                 tool_call_id: part.toolCallId,
+                result: receiptForWorkspaceResult(
+                  this.config.cwd,
+                  part.toolCallId,
+                  (part as any).toolName ?? '',
+                  outputText,
+                ),
               });
             } else if (part.type === 'tool-approval-response') {
               // Encode the approval decision as a JSON part list inside a
@@ -521,7 +538,10 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     };
 
     if (abortSignal) {
-      abortSignal.addEventListener('abort', cleanup, { once: true });
+      abortSignal.addEventListener('abort', () => {
+        void writeToStdin(child, encodeCancelMessage({ type: NONOKA_INBOUND_TYPES.cancel }) + '\n')
+          .finally(cleanup);
+      }, { once: true });
     }
 
     const transformer = createNonokaStreamTransformer({
@@ -535,6 +555,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         saveChatSessionId(this.config.cwd, sessionId);
       },
       allowedToolNames,
+      cwd: this.config.cwd,
     });
 
     const readable = Readable.toWeb(

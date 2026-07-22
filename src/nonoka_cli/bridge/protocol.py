@@ -31,6 +31,7 @@ class ChatMessage(BaseModel):
   content: str
   tool_call_id: str | None = None
   tool_calls: list[ToolCall] | None = None
+  result: Any = None
 
 
 class ExternalToolDefinition(BaseModel):
@@ -87,10 +88,21 @@ class ChatRequest(BaseModel):
   new_session: bool = False
   cwd: str = Field(default=".")
   model: str | None = None
+  temperature: float | None = None
+  max_turns: int | None = Field(default=None, ge=1)
+  timeout_seconds: float | None = Field(default=None, gt=0)
+  tool_budget: int | None = Field(default=None, ge=1)
   request_id: str | None = None
 
 
-InboundMessage = ChatRequest
+class CancelRequest(BaseModel):
+  """Request cancellation of the bridge's currently active chat turn."""
+
+  type: Literal["cancel"] = "cancel"
+  request_id: str | None = None
+
+
+InboundMessage = ChatRequest | CancelRequest
 
 
 # --------------------------------------------------------------------------- #
@@ -209,6 +221,8 @@ def parse_inbound_line(line: str) -> InboundMessage | None:
 
   if msg_type == "chat":
     return ChatRequest.model_validate(data)
+  if msg_type == "cancel":
+    return CancelRequest.model_validate(data)
 
   raise ValueError(f"Unknown inbound message type: {msg_type}")
 

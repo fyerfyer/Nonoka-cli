@@ -160,28 +160,48 @@ export NONOKA_TAU2_PYTHON=/path/to/tau2-python
 nonoka eval external run --benchmark tau2-bench --model deepseek-chat --domain retail --limit 10
 ```
 
-For complex terminal-agent tasks, Terminal-Bench delegates Docker lifecycle and
-verification to its official `tb` harness rather than replacing its verifier.
-Install the public `terminal-bench` package and the local checkout of
-`nonoka-agent` in the same isolated Python environment, then point the CLI at
-that environment's executable:
+For framework-only terminal-agent tasks, Terminal-Bench 2 delegates Docker
+lifecycle and verification to Harbor. The OpenCode bridge has its own
+reproducible benchmark command, so a framework score is never presented as a
+CLI bridge score. Install Harbor plus the local framework/CLI checkouts in an
+isolated environment, then verify prerequisites before starting a live run:
 
 ```bash
-uv venv .venv-terminal-bench --python 3.13
-uv pip install --python .venv-terminal-bench/bin/python -e ../nonoka-agent terminal-bench
-export NONOKA_TERMINAL_BENCH_BIN="$PWD/.venv-terminal-bench/bin/tb"
-# Optional: use an official dataset checkout pinned by your release manifest.
-export NONOKA_TERMINAL_BENCH_DATASET_PATH=/path/to/terminal-bench/tasks
-nonoka eval doctor
-nonoka eval external run --benchmark terminal-bench --model deepseek-chat --limit 10
-# A reproducible smoke task; --task-id can be supplied more than once.
-nonoka eval external run --benchmark terminal-bench --model deepseek-chat --task-id fix-git
+uv venv .venv-bench --python 3.13
+uv pip install --python .venv-bench/bin/python -e ../nonoka-agent -e . harbor
+export NONOKA_HARBOR_BIN="$PWD/.venv-bench/bin/harbor"
+nonoka-cli doctor --check-benchmarks
+nonoka-cli benchmark smoke --model deepseek-chat
+nonoka-cli benchmark terminal-bench --model deepseek-chat
 ```
 
-The adapter is `nonoka.ext.eval.terminal_bench:NonokaTerminalBenchAgent`; it
-only exposes the official task tmux session as Nonoka terminal tools. Docker
-access is required. SWE-bench remains an external harness because its official
-local evaluation requires substantially more host resources.
+The Terminal-Bench command builds fresh local wheels, stages the built OpenCode
+provider plus its dependencies, and copies a verified host OpenCode executable
+into every Harbor task container. Python 3.13 is provisioned in the container
+with `uv` under `/opt/nonoka-runtime`, so the non-root Harbor agent can launch
+the bridge without an NVM/npm download. This ensures the official verifier
+observes OpenCode using the current nonoka bridge against the task
+filesystem—not a host-side shell. To verify provisioning before spending model
+tokens, run one pinned task first:
+
+```bash
+nonoka-cli benchmark terminal-bench --task regex-log --install-only
+```
+
+Harbor receives the model credential through its `${DEEPSEEK_API_KEY}`
+environment template. The value is never placed in the benchmark manifest or
+artifact directory.
+
+Each bridge run writes a credential-redacted manifest, OpenCode JSON events,
+provider/bridge traces, and a reference to the official Harbor job directory
+under `.nonoka/eval/opencode/`. Docker access is required. SWE-bench remains
+an external harness because its official local evaluation requires substantially
+more host resources.
+
+`benchmark smoke` pins OpenCode to the checkout's built provider with a local
+`file:` dependency and temporarily writes an isolated `opencode.json` in the
+benchmark workspace. Use a clean `--cwd` (or pass `--provider-source`) so it
+never overrides an existing project OpenCode configuration.
 
 ## Configuration
 

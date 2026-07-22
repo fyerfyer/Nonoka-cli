@@ -57,9 +57,19 @@ def test_create_external_tool_capability():
   assert cap.name == "bash"
   assert cap.description == "Run shell commands"
   assert cap.external is True
+  assert cap.execution.mutates_workspace is True
+  assert cap.requires_workspace_attestation is True
   schema = cap.to_json_schema()
   assert schema["function"]["name"] == "bash"
   assert "command" in schema["function"]["parameters"]["properties"]
+
+
+def test_read_external_tool_is_declared_parallel_safe():
+  cap = AgentFactory.create_external_tool_capability(
+    name="read", description="Read a file", parameters={"type": "object", "properties": {}},
+  )
+  assert cap.execution.read_only is True
+  assert cap.execution.parallel_safe is True
 
 
 @pytest.mark.asyncio
