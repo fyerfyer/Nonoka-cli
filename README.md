@@ -177,10 +177,11 @@ nonoka-cli benchmark terminal-bench --model deepseek-chat
 
 The Terminal-Bench command builds fresh local wheels, stages the built OpenCode
 provider plus its dependencies, and copies a verified host OpenCode executable
-into every Harbor task container. Python 3.13 is provisioned in the container
-with `uv` under `/opt/nonoka-runtime`, so the non-root Harbor agent can launch
-the bridge without an NVM/npm download. This ensures the official verifier
-observes OpenCode using the current nonoka bridge against the task
+into every Harbor task container. The adapter uses a task image's existing
+Python 3.13 through `uv` when available, and falls back to a `uv`-managed
+runtime under `/opt/nonoka-runtime` only when needed; the non-root Harbor agent
+can therefore launch the bridge without an NVM/npm download. This ensures the
+official verifier observes OpenCode using the current nonoka bridge against the task
 filesystem—not a host-side shell. To verify provisioning before spending model
 tokens, run one pinned task first:
 

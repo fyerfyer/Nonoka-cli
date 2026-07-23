@@ -106,17 +106,20 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
   await agent.install(environment)
 
   assert environment.commands[0] == "mkdir -p /opt/nonoka-runtime /opt/nonoka-provider"
-  assert any("uv python install 3.13" in command for command in environment.commands)
+  provision_command = next(
+    command for command in environment.commands if "/root/.local/bin/uvx" in command
+  )
+  assert "command -v python3.13" in provision_command
+  assert "BENCHMARK_PYTHON=$(command -v python3.13)" in provision_command
+  assert "uv python install 3.13" in provision_command
   assert any(
     "UV_PYTHON_INSTALL_DIR=/opt/nonoka-runtime/python" in command
     for command in environment.commands
   )
   assert any(
-    "chmod -R a+rX /opt/nonoka-runtime/python /opt/nonoka-runtime/venv" in command
+    "test ! -d /opt/nonoka-runtime/python || chmod -R a+rX /opt/nonoka-runtime/python"
+    in command
     for command in environment.commands
-  )
-  provision_command = next(
-    command for command in environment.commands if "/root/.local/bin/uvx" in command
   )
   assert "ln -sf /opt/nonoka-runtime/uv /root/.local/bin/uv" in provision_command
   assert "ln -sf /opt/nonoka-runtime/uv /root/.local/bin/uvx" in provision_command
