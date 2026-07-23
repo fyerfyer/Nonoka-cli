@@ -9,6 +9,9 @@ commands.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +38,35 @@ _TREE_SKIP_DIRS = {
   "build",
   ".eggs",
 }
+
+
+async def _terminate_process_group(proc: asyncio.subprocess.Process) -> None:
+  """Stop a timed-out shell and every descendant it started.
+
+  Killing only the shell returned by ``create_subprocess_shell`` leaves
+  grandchildren (for example a long-running ``sqlite3`` process behind a
+  pipeline) alive.  Those orphaned processes can retain locks and corrupt the
+  next tool call or a benchmark verifier.  On POSIX each command has its own
+  session, so terminating its process group is both bounded and isolated from
+  the CLI process itself.
+  """
+  if proc.returncode is not None:
+    return
+
+  if os.name == "posix":
+    with contextlib.suppress(ProcessLookupError):
+      os.killpg(proc.pid, signal.SIGTERM)
+    try:
+      await asyncio.wait_for(proc.wait(), timeout=2)
+      return
+    except asyncio.TimeoutError:
+      with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+  else:  # pragma: no cover - exercised on Windows.
+    proc.kill()
+
+  with contextlib.suppress(ProcessLookupError):
+    await proc.wait()
 
 
 def _resolve_path(ctx: RunContext, path: str) -> Path:
@@ -453,20 +485,32 @@ async def execute_command(
   working_dir = _resolve_path(ctx, cwd) if cwd else ctx.deps.working_dir
 
   try:
+    process_options: dict[str, Any] = {
+      "cwd": str(working_dir),
+      "stdout": asyncio.subprocess.PIPE,
+      "stderr": asyncio.subprocess.STDOUT,
+    }
+    if os.name == "posix":
+      # Give the command a dedicated process group so a timeout cannot leave
+      # pipeline children or background grandchildren behind.
+      process_options["start_new_session"] = True
     proc = await asyncio.create_subprocess_shell(
       command,
-      cwd=str(working_dir),
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.STDOUT,
+      **process_options,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    communicate = asyncio.create_task(proc.communicate())
+    stdout, _ = await asyncio.wait_for(asyncio.shield(communicate), timeout=timeout)
     output = stdout.decode("utf-8", errors="replace")
     output = _truncate(output, 10000)
 
     status = "success" if proc.returncode == 0 else "error"
     return f"--- exit code {proc.returncode} ({status}) ---\n{output}"
   except asyncio.TimeoutError:
-    proc.kill()
+    await _terminate_process_group(proc)
+    # The shield above keeps communicate alive long enough to drain and close
+    # its pipes after the process group exits.
+    with contextlib.suppress(asyncio.CancelledError, ProcessLookupError):
+      await communicate
     return f"Error: command timed out after {timeout}s"
   except OSError as exc:
     return f"Error executing command: {exc}"
