@@ -27,6 +27,18 @@ from nonoka_cli.utils.logging import setup_logging
 
 logger = structlog.get_logger("nonoka_cli.bridge")
 
+# OpenCode resends the recent tool transcript to the bridge when it resumes a
+# turn. A single JSON request can therefore legitimately exceed asyncio's
+# 64 KiB default line limit even after tool-output pruning. Keep a bounded,
+# protocol-specific allowance rather than treating a normal coding transcript
+# as a malformed NDJSON frame.
+_NDJSON_LINE_LIMIT = 1 << 20  # 1 MiB
+
+
+def _create_stdin_reader() -> asyncio.StreamReader:
+  """Create the bridge input reader with the supported NDJSON frame limit."""
+  return asyncio.StreamReader(limit=_NDJSON_LINE_LIMIT)
+
 
 class BridgeServer:
   """Long-lived NDJSON server wrapping a single ``ChatRequestHandler``."""
@@ -164,7 +176,7 @@ async def _async_main(
 ) -> int:
   """Set up async stdin/stdout and run the bridge server."""
   loop = asyncio.get_event_loop()
-  stdin = asyncio.StreamReader()
+  stdin = _create_stdin_reader()
   await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(stdin), sys.stdin)
 
   w_transport, w_protocol = await loop.connect_write_pipe(
