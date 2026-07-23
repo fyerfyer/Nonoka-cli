@@ -132,6 +132,8 @@ async def test_build_with_external_tools_injects_cwd():
   assert "Current working directory: /tmp/workspace" in agent.system_prompt
   assert "Prefer write_file/edit_file over bash/execute_command" in agent.system_prompt
   assert "Preserve volatile evidence" in agent.system_prompt
+  assert "Treat an unambiguous task instruction as authorization" in agent.system_prompt
+  assert "do not finish with an audit or plan" in agent.system_prompt
   assert "Before completion, verify every requested output" in agent.system_prompt
 
 
