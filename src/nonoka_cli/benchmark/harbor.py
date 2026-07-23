@@ -49,6 +49,15 @@ _AGENT_LOG_DIR = "/logs/agent"
 _UV_PYTHON_DIR = f"{_RUNTIME_DIR}/python"
 _VERIFIER_UV_BIN_DIR = "/root/.local/bin"
 _VERIFIER_UV_ENV = f"{_VERIFIER_UV_BIN_DIR}/env"
+_BENCHMARK_SYSTEM_PROMPT = """\
+You are an autonomous coding benchmark agent. Implement the requested change in
+the task workspace; the task instruction is authorization to modify files.
+Do not stop after an audit, report, plan, or request for confirmation when a
+remediation or implementation is explicitly requested. Inspect only the files
+needed to identify the target, make the required edits promptly, then run a
+focused check that demonstrates the acceptance criteria. Avoid broad delegated
+searches and do not read large unrelated trees into the conversation.
+"""
 
 
 class OpenCodeHarborAgent(_HarborOpenCode):
@@ -152,7 +161,10 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         }
       },
       "permission": {"*": "allow"},
-      "tools": {"skill": False},
+      # Native task delegation can return an unbounded research report into
+      # the parent transcript. The benchmark bridge is already an autonomous
+      # agent and should use its direct task tools instead.
+      "tools": {"skill": False, "task": False},
     }
     return json.dumps(payload, sort_keys=True)
 
@@ -160,6 +172,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     """Return only non-secret runtime configuration for the bridge server."""
     payload = {
       "model": self.model_name or "deepseek-chat",
+      "system_prompt": _BENCHMARK_SYSTEM_PROMPT,
       "cli": {"auto_approve": True},
       "agents": {"executor": {"max_turns": self._max_turns}},
     }

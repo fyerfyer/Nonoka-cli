@@ -49,6 +49,11 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
   assert options["maxTurns"] == 12
   assert options["timeoutSeconds"] == 90.0
   assert options["toolBudget"] == 33
+  assert profile["tools"] == {"skill": False, "task": False}
+
+  config = json.loads(agent._bridge_config())
+  assert "autonomous coding benchmark agent" in config["system_prompt"]
+  assert "Do not stop after an audit" in config["system_prompt"]
 
 
 def test_adapter_requires_explicit_runtime_artifacts(tmp_path: Path):
