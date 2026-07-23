@@ -60,7 +60,7 @@ def test_adapter_requires_explicit_runtime_artifacts(tmp_path: Path):
     raise AssertionError("adapter accepted missing runtime artifacts")
 
 
-async def test_adapter_installs_staged_runtime_without_task_container_downloads(
+async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
   tmp_path: Path, monkeypatch
 ):
   cli_wheel = tmp_path / "nonoka_cli-0.0.0-py3-none-any.whl"
@@ -115,6 +115,13 @@ async def test_adapter_installs_staged_runtime_without_task_container_downloads(
     "chmod -R a+rX /opt/nonoka-runtime/python /opt/nonoka-runtime/venv" in command
     for command in environment.commands
   )
+  provision_command = next(
+    command for command in environment.commands if "/root/.local/bin/uvx" in command
+  )
+  assert "ln -sf /opt/nonoka-runtime/uv /root/.local/bin/uv" in provision_command
+  assert "ln -sf /opt/nonoka-runtime/uv /root/.local/bin/uvx" in provision_command
+  assert "export PATH=/root/.local/bin:$PATH" in provision_command
+  assert "/root/.local/bin/uv --version" in provision_command
   assert (cli_wheel, f"/opt/nonoka-runtime/{cli_wheel.name}") in environment.uploads
   assert (agent_wheel, f"/opt/nonoka-runtime/{agent_wheel.name}") in environment.uploads
   assert all("apt-get" not in command and "curl" not in command for command in environment.commands)

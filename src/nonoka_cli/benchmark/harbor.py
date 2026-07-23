@@ -47,6 +47,8 @@ _PYTHON = f"{_RUNTIME_DIR}/venv/bin/python"
 _OPENCODE = f"{_RUNTIME_DIR}/opencode"
 _AGENT_LOG_DIR = "/logs/agent"
 _UV_PYTHON_DIR = f"{_RUNTIME_DIR}/python"
+_VERIFIER_UV_BIN_DIR = "/root/.local/bin"
+_VERIFIER_UV_ENV = f"{_VERIFIER_UV_BIN_DIR}/env"
 
 
 class OpenCodeHarborAgent(_HarborOpenCode):
@@ -166,7 +168,15 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     return json.dumps(payload, sort_keys=True)
 
   async def install(self, environment: BaseEnvironment) -> None:
-    """Install OpenCode, the exact wheels, and the pinned provider package."""
+    """Install OpenCode and stable, task-independent verifier prerequisites.
+
+    Some official Terminal-Bench verifiers bootstrap ``uv`` at scoring time.
+    The download is unrelated to the task under test and makes a completed
+    solution depend on transient verifier-network availability.  Stage the
+    same pinned host ``uv`` used for the bridge at the conventional location
+    those scripts source.  This deliberately provides no task-specific test
+    packages, data, or solution artifacts.
+    """
     if not _HAS_HARBOR:  # pragma: no cover - protects accidental direct use.
       raise RuntimeError("Harbor is required to install the OpenCode benchmark adapter")
 
@@ -193,6 +203,11 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         f"{_RUNTIME_DIR}/uv pip install --python {_PYTHON} "
         f"{shlex.quote(agent_wheel_target)} {shlex.quote(cli_wheel_target)}; "
         f"chmod -R a+rX {_UV_PYTHON_DIR} {_RUNTIME_DIR}/venv; "
+        f"mkdir -p {_VERIFIER_UV_BIN_DIR}; "
+        f"ln -sf {_RUNTIME_DIR}/uv {_VERIFIER_UV_BIN_DIR}/uv; "
+        f"ln -sf {_RUNTIME_DIR}/uv {_VERIFIER_UV_BIN_DIR}/uvx; "
+        f"printf '%s\\n' 'export PATH={_VERIFIER_UV_BIN_DIR}:$PATH' > {_VERIFIER_UV_ENV}; "
+        f"{_VERIFIER_UV_BIN_DIR}/uv --version; "
         f"printf '%s\\n' {config} > {_CONFIG_PATH}; "
         f"{_PYTHON} -c 'import nonoka, nonoka_cli'"
       ),

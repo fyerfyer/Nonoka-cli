@@ -188,6 +188,11 @@ tokens, run one pinned task first:
 nonoka-cli benchmark terminal-bench --task regex-log --install-only
 ```
 
+The adapter also exposes that same staged `uv` as `/root/.local/bin/uv` and
+`uvx`, which is the conventional path sourced by several official verifier
+scripts. This only removes their bootstrap-download dependency; it does not
+preinstall task-specific test packages, data, or solution artifacts.
+
 Harbor receives the model credential through its `${DEEPSEEK_API_KEY}`
 environment template. The value is never placed in the benchmark manifest or
 artifact directory.
