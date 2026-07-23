@@ -26,6 +26,7 @@ def _args(tmp_path: Path, **values: object) -> argparse.Namespace:
         "temperature": 0.0,
         "max_turns": 24,
         "timeout": 180.0,
+        "run_timeout": 900.0,
         "tool_budget": 64,
         "mode": "opencode-nonoka",
         "message": "create a file",
@@ -87,6 +88,7 @@ def test_terminal_bench_pins_the_public_task_slice(tmp_path: Path, monkeypatch):
     assert cmd_terminal_bench(args) == 0
     for task in TERMINAL_BENCH_TASKS:
         assert task in calls[-1]
+    assert "run_timeout_seconds=900.0" in calls[-1]
     assert json.loads((Path(args.artifact_dir) / "manifest.json").read_text())["tasks"] == list(
         TERMINAL_BENCH_TASKS
     )

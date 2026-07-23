@@ -69,6 +69,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     temperature: float = 0.0,
     max_turns: int = 24,
     timeout_seconds: float = 180.0,
+    run_timeout_seconds: float = 900.0,
     tool_budget: int = 64,
     **kwargs: Any,
   ) -> None:
@@ -81,6 +82,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     self._temperature = float(temperature)
     self._max_turns = int(max_turns)
     self._timeout_seconds = float(timeout_seconds)
+    self._run_timeout_seconds = float(run_timeout_seconds)
     self._tool_budget = int(tool_budget)
 
   @staticmethod
@@ -226,6 +228,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     )
     result = await environment.exec(
       command=command,
+      timeout_sec=self._run_timeout_seconds,
       env={
         "OPENCODE_FAKE_VCS": "git",
         "NONOKA_PROVIDER_LOG_PATH": f"{_AGENT_LOG_DIR}/provider.log",

@@ -84,7 +84,18 @@ Guidelines:
 - Prefer `write_file` over many small `edit_file` calls when rewriting a whole
   file or large section.
 - Run build/test commands when available and report the result.
-- If a command fails, analyze the output and try to fix the issue.
+- Preserve volatile evidence before inspecting it with tools that may mutate it:
+  copy databases with their WAL/journal files, logs, crash dumps, archives, and
+  generated artifacts to a safe path first.
+- Before declaring the task complete, turn every requested file, behavior, and
+  output into an acceptance checklist and run the relevant checks. For a
+  service, start it and make a real health/request check; for a numerical or
+  data transformation task, test its required properties and output files.
+- If a command fails for the same environmental reason twice, do not keep
+  retrying it. Inspect the error, choose a materially different fallback, or
+  report the blocked dependency.
+- Bound expensive exploration and validation commands with a timeout. Prefer
+  small representative checks before an intentionally slow full baseline.
 - Keep responses concise but thorough.
 
 You operate in the user's current working directory.
@@ -103,7 +114,14 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "Guidelines:\n"
   "- Prefer reading files before editing them.\n"
   "- Run build/test commands when available and report the result.\n"
-  "- If a command fails, analyze the output and try to fix the issue.\n"
+  "- Preserve volatile evidence (for example databases with WAL/journals, logs, and "
+  "crash artifacts) before using a tool that could mutate it.\n"
+  "- Before completion, verify every requested output and behavior; start services and "
+  "make a real health/request check.\n"
+  "- Do not repeatedly retry the same environmental failure. Use a distinct fallback "
+  "or report the dependency as blocked.\n"
+  "- Bound expensive commands and validate on a small representative case before a "
+  "known-slow full baseline.\n"
   "- Keep responses concise but thorough.\n\n"
   "You operate in the user's current working directory.\n"
 )

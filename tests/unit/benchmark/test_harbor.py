@@ -34,6 +34,7 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
     temperature=0.2,
     max_turns=12,
     timeout_seconds=90,
+    run_timeout_seconds=480,
     tool_budget=33,
   )
 
@@ -117,3 +118,44 @@ async def test_adapter_installs_staged_runtime_without_task_container_downloads(
   assert (cli_wheel, f"/opt/nonoka-runtime/{cli_wheel.name}") in environment.uploads
   assert (agent_wheel, f"/opt/nonoka-runtime/{agent_wheel.name}") in environment.uploads
   assert all("apt-get" not in command and "curl" not in command for command in environment.commands)
+
+
+async def test_adapter_applies_hard_run_timeout_to_opencode(tmp_path: Path, monkeypatch):
+  cli_wheel = tmp_path / "nonoka_cli-0.0.0-py3-none-any.whl"
+  agent_wheel = tmp_path / "nonoka-0.0.0-py3-none-any.whl"
+  uv_binary = tmp_path / "uv"
+  opencode_binary = tmp_path / "opencode"
+  for path in (cli_wheel, agent_wheel, uv_binary, opencode_binary):
+    path.touch()
+  provider = tmp_path / "provider"
+  (provider / "dist").mkdir(parents=True)
+  (provider / "node_modules").mkdir()
+  (provider / "package.json").write_text("{}")
+
+  class FakeEnvironment:
+    def __init__(self):
+      self.command = ""
+      self.timeout_sec: float | None = None
+
+    async def exec(self, command: str, **kwargs):
+      self.command = command
+      self.timeout_sec = kwargs.get("timeout_sec")
+      return type("Result", (), {"return_code": 0})()
+
+  monkeypatch.setattr(harbor_adapter, "_HAS_HARBOR", True)
+  agent = OpenCodeHarborAgent(
+    logs_dir=tmp_path / "logs",
+    model_name="deepseek-chat",
+    cli_wheel=str(cli_wheel),
+    agent_wheel=str(agent_wheel),
+    provider_source=str(provider),
+    uv_binary=str(uv_binary),
+    opencode_binary=str(opencode_binary),
+    run_timeout_seconds=321,
+  )
+  environment = FakeEnvironment()
+
+  await agent.run("Solve the task", environment, object())
+
+  assert "opencode" in environment.command
+  assert environment.timeout_sec == 321.0

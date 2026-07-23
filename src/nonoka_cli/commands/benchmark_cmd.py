@@ -68,6 +68,7 @@ def _write_manifest(directory: Path, args: argparse.Namespace, command: list[str
         "temperature": args.temperature,
         "max_turns": args.max_turns,
         "timeout_seconds": args.timeout,
+        "run_timeout_seconds": getattr(args, "run_timeout", None),
         "tool_budget": args.tool_budget,
         "cwd": str(Path(args.cwd).resolve()),
         "config": getattr(
@@ -452,6 +453,8 @@ def cmd_terminal_bench(args: argparse.Namespace) -> int:
                 "--agent-kwarg",
                 f"timeout_seconds={args.timeout}",
                 "--agent-kwarg",
+                f"run_timeout_seconds={args.run_timeout}",
+                "--agent-kwarg",
                 f"tool_budget={args.tool_budget}",
             ]
         )
@@ -481,6 +484,12 @@ def add_subparser(subparsers: Any) -> None:
     common.add_argument("--temperature", type=float, default=0.0)
     common.add_argument("--max-turns", type=int, default=24)
     common.add_argument("--timeout", type=float, default=180.0)
+    common.add_argument(
+        "--run-timeout",
+        type=float,
+        default=900.0,
+        help="Hard per-task benchmark deadline in seconds (separate from LLM-call timeout).",
+    )
     common.add_argument("--tool-budget", type=int, default=64)
     common.add_argument("--artifact-dir")
     common.add_argument("--provider-source")
