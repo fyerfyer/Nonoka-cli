@@ -209,6 +209,14 @@ under `.nonoka/eval/opencode/`. Docker access is required. SWE-bench remains
 an external harness because its official local evaluation requires substantially
 more host resources.
 
+Reference end-to-end validation with `deepseek/deepseek-v4-pro` against the
+pinned Terminal-Bench 2 revision (`69671fba`) has earned official Harbor reward
+`1` on three distinct tasks: `sanitize-git-repo`, `configure-git-webserver`, and
+`break-filter-js-from-html`. The latest bridge-hardening rerun of
+`break-filter-js-from-html` completed without an exception in 10m21s. These are
+single-trial engineering checks, not a statistically representative leaderboard
+score.
+
 `benchmark smoke` pins OpenCode to the checkout's built provider with a local
 `file:` dependency and temporarily writes an isolated `opencode.json` in the
 benchmark workspace. Use a clean `--cwd` (or pass `--provider-source`) so it
