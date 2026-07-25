@@ -141,7 +141,27 @@ class ToolOutputPolicy:
       return self._spill(text, tool_name, tool_call_id, rule)
 
     pruned_text = self._truncate(text, lines, rule)
+    # A minified JSON payload or generated file can be one enormous line, so
+    # line-based pruning alone is not a byte/token bound.
+    pruned_text = self._clamp_chars(pruned_text, rule.max_tokens * 4)
     return self._from_text(pruned_text, is_json, result)
+
+  def apply_external_receipt(
+    self,
+    tool_name: str,
+    value: Any,
+    tool_call_id: str | None = None,
+  ) -> Any:
+    """Prune only the payload of a host receipt while preserving audit metadata."""
+    if not isinstance(value, dict) or not ({"workspace", "host", "artifact_ref"} & set(value)):
+      return self.apply(tool_name, value, tool_call_id)
+    compact = dict(value)
+    compact["result"] = self.apply(tool_name, value.get("result"), tool_call_id)
+    if compact["result"] != value.get("result"):
+      compact["truncated"] = True
+      compact["completeness"] = "partial"
+      compact.setdefault("original_bytes", len(self._to_text(value.get("result"))[0].encode("utf-8")))
+    return compact
 
   def _to_text(self, result: Any) -> tuple[str, bool]:
     """Convert a result to text for measurement."""
@@ -197,6 +217,14 @@ class ToolOutputPolicy:
       out.append(f"[... {omitted} lines truncated]")
     out.extend(tail)
     return "\n".join(out)
+
+  @staticmethod
+  def _clamp_chars(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+      return text
+    marker = "\n...[truncated]...\n"
+    side = max(1, (max_chars - len(marker)) // 2)
+    return text[:side] + marker + text[-side:]
 
   def _spill(
     self,

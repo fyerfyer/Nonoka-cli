@@ -116,7 +116,14 @@ export function createNonokaStreamTransformer(
           flushPendingText(controller);
           const toolName = event.tool_name ?? '';
           const toolCallId = event.tool_call_id ?? '';
-          if (options.cwd) recordWorkspaceBefore(options.cwd, toolCallId, toolName);
+          if (options.cwd) recordWorkspaceBefore(
+            options.cwd,
+            toolCallId,
+            toolName,
+            event.args && typeof event.args === 'object'
+              ? event.args as Record<string, unknown>
+              : undefined,
+          );
 
           // Only forward tool calls for tools that OpenCode itself can execute.
           // MCP / skill tools executed locally by nonoka-cli are suppressed here

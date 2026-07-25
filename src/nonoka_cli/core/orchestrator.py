@@ -22,7 +22,6 @@ from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.context import CLIContext
-from nonoka_cli.core.context_trimmer import TurnBasedContextTrimmer
 from nonoka_cli.core.git_service import GitService, build_git_service
 from nonoka_cli.core.mcp_service import MCPService
 from nonoka_cli.core.planning_service import PlanningService, build_planning_service
@@ -237,9 +236,6 @@ class Orchestrator:
             deferred=True,
           )
 
-    trimmer = TurnBasedContextTrimmer.from_config(
-      self._config.context.model_dump()
-    )
     output_policy = ToolOutputPolicy.from_config(
       self._config.tool_output.model_dump()
     )
@@ -247,9 +243,9 @@ class Orchestrator:
     async def on_llm_request(ctx, messages, tools):
       if self._config is None:
         return
-      if self._config.context.enabled:
-        trimmed = trimmer.trim(messages)
-        messages[:] = trimmed
+      # Agent checkpoint memory owns semantic compaction.  Re-trimming that
+      # history here can split evidence from the persisted runtime state.  The
+      # CLI hook is intentionally limited to host/tool-output normalization.
       if output_policy.enabled:
         for msg in messages:
           if msg.role == LLMMessageRole.TOOL and msg.content:
@@ -558,6 +554,26 @@ class Orchestrator:
     finally:
       await self._touch_session()
 
+  async def execute_title(
+    self,
+    prompt: str,
+    working_dir: Path | None = None,
+  ) -> AsyncIterator[StreamEvent]:
+    """Generate an OpenCode title without exposing local or host tools."""
+    self._ensure_initialized()
+    if self._agent_factory is None or self._runner_service is None:
+      raise OrchestratorError("Orchestrator not fully initialized.")
+    agent = self._agent_factory.build_title_agent()
+    cwd = working_dir or Path.cwd()
+    deps = self._build_cli_context(self.session_id, cwd)
+    try:
+      async for event in self._runner_service.run(
+        agent, prompt, deps=deps, session_id=self.session_id
+      ):
+        yield event
+    finally:
+      await self._touch_session()
+
   async def resume_external_tools(
     self,
     session_id: str,
@@ -671,7 +687,12 @@ class Orchestrator:
     max_turns: int | None = None,
     temperature: float | None = None,
     timeout_seconds: float | None = None,
+    wall_timeout_seconds: float | None = None,
     tool_budget: int | None = None,
+    max_context_bytes: int | None = None,
+    max_external_result_bytes: int | None = None,
+    require_workspace_mutation: bool = False,
+    require_observed_effect: bool = False,
   ) -> None:
     """Apply non-persistent per-run options and rebuild the active Agent."""
     self._ensure_initialized()
@@ -681,7 +702,12 @@ class Orchestrator:
       max_turns=max_turns,
       temperature=temperature,
       timeout_seconds=timeout_seconds,
+      wall_timeout_seconds=wall_timeout_seconds,
       tool_budget=tool_budget,
+      max_context_bytes=max_context_bytes,
+      max_external_result_bytes=max_external_result_bytes,
+      require_workspace_mutation=require_workspace_mutation,
+      require_observed_effect=require_observed_effect,
     )
     self._agent_factory.build()
 

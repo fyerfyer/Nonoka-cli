@@ -82,4 +82,5 @@ describe("createNonokaStreamTransformer", () => {
     expect((toolCall as any).toolName).toBe("skill__foo__bar");
     expect((toolCall as any).metadata).toEqual({ kind: "skill", skill: "foo" });
   });
+
 });

@@ -57,19 +57,21 @@ def test_create_external_tool_capability():
   assert cap.name == "bash"
   assert cap.description == "Run shell commands"
   assert cap.external is True
-  assert cap.execution.mutates_workspace is True
+  assert cap.execution.mutates_workspace is False
+  assert cap.execution.stateful_action is True
   assert cap.requires_workspace_attestation is True
   schema = cap.to_json_schema()
   assert schema["function"]["name"] == "bash"
   assert "command" in schema["function"]["parameters"]["properties"]
 
 
-def test_read_external_tool_is_declared_parallel_safe():
+def test_external_tool_effects_are_observed_instead_of_inferred_from_name():
   cap = AgentFactory.create_external_tool_capability(
     name="read", description="Read a file", parameters={"type": "object", "properties": {}},
   )
-  assert cap.execution.read_only is True
-  assert cap.execution.parallel_safe is True
+  assert cap.execution.read_only is False
+  assert cap.execution.parallel_safe is False
+  assert cap.requires_workspace_attestation is True
 
 
 @pytest.mark.asyncio
@@ -94,11 +96,10 @@ async def test_build_with_external_tools(factory):
   ]
   agent = factory.build_with_external_tools(tools)
   assert agent.model == "gpt-4o"
-  assert len(agent.tools) == 1
-  assert agent.tools[0].name == "bash"
+  assert {tool.name for tool in agent.tools} == {"bash", "nonoka__search_evidence"}
   assert "OpenCode" in agent.system_prompt
-  assert "todowrite" in agent.system_prompt
-  assert "in_progress" in agent.system_prompt
+  assert "todowrite" not in agent.system_prompt
+  assert "execute_command" not in agent.system_prompt
 
 
 @pytest.mark.asyncio
@@ -130,11 +131,13 @@ async def test_build_with_external_tools_injects_cwd():
   ]
   agent = factory.build_with_external_tools(tools, cwd="/tmp/workspace")
   assert "Current working directory: /tmp/workspace" in agent.system_prompt
-  assert "Prefer write_file/edit_file over bash/execute_command" in agent.system_prompt
+  assert "Use only these exact host tool names: `bash`" in agent.system_prompt
+  assert "Do not substitute CLI aliases" in agent.system_prompt
   assert "Preserve volatile evidence" in agent.system_prompt
   assert "Treat an unambiguous task instruction as authorization" in agent.system_prompt
   assert "do not finish with an audit or plan" in agent.system_prompt
   assert "Before completion, verify every requested output" in agent.system_prompt
+  assert "After the requested change passes a focused check, stop" in agent.system_prompt
 
 
 @pytest.mark.asyncio
@@ -266,6 +269,8 @@ async def test_build_with_external_tools_injects_namespace_block(tmp_path):
   assert "`mcp__filesystem__list_directory`" in prompt
   assert "Internal MCP tools (nonoka executes" in prompt
   assert "Use the EXACT tool names below" in prompt
+  assert "Nonoka-managed bridge tools (nonoka executes)" in prompt
+  assert "`nonoka__search_evidence`" in prompt
   # Colon-prefixed names are not passed to the LLM.
   assert "mcp:filesystem:list_directory" not in prompt
 
@@ -429,3 +434,66 @@ async def test_build_with_external_tools_no_warning_when_native_skill_disabled(t
   agent = factory.build_with_external_tools(tools, cwd=str(tmp_path))
   prompt = agent.system_prompt
   assert "OpenCode's native skill tool is enabled" not in prompt
+
+
+def test_generation_options_attach_persisted_runtime_and_completion_contract():
+  factory = AgentFactory(CLIConfig(model="gpt-4o"))
+  factory.set_generation_options(
+    max_turns=12,
+    timeout_seconds=30,
+    wall_timeout_seconds=600,
+    tool_budget=40,
+    max_context_bytes=262144,
+    max_external_result_bytes=65536,
+    require_workspace_mutation=True,
+  )
+  agent = factory.build()
+  assert agent.runtime_limits.max_model_turns == 12
+  assert agent.runtime_limits.max_tool_calls == 40
+  assert agent.runtime_limits.model_timeout_seconds == 30
+  assert agent.runtime_limits.wall_timeout_seconds == 600
+  assert agent.runtime_limits.max_context_bytes == 262144
+  assert agent.runtime_limits.max_external_result_bytes == 65536
+  assert agent.completion_contract.require_workspace_mutation is True
+  assert agent.completion_contract.require_complete_observations is True
+  assert agent.completion_contract.max_corrections == 1
+  assert agent.completion_contract.enforcement == "advisory"
+  assert [extension.name for extension in agent.extensions] == ["workspace_progress"]
+
+
+def test_generation_options_can_explicitly_disable_cumulative_budgets():
+  factory = AgentFactory(CLIConfig(model="gpt-4o"))
+  factory.set_generation_options(
+    max_turns=None,
+    wall_timeout_seconds=3600,
+    tool_budget=None,
+  )
+
+  agent = factory.build()
+
+  assert agent.max_turns is None
+  assert agent.max_steps is None
+  assert agent.runtime_limits.max_model_turns is None
+  assert agent.runtime_limits.max_tool_calls is None
+  assert agent.runtime_limits.wall_timeout_seconds == 3600
+
+
+def test_generation_options_can_require_observed_effect_without_workspace_mutation():
+  factory = AgentFactory(CLIConfig(model="gpt-4o"))
+  factory.set_generation_options(require_observed_effect=True)
+
+  agent = factory.build()
+
+  assert agent.completion_contract.require_observed_effect is True
+  assert agent.completion_contract.require_workspace_mutation is False
+  assert [extension.name for extension in agent.extensions] == ["workspace_progress"]
+
+
+def test_title_agent_has_no_tools_or_completion_contract():
+  factory = AgentFactory(CLIConfig(model="gpt-4o"))
+  factory.set_generation_options(require_workspace_mutation=True)
+  agent = factory.build_title_agent()
+  assert agent.tools == []
+  assert agent.max_turns == 1
+  assert agent.completion_contract is None
+  assert "Do not call tools" in agent.system_prompt

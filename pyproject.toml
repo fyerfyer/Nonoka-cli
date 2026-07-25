@@ -27,6 +27,9 @@ dependencies = [
   "python-dotenv>=1.0",
 ]
 
+[tool.uv.sources]
+nonoka = { path = "../nonoka-agent", editable = true }
+
 [project.scripts]
 nonoka-cli = "nonoka_cli.cli:main"
 nonoka = "nonoka_cli.cli:main"

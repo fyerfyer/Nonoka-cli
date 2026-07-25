@@ -19,6 +19,7 @@ from nonoka_cli.bridge.protocol import (
   ToolCallEvent,
   ToolResultEvent,
 )
+from nonoka_cli.core.run_evidence import TerminationEvidence, append_run_evidence
 
 _TIMELINE_PATH = Path(
   os.environ.get("NONOKA_TIMELINE_PATH") or "/tmp/nonoka-tui-timeline.ndjson"
@@ -53,6 +54,23 @@ def _timeline_log(event: StreamEvent, messages: list[OutboundMessage]) -> None:
     pass
 
 
+def _record_termination(messages: list[OutboundMessage]) -> None:
+  """Persist typed terminal state for adapters outside the NDJSON stream."""
+  for message in messages:
+    termination = getattr(message, "termination", None)
+    if not isinstance(termination, dict):
+      details = getattr(message, "details", None)
+      termination = details.get("termination") if isinstance(details, dict) else None
+    if not isinstance(termination, dict) or not isinstance(termination.get("reason"), str):
+      continue
+    append_run_evidence(TerminationEvidence(
+      source="nonoka-bridge",
+      reason=termination["reason"],
+      finish_reason=getattr(message, "finish_reason", None),
+      termination=termination,
+    ))
+
+
 def _stringify_args(args: Any) -> str:
   """Return a JSON string for tool arguments, falling back to str()."""
   if isinstance(args, str):
@@ -77,6 +95,8 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
     case "tool_call_start":
       out: list[OutboundMessage] = []
       for tc in event.data.get("tool_calls") or []:
+        if tc.get("host_visible", True) is False:
+          continue
         func = tc.get("function", {})
         name = func.get("name", "")
         args = func.get("arguments", "{}")
@@ -98,6 +118,8 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
       return out
 
     case "tool_call_result":
+      if event.data.get("host_visible", True) is False:
+        return []
       messages = [
         ToolResultEvent(
           tool_call_id=event.data.get("tool_call_id", "unknown"),
@@ -123,21 +145,36 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
       return messages
 
     case "error":
+      termination = event.data.get("termination")
       messages = [
-        ErrorEvent(message=event.data.get("error", "Unknown error")),
-        FinishEvent(finish_reason="error"),
+        ErrorEvent(
+          message=event.data.get("error", "Unknown error"),
+          code=event.data.get("error_type"),
+          details={"termination": termination} if termination else None,
+        ),
+        FinishEvent(
+          finish_reason="error",
+          termination=termination,
+          runtime=event.data.get("runtime"),
+        ),
       ]
+      _record_termination(messages)
       _timeline_log(event, messages)
       return messages
 
     case "final":
       if event.data.get("requires_approval"):
-        messages = [FinishEvent(finish_reason="approval_required")]
+        messages = [FinishEvent(finish_reason="approval_required", runtime=event.data.get("runtime"))]
       elif event.data.get("requires_external_execution"):
-        messages = [FinishEvent(finish_reason="tool_calls")]
+        messages = [FinishEvent(finish_reason="tool_calls", runtime=event.data.get("runtime"))]
       else:
         finish_reason = "stop" if event.data.get("success", False) else "error"
-        messages = [FinishEvent(finish_reason=finish_reason)]
+        messages = [FinishEvent(
+          finish_reason=finish_reason,
+          termination=event.data.get("termination"),
+          runtime=event.data.get("runtime"),
+        )]
+      _record_termination(messages)
       _timeline_log(event, messages)
       return messages
 

@@ -10,6 +10,7 @@ from typing import Any
 
 import structlog
 from nonoka.core.runner import StreamEvent
+from nonoka.core.errors import RuntimeTerminatedError
 
 from nonoka_cli.bridge.events import translate_stream_event
 from nonoka_cli.bridge.protocol import (
@@ -25,6 +26,7 @@ from nonoka_cli.bridge.protocol import (
 from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.core.task_state import TaskStateService
+from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.utils.errors import SessionNotFoundError
 from nonoka_cli.utils.trace_logger import TraceLogger
 
@@ -141,10 +143,24 @@ class ChatRequestHandler:
     external_tools = self._build_external_tools(msg)
     external_mcp_servers = msg.external_mcp_servers
     external_skills = msg.external_skills
-    tool_results = self._extract_tool_results(msg)
+    config = getattr(self._orchestrator, "config", None)
+    tool_output = getattr(config, "tool_output", None)
+    output_policy = ToolOutputPolicy.from_config(
+      tool_output.model_dump() if tool_output is not None else None
+    )
+    tool_results = self._extract_tool_results(msg, output_policy)
     host_system_prompt = self._extract_host_system_prompt(msg)
 
-    if external_tools or external_mcp_servers or external_skills:
+    if msg.purpose == "title":
+      prompt = self._extract_prompt(msg)
+      if not prompt:
+        await self._send(ErrorEvent(message="No title prompt found in chat request"))
+        return
+      stream = self._orchestrator.execute_title(
+        prompt=prompt,
+        working_dir=self._working_dir,
+      )
+    elif external_tools or external_mcp_servers or external_skills:
       if tool_results:
         # Resume after external tool execution: do not re-inject old user or
         # assistant messages. The checkpoint already contains the pending
@@ -218,7 +234,12 @@ class ChatRequestHandler:
           max_turns=msg.max_turns,
           temperature=msg.temperature,
           timeout_seconds=msg.timeout_seconds,
+          wall_timeout_seconds=msg.wall_timeout_seconds,
           tool_budget=msg.tool_budget,
+          max_context_bytes=msg.max_context_bytes,
+          max_external_result_bytes=msg.max_external_result_bytes,
+          require_workspace_mutation=msg.require_workspace_mutation,
+          require_observed_effect=msg.require_observed_effect,
         )
       return
 
@@ -231,7 +252,12 @@ class ChatRequestHandler:
         max_turns=msg.max_turns,
         temperature=msg.temperature,
         timeout_seconds=msg.timeout_seconds,
+        wall_timeout_seconds=msg.wall_timeout_seconds,
         tool_budget=msg.tool_budget,
+        max_context_bytes=msg.max_context_bytes,
+        max_external_result_bytes=msg.max_external_result_bytes,
+        require_workspace_mutation=msg.require_workspace_mutation,
+        require_observed_effect=msg.require_observed_effect,
       )
 
     self._task_state_service = TaskStateService(
@@ -251,8 +277,12 @@ class ChatRequestHandler:
     """Return whether this request carries a non-default benchmark override."""
     return any(
       value is not None
-      for value in (msg.max_turns, msg.temperature, msg.timeout_seconds, msg.tool_budget)
-    )
+      for value in (
+        msg.max_turns, msg.temperature, msg.timeout_seconds,
+        msg.wall_timeout_seconds, msg.tool_budget, msg.max_context_bytes,
+        msg.max_external_result_bytes,
+      )
+    ) or msg.require_workspace_mutation or msg.require_observed_effect
 
   async def _apply_session(self, session_id: str | None) -> None:
     """Switch orchestrator session if the provider sent a different one."""
@@ -375,7 +405,10 @@ class ChatRequestHandler:
     return [m for m in msg.messages if m.role == "tool"]
 
   @staticmethod
-  def _extract_tool_results(msg: ChatRequest) -> dict[str, Any] | None:
+  def _extract_tool_results(
+    msg: ChatRequest,
+    output_policy: ToolOutputPolicy | None = None,
+  ) -> dict[str, Any] | None:
     """Parse plain tool results from incoming role='tool' messages.
 
     OpenCode returns tool results as ``role='tool'`` messages with a
@@ -385,6 +418,11 @@ class ChatRequestHandler:
     dropped to avoid misalignment.
     """
     pending_ids = ChatRequestHandler._extract_pending_tool_call_ids(msg)
+    tool_names: dict[str, str] = {}
+    for message in reversed(msg.messages):
+      if message.role == "assistant" and message.tool_calls:
+        tool_names = {tc.id: tc.name for tc in message.tool_calls}
+        break
     results: dict[str, Any] = {}
     for m in msg.messages:
       if m.role != "tool" or not m.content or not m.tool_call_id:
@@ -406,7 +444,12 @@ class ChatRequestHandler:
           pending_ids=list(pending_ids),
         )
         continue
-      results[m.tool_call_id] = m.result if m.result is not None else m.content
+      value = m.result if m.result is not None else m.content
+      if output_policy is not None and output_policy.enabled:
+        value = output_policy.apply_external_receipt(
+          tool_names.get(m.tool_call_id, ""), value, m.tool_call_id
+        )
+      results[m.tool_call_id] = value
 
     return results if results else None
 
@@ -427,6 +470,23 @@ class ChatRequestHandler:
         self._sync_task_state(event)
         for outbound in translate_stream_event(event):
           await self._send(outbound)
+    except RuntimeTerminatedError as exc:
+      termination = exc.termination.model_dump(mode="json")
+      logger.error(
+        "stream_runtime_terminated",
+        reason=termination.get("reason"),
+        diagnostics=termination.get("diagnostics"),
+      )
+      await self._send(ErrorEvent(
+        message=exc.termination.message,
+        code=exc.termination.reason.value,
+        retryable=False,
+        details={"termination": termination},
+      ))
+      await self._send(FinishEvent(
+        finish_reason="error",
+        termination=termination,
+      ))
     except Exception as exc:
       logger.error("stream_consumption_failed", error=str(exc))
       await self._send(ErrorEvent(message=f"Stream failed: {exc}"))

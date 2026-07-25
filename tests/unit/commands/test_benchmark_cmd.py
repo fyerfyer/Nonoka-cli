@@ -11,6 +11,7 @@ from nonoka_cli.commands.benchmark_cmd import (
     TERMINAL_BENCH_TASKS,
     _harbor_env,
     _redact_text,
+    _stage_python_runtime_archive,
     cmd_smoke,
     cmd_terminal_bench,
 )
@@ -22,12 +23,12 @@ def _args(tmp_path: Path, **values: object) -> argparse.Namespace:
         "cwd": str(tmp_path),
         "config": None,
         "provider_source": None,
-        "model": "deepseek-chat",
+        "model": "deepseek/deepseek-v4-pro",
         "temperature": 0.0,
-        "max_turns": 24,
-        "timeout": 180.0,
-        "run_timeout": 900.0,
-        "tool_budget": 64,
+        "max_turns": None,
+        "timeout": None,
+        "run_timeout": 3600.0,
+        "tool_budget": None,
         "mode": "opencode-nonoka",
         "message": "create a file",
         "tasks": None,
@@ -54,8 +55,9 @@ def test_smoke_writes_manifest_and_captures_opencode_output(tmp_path: Path, monk
     profile = json.loads((artifact / "opencode.profile.json").read_text())
     options = profile["provider"]["nonoka"]["options"]
     assert profile["provider"]["nonoka"]["npm"].startswith("file:")
-    assert options["maxTurns"] == 24
-    assert options["toolBudget"] == 64
+    assert "maxTurns" not in options
+    assert "timeoutSeconds" not in options
+    assert "toolBudget" not in options
     assert not (tmp_path / "opencode.json").exists()
 
 
@@ -67,6 +69,7 @@ def test_terminal_bench_requires_harbor(tmp_path: Path, monkeypatch):
 
 def test_terminal_bench_pins_the_public_task_slice(tmp_path: Path, monkeypatch):
     args = _args(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setattr("nonoka_cli.commands.benchmark_cmd.shutil.which", lambda _: "/bin/tool")
     monkeypatch.setattr(
         "nonoka_cli.commands.benchmark_cmd._prepare_harbor_runtime",
@@ -75,6 +78,7 @@ def test_terminal_bench_pins_the_public_task_slice(tmp_path: Path, monkeypatch):
             "agent_wheel": "/tmp/nonoka-agent.whl",
             "provider_source": "/tmp/provider",
             "uv_binary": "/tmp/uv",
+            "python_runtime_archive": "/tmp/python-3.13.tar.gz",
             "opencode_binary": "/tmp/opencode",
         },
     )
@@ -88,13 +92,17 @@ def test_terminal_bench_pins_the_public_task_slice(tmp_path: Path, monkeypatch):
     assert cmd_terminal_bench(args) == 0
     for task in TERMINAL_BENCH_TASKS:
         assert task in calls[-1]
-    assert "run_timeout_seconds=900.0" in calls[-1]
+    assert "run_timeout_seconds=3600.0" in calls[-1]
+    assert not any(value.startswith("max_turns=") for value in calls[-1])
+    assert not any(value.startswith("timeout_seconds=") for value in calls[-1])
+    assert not any(value.startswith("tool_budget=") for value in calls[-1])
     assert json.loads((Path(args.artifact_dir) / "manifest.json").read_text())["tasks"] == list(
         TERMINAL_BENCH_TASKS
     )
     assert "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}" in calls[-1]
     assert "cli_wheel=/tmp/nonoka-cli.whl" in calls[-1]
     assert "uv_binary=/tmp/uv" in calls[-1]
+    assert "python_runtime_archive=/tmp/python-3.13.tar.gz" in calls[-1]
     assert "opencode_binary=/tmp/opencode" in calls[-1]
 
 
@@ -114,6 +122,7 @@ def test_terminal_bench_can_install_one_pinned_task_without_scoring(tmp_path: Pa
             "agent_wheel": "/tmp/nonoka-agent.whl",
             "provider_source": "/tmp/provider",
             "uv_binary": "/tmp/uv",
+            "python_runtime_archive": "/tmp/python-3.13.tar.gz",
             "opencode_binary": "/tmp/opencode",
         },
     )
@@ -134,6 +143,41 @@ def test_terminal_bench_can_install_one_pinned_task_without_scoring(tmp_path: Pa
 
 def test_artifact_redaction_removes_common_api_key_forms():
     assert "sk-secret" not in _redact_text("Authorization=sk-secret-token-123456789")
+
+
+def test_stage_python_runtime_archive_packages_uv_managed_python(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "cpython-3.13-test"
+    executable = runtime / "bin" / "python3.13"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "nonoka_cli.commands.benchmark_cmd.shutil.which",
+        lambda name: f"/fake/{name}" if name in {"uv", "tar"} else None,
+    )
+
+    def run(command, **_):
+        calls.append(command)
+        if command[1:4] == ["python", "find", "3.13"]:
+            return mock.MagicMock(returncode=0, stdout=f"{executable}\n", stderr="")
+        Path(command[2]).touch()
+        return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("nonoka_cli.commands.benchmark_cmd.subprocess.run", run)
+
+    archive = _stage_python_runtime_archive(tmp_path / "artifacts")
+
+    assert archive.name == "python-3.13.tar.gz"
+    assert calls[0] == ["/fake/uv", "python", "find", "3.13"]
+    assert calls[1] == [
+        "/fake/tar",
+        "-czf",
+        str(archive),
+        "-C",
+        str(runtime.parent),
+        runtime.name,
+    ]
 
 
 def test_harbor_env_removes_only_an_incompatible_socks_all_proxy(tmp_path: Path, monkeypatch):

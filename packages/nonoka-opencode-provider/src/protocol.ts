@@ -18,6 +18,21 @@ export interface NonokaChatToolCall {
   arguments: string;
 }
 
+export type ObservationCompleteness = 'complete' | 'partial' | 'unknown';
+
+export interface NonokaExternalToolReceipt {
+  result: unknown;
+  exit_code?: number;
+  host?: string;
+  artifact_ref?: string;
+  output_kind?: string;
+  original_bytes?: number;
+  truncated?: boolean;
+  completeness: ObservationCompleteness;
+  workspace?: Record<string, unknown>;
+  effect?: Record<string, unknown>;
+}
+
 export interface NonokaChatMessage {
   role: NonokaMessageRole;
   content: string;
@@ -56,6 +71,7 @@ export type NonokaInboundEventType = keyof typeof NONOKA_INBOUND_TYPES;
 
 export interface NonokaChatRequest {
   type: typeof NONOKA_INBOUND_TYPES.chat;
+  purpose?: 'chat' | 'title';
   messages: NonokaChatMessage[];
   tools?: ExternalToolDefinition[];
   external_mcp_servers?: ExternalMCPServerDefinition[];
@@ -67,7 +83,12 @@ export interface NonokaChatRequest {
   temperature?: number;
   max_turns?: number;
   timeout_seconds?: number;
+  wall_timeout_seconds?: number;
   tool_budget?: number;
+  max_context_bytes?: number;
+  max_external_result_bytes?: number;
+  require_workspace_mutation?: boolean;
+  require_observed_effect?: boolean;
   request_id?: string;
 }
 
@@ -153,11 +174,16 @@ export type NonokaFinishReason = keyof typeof NONOKA_FINISH_REASONS;
 export interface NonokaFinishEvent {
   type: typeof NONOKA_OUTBOUND_TYPES.finish;
   finish_reason: NonokaFinishReason;
+  termination?: Record<string, unknown>;
+  runtime?: Record<string, unknown>;
 }
 
 export interface NonokaErrorEvent {
   type: typeof NONOKA_OUTBOUND_TYPES.error;
   message: string;
+  code?: string;
+  retryable?: boolean;
+  details?: Record<string, unknown>;
 }
 
 export type NonokaOutboundEvent =

@@ -37,7 +37,8 @@ def add_subparser(subparsers: Any) -> None:
     help="Run framework-owned agent evaluations (paired with a direct baseline)",
     description=(
       "Evaluation is implemented by nonoka-agent. Examples: "
-      "nonoka-cli eval list; nonoka-cli eval run --dataset humaneval --model deepseek-chat"
+      "nonoka-cli eval list; nonoka-cli eval run --dataset humaneval "
+      "--model deepseek/deepseek-v4-pro"
     ),
   )
   parser.add_argument(

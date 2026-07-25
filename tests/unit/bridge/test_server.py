@@ -108,3 +108,22 @@ async def test_server_accepts_large_bounded_ndjson_tool_transcript():
     assert await asyncio.wait_for(task, timeout=1) == 0
     assert handler.shutdown_called is True
     assert handler.messages[0].messages[-1].content == payload
+
+
+@pytest.mark.asyncio
+async def test_server_reports_structured_error_for_oversized_frame():
+    reader = _create_stdin_reader()
+    writer = _Writer()
+    server = BridgeServer(reader, writer)
+    payload = "x" * ((1 << 20) + 1024)
+    reader.feed_data(
+        json.dumps({"type": "chat", "messages": [{"role": "user", "content": payload}]}).encode()
+        + b"\n"
+    )
+    reader.feed_eof()
+
+    assert await asyncio.wait_for(server.run(), timeout=2) == 0
+    error = next(item for item in writer.lines if item.get("type") == "error")
+    assert error["code"] == "frame_too_large"
+    assert error["retryable"] is True
+    assert error["details"]["max_frame_bytes"] == 1 << 20

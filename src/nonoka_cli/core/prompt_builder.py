@@ -51,6 +51,7 @@ class SystemPromptBuilder:
     model: str,
     cwd: str | Path | None = None,
     host_tools: list[str] | None = None,
+    nonoka_tools: list[str] | None = None,
     external_mcp_tools: list[str] | None = None,
     external_skill_tools: list[str] | None = None,
     internal_mcp_tools: list[str] | None = None,
@@ -67,6 +68,7 @@ class SystemPromptBuilder:
       model: Model identifier injected as an identity line.
       cwd: Current working directory to inject path guidance.
       host_tools: Host native tool names available to the model.
+      nonoka_tools: Local bridge capabilities executed directly by nonoka.
       external_mcp_tools: Prefixed external MCP tool names.
       external_skill_tools: Prefixed external skill tool names.
       internal_mcp_tools: Prefixed internal MCP tool names.
@@ -84,6 +86,7 @@ class SystemPromptBuilder:
     self._model = model.strip()
     self._cwd = cwd
     self._host_tools = host_tools or []
+    self._nonoka_tools = nonoka_tools or []
     self._external_mcp_tools = external_mcp_tools or []
     self._external_skill_tools = external_skill_tools or []
     self._internal_mcp_tools = internal_mcp_tools or []
@@ -163,10 +166,18 @@ class SystemPromptBuilder:
       return ""
 
     cwd_str = str(Path(self._cwd).resolve())
+    tool_guidance = ""
+    if self._host_tools:
+      exact = ", ".join(f"`{name}`" for name in self._host_tools)
+      tool_guidance = (
+        f"\nUse only these exact host tool names: {exact}. "
+        "Do not substitute CLI aliases such as `execute_command`, `read_file`, "
+        "`write_file`, or `edit_file` unless they appear in that list."
+      )
     block = (
       f"Current working directory: {cwd_str}\n"
-      "All file paths must be relative to this directory or use the absolute path above.\n"
-      "Prefer write_file/edit_file over bash/execute_command for file mutations."
+      "All file paths must be relative to this directory or use the absolute path above."
+      f"{tool_guidance}"
     )
     if "Current working directory:" in self._base:
       return ""
@@ -174,6 +185,8 @@ class SystemPromptBuilder:
 
   def _build_todo_block(self) -> str:
     """Return the TODO workflow block if the base does not already contain it."""
+    if "todowrite" not in self._host_tools:
+      return ""
     if "todowrite" in self._base.lower():
       return ""
     return _OPENCODE_TODO_WORKFLOW_BLOCK
@@ -221,6 +234,7 @@ class SystemPromptBuilder:
     """Return a block describing exact tool names/namespaces."""
     has_any = (
       self._host_tools
+      or self._nonoka_tools
       or self._external_mcp_tools
       or self._external_skill_tools
       or self._internal_mcp_tools
@@ -239,6 +253,17 @@ class SystemPromptBuilder:
       lines.append(
         "- Host native tools (OpenCode executes): "
         + ", ".join(f"`{n}`" for n in self._host_tools)
+      )
+    if self._nonoka_tools:
+      lines.append(
+        "- Nonoka-managed bridge tools (nonoka executes): "
+        + ", ".join(f"`{n}`" for n in self._nonoka_tools)
+      )
+      lines.append(
+        "If a host search result is partial or fails on a large record, call a "
+        "nonoka-managed evidence tool before retrying the host search. Use literal "
+        "mode for known text and regex mode for a search pattern; it returns bounded "
+        "coordinates instead of whole records."
       )
     if self._external_mcp_tools:
       lines.append(

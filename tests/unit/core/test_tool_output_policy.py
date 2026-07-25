@@ -75,6 +75,46 @@ def test_structured_result_truncated_as_json():
   assert "truncated" in pruned
 
 
+def test_external_receipt_compaction_overrides_completeness_to_partial():
+  policy = ToolOutputPolicy(default_rule=ToolOutputRule(max_tokens=4, max_lines=2))
+  receipt = {
+    "result": "one\ntwo\nthree\nfour\nfive",
+    "host": "opencode",
+    "completeness": "complete",
+  }
+
+  compact = policy.apply_external_receipt("inspect", receipt, "call-1")
+
+  assert compact["truncated"] is True
+  assert compact["completeness"] == "partial"
+
+
+def test_single_line_output_is_bounded_by_token_budget():
+  policy = ToolOutputPolicy(
+    rules={"bash": ToolOutputRule(max_lines=200, max_tokens=10, strategy="tail_only")}
+  )
+  pruned = policy.apply("bash", "x" * 1000)
+  assert len(pruned) <= 40
+
+
+def test_external_receipt_keeps_workspace_attestation_when_payload_is_pruned():
+  policy = ToolOutputPolicy(
+    rules={"bash": ToolOutputRule(max_lines=1, max_tokens=20, strategy="tail_only")}
+  )
+  receipt = {
+    "result": "x" * 1000,
+    "host": "opencode",
+    "workspace": {
+      "root": "/tmp/work", "before_digest": "a", "after_digest": "b"
+    },
+  }
+  compact = policy.apply_external_receipt("bash", receipt, "tc1")
+  assert compact["workspace"] == receipt["workspace"]
+  assert compact["truncated"] is True
+  assert compact["original_bytes"] == 1000
+  assert len(compact["result"]) <= 80
+
+
 def test_spill_writes_to_disk(tmp_path):
   policy = ToolOutputPolicy(
     rules={

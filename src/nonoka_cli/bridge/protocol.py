@@ -80,6 +80,7 @@ class ChatRequest(BaseModel):
   """Request nonoka-cli to run one user turn."""
 
   type: Literal["chat"] = "chat"
+  purpose: Literal["chat", "title"] = "chat"
   messages: list[ChatMessage]
   tools: list[ExternalToolDefinition] | None = None
   external_mcp_servers: list[ExternalMCPServerDefinition] | None = None
@@ -91,7 +92,12 @@ class ChatRequest(BaseModel):
   temperature: float | None = None
   max_turns: int | None = Field(default=None, ge=1)
   timeout_seconds: float | None = Field(default=None, gt=0)
+  wall_timeout_seconds: float | None = Field(default=None, gt=0)
   tool_budget: int | None = Field(default=None, ge=1)
+  max_context_bytes: int | None = Field(default=None, ge=1)
+  max_external_result_bytes: int | None = Field(default=None, ge=1)
+  require_workspace_mutation: bool = False
+  require_observed_effect: bool = False
   request_id: str | None = None
 
 
@@ -129,6 +135,8 @@ class FinishEvent(BaseModel):
 
   type: Literal["finish"] = "finish"
   finish_reason: Literal["stop", "error", "cancel", "approval_required", "tool_calls"]
+  termination: dict[str, Any] | None = None
+  runtime: dict[str, Any] | None = None
 
 
 class ToolCallEvent(BaseModel):
@@ -181,6 +189,9 @@ class ErrorEvent(BaseModel):
 
   type: Literal["error"] = "error"
   message: str
+  code: str | None = None
+  retryable: bool | None = None
+  details: dict[str, Any] | None = None
 
 
 OutboundMessage = (

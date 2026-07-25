@@ -1,10 +1,14 @@
-"""Context trimming for long-running agent sessions.
+"""Host-prompt trimming helpers.
 
 Inspired by the OpenAI Agents SDK ``TrimmingSession`` pattern:
 keep only the last N complete user turns, where a turn starts at a user
 message and includes all assistant/tool messages up to (but not including)
 the next user message.  This preserves the immediate tool-call chains while
 preventing older turns from consuming the context window.
+
+This helper is not applied to Nonoka's persisted ``WorkingMemory``.  The
+framework's protocol-aware compactor owns checkpoint memory so tool-call/result
+units and evidence ledgers remain aligned with session runtime state.
 """
 
 from __future__ import annotations

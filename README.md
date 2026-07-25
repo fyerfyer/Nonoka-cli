@@ -70,7 +70,7 @@ For scripted setups, use the non-interactive mode (you'll still need to set the
 API key via `.env` or `export`):
 
 ```bash
-nonoka-cli config init --yes --model deepseek-chat
+nonoka-cli config init --yes --model deepseek/deepseek-v4-pro
 ```
 
 2. Generate an OpenCode config in the current project or globally:
@@ -119,7 +119,7 @@ nonoka-cli doctor --check-llm
 
 ## Agent evaluation
 
-`nonoka eval` is a thin frontend for the framework-owned benchmark engine. Its
+`nonoka-cli eval` is a thin frontend for the framework-owned benchmark engine. Its
 scored built-ins are the open HumanEval and MBPP datasets. The bundled
 `tool_use` suite is deliberately labelled as deterministic smoke/regression
 coverage; it is not presented as a substitute for an open benchmark. Results
@@ -127,10 +127,10 @@ are stored under `.nonoka/eval/` in the current project and can be compared
 locally:
 
 ```bash
-nonoka eval list
-nonoka eval run --dataset humaneval --model deepseek-chat --limit 20
-nonoka eval run --dataset mbpp --model deepseek-chat --limit 20
-nonoka eval leaderboard
+nonoka-cli eval list
+nonoka-cli eval run --dataset humaneval --model deepseek/deepseek-v4-pro --limit 20
+nonoka-cli eval run --dataset mbpp --model deepseek/deepseek-v4-pro --limit 20
+nonoka-cli eval leaderboard
 ```
 
 Each built-in run records a normal Nonoka agent and a same-model direct
@@ -144,9 +144,9 @@ It pins the model policy and includes HumanEval, MBPP sanitized, EvalPlus,
 because it owns the official strengthened verifier:
 
 ```bash
-nonoka eval matrix plan --model deepseek-chat --output .nonoka/eval/release-matrix.json
+nonoka-cli eval matrix plan --model deepseek/deepseek-v4-pro --output .nonoka/eval/release-matrix.json
 export NONOKA_EVALPLUS_PYTHON=/path/to/evalplus-python
-nonoka eval matrix run --manifest .nonoka/eval/release-matrix.json --include evalplus-humaneval
+nonoka-cli eval matrix run --manifest .nonoka/eval/release-matrix.json --include evalplus-humaneval
 ```
 
 For complex agent tasks, the framework delegates to official harnesses instead
@@ -157,7 +157,7 @@ environment because of its dependency pins:
 
 ```bash
 export NONOKA_TAU2_PYTHON=/path/to/tau2-python
-nonoka eval external run --benchmark tau2-bench --model deepseek-chat --domain retail --limit 10
+nonoka-cli eval external run --benchmark tau2-bench --model deepseek/deepseek-v4-pro --domain retail --limit 10
 ```
 
 For framework-only terminal-agent tasks, Terminal-Bench 2 delegates Docker
@@ -171,16 +171,16 @@ uv venv .venv-bench --python 3.13
 uv pip install --python .venv-bench/bin/python -e ../nonoka-agent -e . harbor
 export NONOKA_HARBOR_BIN="$PWD/.venv-bench/bin/harbor"
 nonoka-cli doctor --check-benchmarks
-nonoka-cli benchmark smoke --model deepseek-chat
-nonoka-cli benchmark terminal-bench --model deepseek-chat
+nonoka-cli benchmark smoke --model deepseek/deepseek-v4-pro
+nonoka-cli benchmark terminal-bench --model deepseek/deepseek-v4-pro
 ```
 
 The Terminal-Bench command builds fresh local wheels, stages the built OpenCode
-provider plus its dependencies, and copies a verified host OpenCode executable
-into every Harbor task container. The adapter uses a task image's existing
-Python 3.13 through `uv` when available, and falls back to a `uv`-managed
-runtime under `/opt/nonoka-runtime` only when needed; the non-root Harbor agent
-can therefore launch the bridge without an NVM/npm download. This ensures the
+provider plus its dependencies, and copies verified host OpenCode and Python
+3.13 runtime artifacts into every Harbor task container. The runtime is also
+registered in uv's conventional managed-Python directory, so both the non-root
+agent and official verifier scripts can reuse it without downloading another
+interpreter. This ensures the
 official verifier observes OpenCode using the current nonoka bridge against the task
 filesystem—not a host-side shell. To verify provisioning before spending model
 tokens, run one pinned task first:
@@ -189,10 +189,15 @@ tokens, run one pinned task first:
 nonoka-cli benchmark terminal-bench --task regex-log --install-only
 ```
 
-The adapter also exposes that same staged `uv` as `/root/.local/bin/uv` and
-`uvx`, which is the conventional path sourced by several official verifier
-scripts. This only removes their bootstrap-download dependency; it does not
-preinstall task-specific test packages, data, or solution artifacts.
+The adapter also exposes the staged `uv` as `/root/.local/bin/uv` and `uvx`.
+Verifier scripts that replace that binary still discover the registered Python
+runtime. This does not preinstall task-specific test packages, data, or solution
+artifacts.
+
+Live benchmark runs do not impose cumulative model-turn, tool-call, or
+per-model-call limits by default. The one-hour process watchdog only protects
+against a lost or permanently stuck agent process. Use `--max-turns`,
+`--tool-budget`, or `--timeout` when a deliberately bounded profile is needed.
 
 Harbor receives the model credential through its `${DEEPSEEK_API_KEY}`
 environment template. The value is never placed in the benchmark manifest or
@@ -214,7 +219,7 @@ never overrides an existing project OpenCode configuration.
 ### `nonoka-cli config init`
 
 Interactive wizard that writes `~/.config/nonoka/config.yaml`. It asks for a
-model identifier (e.g. `deepseek-chat`, `openai/gpt-4o`, `ollama/llama3.3`), a
+model identifier (e.g. `deepseek/deepseek-v4-pro`, `openai/gpt-4o`, `ollama/llama3.3`), a
 masked API key, and whether to save it to `~/.config/nonoka/.env` (recommended),
 directly in `config.yaml`, or skip saving. It also asks for a system prompt and
 whether to auto-approve all tool calls.
@@ -270,7 +275,7 @@ A typical generated `opencode.json` looks like:
         "configPath": "~/.config/nonoka/config.yaml"
       },
       "models": {
-        "default": { "name": "Nonoka deepseek-chat" }
+        "default": { "name": "Nonoka deepseek-v4-pro" }
       }
     }
   },
@@ -355,7 +360,7 @@ nonoka-cli can merge MCP tools and lazy-loaded skills alongside OpenCode's
 native tools. Configure them in `~/.config/nonoka/config.yaml`:
 
 ```yaml
-model: deepseek-chat
+model: deepseek/deepseek-v4-pro
 
 mcp_servers:
   filesystem:
@@ -450,15 +455,15 @@ call for complex tasks:
 Both are disabled by default. Enable them by setting their model in `nonoka.yaml`:
 
 ```yaml
-model: deepseek-chat
+model: deepseek/deepseek-v4-pro
 max_turns: 20
 
 agents:
   planner:
-    model: deepseek-chat
+    model: deepseek/deepseek-v4-pro
     system_prompt: "You are a planning agent..."
   reviewer:
-    model: deepseek-chat
+    model: deepseek/deepseek-v4-pro
     system_prompt: "You are a senior code reviewer..."
 ```
 

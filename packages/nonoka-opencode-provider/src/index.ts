@@ -33,7 +33,12 @@ export interface NonokaProviderSettings {
   temperature?: number;
   maxTurns?: number;
   timeoutSeconds?: number;
+  wallTimeoutSeconds?: number;
   toolBudget?: number;
+  maxContextBytes?: number;
+  maxExternalResultBytes?: number;
+  requireWorkspaceMutation?: boolean;
+  requireObservedEffect?: boolean;
 
   /**
    * Additional environment variables for the server process.
@@ -81,7 +86,12 @@ export function createNonoka(
     temperature: settings.temperature,
     maxTurns: settings.maxTurns,
     timeoutSeconds: settings.timeoutSeconds,
+    wallTimeoutSeconds: settings.wallTimeoutSeconds,
     toolBudget: settings.toolBudget,
+    maxContextBytes: settings.maxContextBytes,
+    maxExternalResultBytes: settings.maxExternalResultBytes,
+    requireWorkspaceMutation: settings.requireWorkspaceMutation,
+    requireObservedEffect: settings.requireObservedEffect,
     env: settings.env,
   };
 

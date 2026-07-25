@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'fs';
+import { createNonoka } from '../src/index';
 import {
   NonokaLanguageModel,
+  PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES,
+  PROVIDER_HARD_REQUEST_BYTES,
+  PROVIDER_SOFT_REQUEST_BYTES,
+  encodeRequestWithRetry,
   getChatSessionIdFile,
   loadChatSessionId,
   saveChatSessionId,
+  normalizeExternalToolOutput,
 } from '../src/nonoka-language-model';
 
 function makeChatPrompt(newConversation = false): any {
@@ -27,6 +33,30 @@ function makeTitlePrompt(): any {
 }
 
 describe('NonokaLanguageModel', () => {
+  it('forwards provider-level runtime policy into model requests', () => {
+    const provider = createNonoka({
+      serverCommand: ['nonoka-cli', '--server'],
+      cwd: '/tmp/nonoka-provider-policy-test',
+      wallTimeoutSeconds: 600,
+      maxContextBytes: 262144,
+      maxExternalResultBytes: 65536,
+      requireWorkspaceMutation: true,
+      requireObservedEffect: true,
+    });
+    const model = provider('deepseek-chat');
+
+    const request = (model as any).buildChatRequest(
+      { prompt: makeChatPrompt(true) },
+      false,
+    );
+
+    expect(request.wall_timeout_seconds).toBe(600);
+    expect(request.max_context_bytes).toBe(262144);
+    expect(request.max_external_result_bytes).toBe(65536);
+    expect(request.require_workspace_mutation).toBe(true);
+    expect(request.require_observed_effect).toBe(true);
+  });
+
   it('constructs with the given model id and config', () => {
     const model = new NonokaLanguageModel(
       'deepseek-chat',
@@ -78,6 +108,7 @@ describe('NonokaLanguageModel', () => {
     );
 
     expect(request.new_session).toBe(true);
+    expect(request.purpose).toBe('title');
     expect(request.messages).toHaveLength(2);
     expect(request.messages[0].role).toBe('system');
     expect(request.messages[1].role).toBe('user');
@@ -151,7 +182,8 @@ describe('NonokaLanguageModel', () => {
         { prompt: makeChatPrompt(true) },
         false,
       );
-      expect(request.new_session).toBe(true);
+    expect(request.new_session).toBe(true);
+    expect(request.purpose).toBe('chat');
       expect(request.session_id).toBeUndefined();
     } finally {
       fs.rmSync(sessionFile, { force: true });
@@ -201,7 +233,12 @@ describe('NonokaLanguageModel', () => {
         temperature: 0,
         maxTurns: 12,
         timeoutSeconds: 90,
+        wallTimeoutSeconds: 600,
         toolBudget: 30,
+        maxContextBytes: 262144,
+        maxExternalResultBytes: 65536,
+        requireWorkspaceMutation: true,
+        requireObservedEffect: true,
       },
     );
 
@@ -212,7 +249,157 @@ describe('NonokaLanguageModel', () => {
     expect(request.temperature).toBe(0);
     expect(request.max_turns).toBe(12);
     expect(request.timeout_seconds).toBe(90);
+    expect(request.wall_timeout_seconds).toBe(600);
     expect(request.tool_budget).toBe(30);
+    expect(request.max_context_bytes).toBe(262144);
+    expect(request.max_external_result_bytes).toBe(65536);
+    expect(request.require_workspace_mutation).toBe(true);
+    expect(request.require_observed_effect).toBe(true);
+  });
+
+  it('keeps only the latest contiguous external tool-result batch on resume', () => {
+    const model = new NonokaLanguageModel('deepseek-chat', {}, {
+      provider: 'nonoka', serverCommand: ['nonoka-cli', '--server'], cwd: '/tmp/nonoka-resume-test',
+    });
+    const request = (model as any).buildChatRequest({ prompt: [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'old', toolName: 'bash', input: {} }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'old', toolName: 'bash', output: { type: 'text', value: 'old result' } }] },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'new-1', toolName: 'bash', input: {} }, { type: 'tool-call', toolCallId: 'new-2', toolName: 'read', input: {} }] },
+      { role: 'tool', content: [
+        { type: 'tool-result', toolCallId: 'new-1', toolName: 'bash', output: { type: 'text', value: 'new result 1' } },
+        { type: 'tool-result', toolCallId: 'new-2', toolName: 'read', output: { type: 'text', value: 'new result 2' } },
+      ] },
+    ] }, false);
+    expect(request.messages.map((message: any) => message.tool_call_id).filter(Boolean)).toEqual(['new-1', 'new-2']);
+    expect(JSON.stringify(request.messages)).not.toContain('old result');
+  });
+
+  it('performs one size compaction retry without changing the session id', () => {
+    const request: any = {
+      type: 'chat', session_id: 'sess-keep', cwd: '/tmp',
+      messages: [{ role: 'tool', tool_call_id: 'tc', content: 'x'.repeat(PROVIDER_SOFT_REQUEST_BYTES * 2), result: 'x'.repeat(PROVIDER_SOFT_REQUEST_BYTES * 2) }],
+    };
+    const line = encodeRequestWithRetry(request);
+    const parsed = JSON.parse(line);
+    expect(parsed.session_id).toBe('sess-keep');
+    expect(Buffer.byteLength(line)).toBeLessThan(PROVIDER_HARD_REQUEST_BYTES);
+    expect(parsed.messages[0].content).toContain('compacted by nonoka provider');
+    expect(parsed.messages[0].result.completeness).toBe('partial');
+  });
+
+  it('attests small tool output as complete', () => {
+    const receipt = normalizeExternalToolOutput('/tmp', 'small-call', 'custom', 'bounded');
+
+    expect(receipt.completeness).toBe('complete');
+    expect(receipt.truncated).toBe(false);
+    expect(receipt.artifact_ref).toBeUndefined();
+  });
+
+  it('conservatively attests soft-threshold output as partial without tool-name rules', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp',
+      'soft-call',
+      'arbitrary_tool',
+      'x'.repeat(PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES),
+    );
+
+    expect(receipt.completeness).toBe('partial');
+    expect(receipt.truncated).toBe(false);
+    expect(receipt.artifact_ref).toBeString();
+  });
+
+  it('attests provider-truncated tool output as partial', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp',
+      'hard-call',
+      'write',
+      'x'.repeat(PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES * 2),
+    );
+
+    expect(receipt.completeness).toBe('partial');
+    expect(receipt.truncated).toBe(true);
+    expect(receipt.artifact_ref).toBeString();
+  });
+
+  it('attests host-level record truncation as partial', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp',
+      'host-truncated-call',
+      'grep',
+      'Found 1 match\n/app/data.json:\n  Line 18: prefix... (line truncated to 2000 chars)',
+      { pattern: 'hf_[a-zA-Z0-9]{34}', path: '/app' },
+    );
+
+    expect(receipt.completeness).toBe('partial');
+    expect(receipt.truncated).toBe(false);
+    expect(receipt.artifact_ref).toBeString();
+  });
+
+  it('renders bounded candidate evidence from a large structured pattern search', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp',
+      'pattern-call',
+      'grep',
+      `${'prefix '.repeat(1800)}\n/app/data.json:\n  Line 18: payload hf_abcdefgh end\n`,
+      { pattern: 'hf_[a-z]{8}', path: '/app' },
+    );
+
+    expect(receipt.completeness).toBe('partial');
+    expect(receipt.artifact_ref).toBeString();
+    expect(String(receipt.result)).toContain('[Pattern-match evidence]');
+    expect(String(receipt.result)).toContain('hf_abcdefgh');
+    expect(String(receipt.result)).toContain('unresolved candidate');
+  });
+
+  it('retains opaque candidates when a broad alternative has many ordinary matches', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp',
+      'broad-pattern-call',
+      'grep',
+      `${'token documentation\n'.repeat(1000)}embedded value hf_abcdefghijklmnopqrstuvwxyz123456`,
+      { pattern: 'token|hf_' },
+    );
+
+    expect(String(receipt.result)).toContain('hf_abcdefghijklmnopqrstuvwxyz123456');
+  });
+
+  it('marks a host tool failure as partial evidence with a bounded fallback instruction', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp',
+      'failed-search',
+      'grep',
+      'record exceeds host output limit',
+      { pattern: 'example' },
+      true,
+    );
+
+    expect(receipt.completeness).toBe('partial');
+    expect(receipt.artifact_ref).toBeString();
+    expect(String(receipt.result)).toContain('[Host tool failure]');
+    expect(String(receipt.result)).toContain('bounded fallback');
+  });
+
+  it('forwards a tool call pattern when rendering its subsequent result', () => {
+    const model = new NonokaLanguageModel('deepseek-chat', {}, {
+      provider: 'nonoka', serverCommand: ['nonoka-cli', '--server'], cwd: '/tmp/nonoka-pattern-forwarding',
+    });
+    const request = (model as any).buildChatRequest({ prompt: [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'find candidates' },
+      { role: 'assistant', content: [{
+        type: 'tool-call', toolCallId: 'pattern-call', toolName: 'grep',
+        input: { pattern: 'key_[a-z]{8}', path: '/app' },
+      }] },
+      { role: 'tool', content: [{
+        type: 'tool-result', toolCallId: 'pattern-call', toolName: 'grep',
+        output: { type: 'text', value: `${'x '.repeat(5000)} key_abcdefgh` },
+      }] },
+    ] }, false);
+
+    expect(request.messages.at(-1).content).toContain('[Pattern-match evidence]');
+    expect(request.messages.at(-1).content).toContain('key_abcdefgh');
   });
 
   it('strips tools and external definitions during title generation', () => {

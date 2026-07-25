@@ -217,7 +217,7 @@ def cmd_init(args: argparse.Namespace) -> int:
   print(f"Creating nonoka configuration at: {path}")
 
   if getattr(args, "yes", False):
-    model = getattr(args, "model", None) or "deepseek-chat"
+    model = getattr(args, "model", None) or "deepseek/deepseek-v4-pro"
     auto_approve = getattr(args, "auto_approve", False)
     env_var = _api_key_env_for_model(model)
     key_summary = _api_key_source_summary(env_var) or "not configured"
@@ -248,11 +248,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 
   print("")
   print(
-    "Examples: deepseek-chat, openai/gpt-4o, "
+    "Examples: deepseek/deepseek-v4-pro, openai/gpt-4o, "
     "anthropic/claude-sonnet-4-20250514, ollama/llama3.3"
   )
 
-  model = _read_input("Model identifier", "deepseek-chat")
+  model = _read_input("Model identifier", "deepseek/deepseek-v4-pro")
   env_var, api_key_value, key_summary = _collect_api_key(model)
 
   system_prompt = _read_input(
@@ -340,7 +340,7 @@ def add_subparser(subparsers: Any) -> None:
   )
   init_parser.add_argument(
     "--model",
-    default="deepseek-chat",
+    default="deepseek/deepseek-v4-pro",
     help="Default model to write when using --yes",
   )
   init_parser.add_argument(

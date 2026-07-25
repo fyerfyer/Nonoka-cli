@@ -77,7 +77,17 @@ class BridgeServer:
 
     try:
       while self._running:
-        line = await self._stdin.readline()
+        try:
+          line = await self._stdin.readline()
+        except ValueError as exc:
+          logger.warning("inbound_frame_too_large", error=str(exc), limit=_NDJSON_LINE_LIMIT)
+          await self._handler.send(ErrorEvent(
+            message="Inbound NDJSON frame exceeds the bridge protocol limit.",
+            code="frame_too_large",
+            retryable=True,
+            details={"max_frame_bytes": _NDJSON_LINE_LIMIT},
+          ))
+          continue
         if not line:
           break
 

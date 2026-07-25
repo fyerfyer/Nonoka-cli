@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from nonoka.core.errors import RuntimeTerminatedError
+from nonoka.core.runtime import TerminalReason, Termination
 
 from nonoka_cli.bridge.handler import ChatRequestHandler
 from nonoka_cli.bridge.protocol import (
@@ -52,6 +54,24 @@ async def test_handle_new_session(handler, sent):
       assert any(m.type == "session_init" for m in sent)
 
 
+async def test_handle_title_uses_tool_free_title_path(handler, sent):
+  with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
+    with patch.object(handler, "_apply_session", new=AsyncMock()):
+      orc = MagicMock()
+      orc.session_id = "title-session"
+      orc.execute_title = MagicMock(return_value=async_empty())
+      handler._orchestrator = orc
+      handler._session_id = "title-session"
+      await handler.handle(ChatRequest(
+        purpose="title",
+        messages=[ChatMessage(role="user", content="Generate a title")],
+      ))
+      orc.execute_title.assert_called_once_with(
+        prompt="Generate a title",
+        working_dir=handler._working_dir,
+      )
+
+
 async def test_existing_orchestrator_receives_generation_overrides(handler):
   orchestrator = MagicMock()
   handler._orchestrator = orchestrator
@@ -70,7 +90,12 @@ async def test_existing_orchestrator_receives_generation_overrides(handler):
     temperature=0.0,
     max_turns=12,
     timeout_seconds=90.0,
+    wall_timeout_seconds=None,
     tool_budget=30,
+    max_context_bytes=None,
+    max_external_result_bytes=None,
+    require_workspace_mutation=False,
+    require_observed_effect=False,
   )
 
 
@@ -225,9 +250,57 @@ def test_extract_tool_results_accepts_all_when_no_pending_ids():
   assert results == {"call_1": "ok"}
 
 
+def test_extract_tool_results_preserves_typed_observation_receipt():
+  receipt = {
+    "result": "preview",
+    "host": "opencode",
+    "artifact_ref": "/tmp/output.txt",
+    "original_bytes": 9000,
+    "truncated": False,
+    "completeness": "partial",
+  }
+  msg = ChatRequest(
+    messages=[
+      ChatMessage(
+        role="assistant",
+        content="",
+        tool_calls=[ToolCall(id="call_1", name="inspect", arguments="{}")],
+      ),
+      ChatMessage(
+        role="tool",
+        content="preview",
+        tool_call_id="call_1",
+        result=receipt,
+      ),
+    ]
+  )
+
+  assert ChatRequestHandler._extract_tool_results(msg) == {"call_1": receipt}
+
+
 async def async_empty() -> AsyncIterator[None]:
   if False:
     yield None
+
+
+async def test_consume_stream_preserves_structured_runtime_termination(handler, sent):
+  async def terminated_stream():
+    if False:
+      yield None
+    raise RuntimeTerminatedError(Termination(
+      reason=TerminalReason.EXECUTION_POLICY_VIOLATION,
+      message="protected input changed",
+      dimension="workspace_policy",
+      diagnostics={"paths": ["fixture.db"]},
+    ))
+
+  await handler._consume_stream(terminated_stream())
+
+  error = next(message for message in sent if message.type == "error")
+  finish = next(message for message in sent if message.type == "finish")
+  assert error.code == "execution_policy_violation"
+  assert error.details["termination"]["diagnostics"] == {"paths": ["fixture.db"]}
+  assert finish.termination["reason"] == "execution_policy_violation"
 
 
 async def test_handle_with_external_mcp_and_skills_passes_them_to_orchestrator(handler, sent):

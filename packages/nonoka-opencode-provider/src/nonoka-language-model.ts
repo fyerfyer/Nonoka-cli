@@ -18,6 +18,7 @@ import {
   type NonokaChatMessage,
   type NonokaChatRequest,
   type NonokaChatToolCall,
+  type NonokaExternalToolReceipt,
 } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
 import fs from 'fs';
@@ -43,6 +44,288 @@ function generateRequestId(): string {
 }
 
 const TITLE_PROMPT_SENTINEL = 'Generate a title for this conversation';
+export const PROVIDER_SOFT_REQUEST_BYTES = 256 * 1024;
+export const PROVIDER_HARD_REQUEST_BYTES = 1024 * 1024;
+export const PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES = 8 * 1024;
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (utf8Bytes(value) <= maxBytes) return value;
+  const marker = '\n...[compacted by nonoka provider]...\n';
+  const markerBytes = utf8Bytes(marker);
+  if (maxBytes <= markerBytes + 2) {
+    return Buffer.from(value).subarray(0, Math.max(0, maxBytes)).toString('utf8');
+  }
+  const encoded = Buffer.from(value, 'utf8');
+  const side = Math.max(1, Math.floor((maxBytes - markerBytes) / 2));
+  return Buffer.concat([
+    encoded.subarray(0, side), Buffer.from(marker), encoded.subarray(encoded.length - side),
+  ]).toString('utf8');
+}
+
+function outputKind(toolName: string): string {
+  const name = toolName.toLowerCase();
+  if (['bash', 'execute_command', 'terminal'].includes(name)) return 'shell';
+  if (['read', 'read_file', 'view'].includes(name)) return 'read';
+  if (['write', 'write_file', 'edit', 'edit_file', 'apply_patch', 'delete_file'].includes(name)) {
+    return 'mutation';
+  }
+  if (name === 'task') return 'delegated';
+  return 'tool';
+}
+
+function outputLimit(toolName: string): number {
+  switch (outputKind(toolName)) {
+    case 'mutation': return 8 * 1024;
+    case 'read': return 64 * 1024;
+    case 'shell': return 48 * 1024;
+    case 'delegated': return 24 * 1024;
+    default: return 32 * 1024;
+  }
+}
+
+/** Host tools may truncate individual records while returning a small overall
+ * payload. Those observations are still partial even when the provider does
+ * not need to truncate the serialized response itself. */
+function hasHostTruncationMarker(output: string): boolean {
+  return /\bmore matches available\b/i.test(output)
+    || /\bline truncated to \d+ chars\b/i.test(output)
+    || /\boutput truncated\b/i.test(output)
+    || /\bfull output (?:is )?available at\b/i.test(output);
+}
+
+/**
+ * Extract stable literal fragments from a structured search pattern without
+ * evaluating model-supplied regular expressions in the provider.  Running an
+ * arbitrary expression over a large host result here would create a second
+ * ReDoS surface.  The fragments are only used to make an already-returned
+ * partial observation legible; they do not decide whether a match is valid.
+ */
+function patternAnchors(pattern: string): string[] {
+  const withoutClasses = pattern
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\\[dDsSwWbBtrnvf]/g, ' ')
+    .replace(/\\[^A-Za-z0-9_-]/g, ' ');
+  const candidates = withoutClasses.match(/[A-Za-z0-9_-]{3,}/g) ?? [];
+  return [...new Set(candidates)]
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 3);
+}
+
+function compactExcerpt(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Render candidate-centered evidence for a large structured search result.
+ *
+ * OpenCode's search tools can report a single JSON record hundreds of KiB
+ * long.  A generic head/tail truncation preserves bytes but can bury the
+ * actual match among unrelated fields.  If a tool call supplied a ``pattern``
+ * argument, retain bounded windows around literal anchors from that pattern.
+ * The receipt remains partial: this renderer makes candidates actionable, it
+ * never claims the search was exhaustive or that a candidate is benign.
+ */
+export function renderPatternEvidence(
+  toolArguments: Record<string, unknown> | undefined,
+  output: string,
+): string | undefined {
+  const pattern = toolArguments?.pattern;
+  if (typeof pattern !== 'string' || pattern.length === 0 || pattern.length > 4096) {
+    return undefined;
+  }
+  const anchors = patternAnchors(pattern);
+  if (anchors.length === 0) return undefined;
+
+  const candidateOffsets: number[] = [];
+  const seenOffsets = new Set<number>();
+  const addOffset = (offset: number) => {
+    if (seenOffsets.has(offset)) return;
+    seenOffsets.add(offset);
+    candidateOffsets.push(offset);
+  };
+  for (const anchor of anchors) {
+    let start = 0;
+    let count = 0;
+    // Give every alternative in a structured search a bounded share.  A
+    // common word in one alternative must not hide a rarer candidate from a
+    // later alternative.
+    while (count < 2) {
+      const offset = output.indexOf(anchor, start);
+      if (offset < 0) break;
+      start = offset + Math.max(1, anchor.length);
+      addOffset(offset);
+      count += 1;
+    }
+  }
+
+  // Opaque, long identifiers are high-signal candidates even when the search
+  // pattern also contains broad words such as "token".  This static matcher
+  // is deliberately independent of credential vendors and avoids evaluating
+  // the model-supplied expression a second time.
+  const opaque = /\b[A-Za-z][A-Za-z0-9-]{1,15}_[A-Za-z0-9_-]{16,}\b/g;
+  for (let match = opaque.exec(output); match && candidateOffsets.length < 12; match = opaque.exec(output)) {
+    addOffset(match.index);
+  }
+  if (candidateOffsets.length === 0) return undefined;
+
+  candidateOffsets.sort((left, right) => left - right);
+  const rendered = candidateOffsets.map((offset, index) => {
+    const before = Math.max(0, offset - 100);
+    const after = Math.min(output.length, offset + 220);
+    return `${index + 1}. ${compactExcerpt(output.slice(before, after))}`;
+  }).join('\n');
+  return [
+    '[Pattern-match evidence]',
+    `The host result contains ${candidateOffsets.length} candidate occurrence(s) related to the structured search pattern ${JSON.stringify(pattern)}.`,
+    'This observation is partial. Treat every occurrence below as an unresolved candidate: inspect its smallest source record or region before declaring it benign or completing the task.',
+    rendered,
+  ].join('\n');
+}
+
+function renderObservation(
+  output: string,
+  limit: number,
+  evidence: string | undefined,
+): { result: string; truncated: boolean } {
+  const raw = utf8Bytes(output) > limit ? truncateUtf8(output, limit) : output;
+  if (!evidence) return { result: raw, truncated: raw !== output };
+
+  const separator = '\n\n[Raw host-result excerpt]\n';
+  const evidenceBytes = utf8Bytes(evidence);
+  // The evidence itself is bounded by a fixed candidate count.  Retain at
+  // least a small raw excerpt as a fallback for hosts with unusual output.
+  const rawBudget = Math.max(512, limit - evidenceBytes - utf8Bytes(separator));
+  const rawExcerpt = truncateUtf8(output, rawBudget);
+  return {
+    result: `${evidence}${separator}${rawExcerpt}`,
+    truncated: rawExcerpt !== output,
+  };
+}
+
+function spillToolOutput(cwd: string, toolCallId: string, toolName: string, output: string): string | undefined {
+  try {
+    const root = process.env.NONOKA_TRACE_DIR || path.join('/tmp', `nonoka-trace-${cwdHash(cwd)}`);
+    const directory = path.join(root, 'tool-output');
+    fs.mkdirSync(directory, { recursive: true });
+    const safeName = (toolName || 'tool').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeId = (toolCallId || generateId()).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const artifact = path.join(directory, `${safeName}-${safeId}.txt`);
+    fs.writeFileSync(artifact, output, 'utf8');
+    return artifact;
+  } catch (err) {
+    providerLog(`failed to spill tool output: ${err}`);
+    return undefined;
+  }
+}
+
+export function normalizeExternalToolOutput(
+  cwd: string,
+  toolCallId: string,
+  toolName: string,
+  output: string,
+  toolArguments?: Record<string, unknown>,
+  hostObservationFailure = false,
+  exitCode?: number,
+): NonokaExternalToolReceipt {
+  const originalBytes = utf8Bytes(output);
+  const limit = outputLimit(toolName);
+  const partial = hostObservationFailure
+    || hasHostTruncationMarker(output)
+    || originalBytes >= PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES;
+  const evidence = partial ? renderPatternEvidence(toolArguments, output) : undefined;
+  const rendered = renderObservation(output, limit, evidence);
+  const truncated = rendered.truncated;
+  const completeness = (
+    truncated || partial
+      ? 'partial'
+      : 'complete'
+  );
+  const artifactRef = completeness === 'partial'
+    ? spillToolOutput(cwd, toolCallId, toolName, output)
+    : undefined;
+  const failureNotice = hostObservationFailure
+    ? '[Host tool failure] This result could not be fully observed and cannot establish absence or coverage. Use a bounded fallback that reports match snippets or source coordinates; do not repeat the same failed query.\n\n'
+    : '';
+  return {
+    result: `${failureNotice}${rendered.result}`,
+    exit_code: exitCode ?? (hostObservationFailure ? 1 : undefined),
+    host: 'opencode',
+    artifact_ref: artifactRef,
+    output_kind: outputKind(toolName),
+    original_bytes: originalBytes,
+    truncated,
+    completeness,
+  };
+}
+
+function compactReceipt(value: unknown, maxBytes: number, fallback: string): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    const payload = typeof value === 'string' ? value : fallback;
+    if (utf8Bytes(payload) <= maxBytes) return value;
+    return {
+      result: truncateUtf8(payload, maxBytes),
+      host: 'opencode',
+      original_bytes: utf8Bytes(payload),
+      truncated: true,
+      completeness: 'partial',
+    };
+  }
+  const receipt = { ...(value as Record<string, unknown>) };
+  const payload = typeof receipt.result === 'string' ? receipt.result : fallback;
+  if (utf8Bytes(payload) > maxBytes) {
+    receipt.result = truncateUtf8(payload, maxBytes);
+    receipt.truncated = true;
+    receipt.completeness = 'partial';
+    if (receipt.original_bytes === undefined) receipt.original_bytes = utf8Bytes(payload);
+  }
+  return receipt;
+}
+
+export function compactToolBatch(
+  messages: NonokaChatMessage[],
+  byteBudget: number,
+): NonokaChatMessage[] {
+  if (messages.length === 0) return [];
+  const perPayload = Math.max(1024, Math.floor(byteBudget / (messages.length * 3)));
+  return messages.map((message) => {
+    if (message.role !== NONOKA_MESSAGE_ROLES.tool) return message;
+    const content = truncateUtf8(message.content, perPayload);
+    return {
+      ...message,
+      content,
+      result: compactReceipt(message.result, perPayload, content),
+    };
+  });
+}
+
+export function encodeRequestWithRetry(request: NonokaChatRequest): string {
+  let line = encodeChatRequest(request) + '\n';
+  if (utf8Bytes(line) <= PROVIDER_SOFT_REQUEST_BYTES) return line;
+
+  // One deterministic compaction retry.  The session id and pending result
+  // receipts are retained; this never starts a fresh Nonoka session.
+  const compacted: NonokaChatRequest = {
+    ...request,
+    messages: compactToolBatch(request.messages, PROVIDER_SOFT_REQUEST_BYTES / 2),
+  };
+  line = encodeChatRequest(compacted) + '\n';
+  providerLog(`request compaction retry bytes=${utf8Bytes(line)}`);
+  if (utf8Bytes(line) > PROVIDER_SOFT_REQUEST_BYTES) {
+    throw new Error(JSON.stringify({
+      code: 'request_budget_exhausted',
+      message: 'Nonoka bridge request exceeds the 256 KiB provider budget after compaction.',
+      retryable: false,
+      bytes: utf8Bytes(line),
+      max_bytes: PROVIDER_SOFT_REQUEST_BYTES,
+      hard_frame_bytes: PROVIDER_HARD_REQUEST_BYTES,
+    }));
+  }
+  return line;
+}
 
 function cwdHash(cwd: string): string {
   return createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 16);
@@ -88,7 +371,12 @@ export interface NonokaLanguageModelConfig {
   temperature?: number;
   maxTurns?: number;
   timeoutSeconds?: number;
+  wallTimeoutSeconds?: number;
   toolBudget?: number;
+  maxContextBytes?: number;
+  maxExternalResultBytes?: number;
+  requireWorkspaceMutation?: boolean;
+  requireObservedEffect?: boolean;
   env?: Record<string, string | undefined>;
 }
 
@@ -185,11 +473,10 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     const isTitle = this.isTitleGeneration(options);
     providerLog(`doStream start isTitle=${isTitle}`);
     providerLog(`options.tools count=${options.tools?.length ?? 0} names=${JSON.stringify(options.tools?.map((t: any) => t.name))}`);
+    const request = this.buildChatRequest(options, isTitle);
+    const requestLine = encodeRequestWithRetry(request);
     const child = this.spawnServer();
     providerLog(`spawned child pid=${child.pid}`);
-
-    const request = this.buildChatRequest(options, isTitle);
-    const requestLine = encodeChatRequest(request) + '\n';
     providerLog(`sending request bytes=${Buffer.byteLength(requestLine)}`);
     await writeToStdin(child, requestLine);
 
@@ -322,9 +609,18 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       externalSkills = [];
     }
 
-    providerLog(`buildChatRequest isTitle=${isTitle} isResume=${isResume} tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`);
+    const systemMessages = messages.filter((message) => message.role === NONOKA_MESSAGE_ROLES.system);
+    const hasProgressGuidance = systemMessages.some((message) => (
+      /\[(?:Execution phase|Completion evidence|Verification budget|Workspace progress)\]/.test(message.content)
+    ));
+    providerLog(
+      `buildChatRequest isTitle=${isTitle} isResume=${isResume} `
+      + `systemMessages=${systemMessages.length} hasProgressGuidance=${hasProgressGuidance} `
+      + `tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`,
+    );
     return {
       type: NONOKA_INBOUND_TYPES.chat,
+      purpose: isTitle ? 'title' : 'chat',
       messages,
       tools,
       external_mcp_servers: externalMcpServers,
@@ -336,7 +632,12 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       temperature: this.config.temperature,
       max_turns: this.config.maxTurns,
       timeout_seconds: this.config.timeoutSeconds,
+      wall_timeout_seconds: this.config.wallTimeoutSeconds,
       tool_budget: this.config.toolBudget,
+      max_context_bytes: this.config.maxContextBytes,
+      max_external_result_bytes: this.config.maxExternalResultBytes,
+      require_workspace_mutation: this.config.requireWorkspaceMutation,
+      require_observed_effect: this.config.requireObservedEffect,
       request_id: generateRequestId(),
     };
   }
@@ -347,6 +648,8 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     isResume: boolean,
   ): NonokaChatMessage[] {
     const messages: NonokaChatMessage[] = [];
+    const toolNamesByCallId = new Map<string, string>();
+    const toolArgumentsByCallId = new Map<string, Record<string, unknown>>();
 
     for (const message of prompt) {
       switch (message.role) {
@@ -374,6 +677,11 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         case NONOKA_MESSAGE_ROLES.assistant: {
           const text = extractTextFromContent(message.content);
           const toolCalls = extractToolCallsFromContent(message.content);
+          for (const toolCall of toolCalls ?? []) {
+            toolNamesByCallId.set(toolCall.id, toolCall.name);
+            const argumentsValue = parseToolArguments(toolCall.arguments);
+            if (argumentsValue) toolArgumentsByCallId.set(toolCall.id, argumentsValue);
+          }
           messages.push({
             role: NONOKA_MESSAGE_ROLES.assistant,
             content: text,
@@ -385,15 +693,32 @@ export class NonokaLanguageModel implements LanguageModelV3 {
           for (const part of message.content) {
             if (part.type === 'tool-result') {
               const outputText = extractToolOutputText(part.output);
+              const toolName = (part as any).toolName ?? toolNamesByCallId.get(part.toolCallId) ?? '';
+              const exitCode = extractHostExitCode(part);
+              providerLog(
+                `tool result tool=${toolName} exitCode=${exitCode ?? 'unknown'} `
+                + `partKeys=${Object.keys(part as any).sort().join(',')} `
+                + `providerMetadataKeys=${Object.keys((part as any).providerMetadata ?? {}).sort().join(',')}`,
+              );
+              const receipt = normalizeExternalToolOutput(
+                this.config.cwd,
+                part.toolCallId,
+                toolName,
+                outputText,
+                toolArgumentsByCallId.get(part.toolCallId),
+                isIncompleteHostToolOutput(part.output),
+                exitCode,
+              );
               messages.push({
                 role: NONOKA_MESSAGE_ROLES.tool,
-                content: outputText,
+                content: String(receipt.result ?? ''),
                 tool_call_id: part.toolCallId,
                 result: receiptForWorkspaceResult(
                   this.config.cwd,
                   part.toolCallId,
-                  (part as any).toolName ?? '',
-                  outputText,
+                  toolName,
+                  receipt,
+                  toolArgumentsByCallId.get(part.toolCallId),
                 ),
               });
             } else if (part.type === 'tool-approval-response') {
@@ -434,9 +759,15 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       // (so the host's agent prompt is still forwarded) and the tool results
       // that are needed to continue.
       const systemMessages = messages.filter((m) => m.role === NONOKA_MESSAGE_ROLES.system);
-      const toolMessages = messages.filter((m) => m.role === NONOKA_MESSAGE_ROLES.tool);
+      const toolMessages: NonokaChatMessage[] = [];
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (!message || message.role !== NONOKA_MESSAGE_ROLES.tool) break;
+        toolMessages.unshift(message);
+      }
+      const boundedToolMessages = compactToolBatch(toolMessages, PROVIDER_SOFT_REQUEST_BYTES);
       providerLog(`resume message compaction: kept ${systemMessages.length} system + ${toolMessages.length} tool messages (dropped ${messages.length - systemMessages.length - toolMessages.length})`);
-      return [...systemMessages, ...toolMessages];
+      return [...systemMessages, ...boundedToolMessages];
     }
 
     if (isTitle) {
@@ -498,6 +829,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       cwd: this.config.cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
 
     // Redirect server stderr to a file so it does not leak into OpenCode's TUI.
@@ -515,7 +847,19 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   private killChild(child: ChildProcessWithoutNullStreams): void {
     providerLog(`killing child pid=${child.pid}`);
     try { child.stdin?.destroy(); } catch {}
-    try { child.kill(); } catch {}
+    const pid = child.pid;
+    try {
+      if (pid && process.platform !== 'win32') process.kill(-pid, 'SIGTERM');
+      else child.kill('SIGTERM');
+    } catch {}
+    const timer = setTimeout(() => {
+      if (child.exitCode !== null) return;
+      try {
+        if (pid && process.platform !== 'win32') process.kill(-pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {}
+    }, 5000);
+    timer.unref();
   }
 
   private createOutputStream(
@@ -532,9 +876,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       try {
         child.stdin.destroy();
       } catch {}
-      try {
-        child.kill();
-      } catch {}
+      this.killChild(child);
     };
 
     if (abortSignal) {
@@ -653,6 +995,48 @@ function extractToolCallsFromContent(
     }
   }
   return calls.length > 0 ? calls : undefined;
+}
+
+function parseToolArguments(argumentsValue: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(argumentsValue);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isIncompleteHostToolOutput(output: { type: string }): boolean {
+  return output.type === 'execution-denied'
+    || output.type === 'error-text'
+    || output.type === 'error-json';
+}
+
+function extractHostExitCode(part: any): number | undefined {
+  const candidates = [
+    part?.exitCode,
+    part?.exit_code,
+    part?.metadata?.exit,
+    part?.metadata?.exitCode,
+    part?.providerMetadata?.exit,
+    part?.providerMetadata?.exitCode,
+    part?.providerMetadata?.opencode?.exit,
+    part?.providerMetadata?.opencode?.exitCode,
+    part?.output?.exit,
+    part?.output?.exitCode,
+    part?.output?.exit_code,
+    part?.output?.value?.exit,
+    part?.output?.value?.exitCode,
+    part?.output?.value?.metadata?.exit,
+    part?.output?.value?.metadata?.exitCode,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+    if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number(value);
+  }
+  return undefined;
 }
 
 function extractToolOutputText(output: { type: string; value?: unknown; reason?: string; text?: string }): string {

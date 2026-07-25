@@ -43,12 +43,20 @@ except ImportError:  # Keep normal nonoka-cli installs free of Harbor.
 _RUNTIME_DIR = "/opt/nonoka-runtime"
 _PROVIDER_DIR = "/opt/nonoka-provider"
 _CONFIG_PATH = f"{_RUNTIME_DIR}/nonoka-benchmark.yaml"
-_PYTHON = f"{_RUNTIME_DIR}/venv/bin/python"
+_VENV_PYTHON = f"{_RUNTIME_DIR}/venv/bin/python"
+# Task images routinely carry their own Python configuration.  ``-Es`` is
+# supplied at every bridge entrypoint: it ignores PYTHON* variables and the
+# per-user site directory without adding a shell-script interpreter dependency.
+_PYTHON = _VENV_PYTHON
 _OPENCODE = f"{_RUNTIME_DIR}/opencode"
 _AGENT_LOG_DIR = "/logs/agent"
 _UV_PYTHON_DIR = f"{_RUNTIME_DIR}/python"
+_STAGED_PYTHON_DIR = f"{_RUNTIME_DIR}/python-host"
+_STAGED_PYTHON_ARCHIVE = f"{_RUNTIME_DIR}/python-3.13.tar.gz"
+_STAGED_PYTHON = f"{_STAGED_PYTHON_DIR}/bin/python3.13"
 _VERIFIER_UV_BIN_DIR = "/root/.local/bin"
 _VERIFIER_UV_ENV = f"{_VERIFIER_UV_BIN_DIR}/env"
+_VERIFIER_CURL_SHIM = "/usr/local/bin/curl"
 _BENCHMARK_SYSTEM_PROMPT = """\
 You are an autonomous coding benchmark agent. Implement the requested change in
 the task workspace; the task instruction is authorization to modify files.
@@ -57,6 +65,37 @@ remediation or implementation is explicitly requested. Inspect only the files
 needed to identify the target, make the required edits promptly, then run a
 focused check that demonstrates the acceptance criteria. Avoid broad delegated
 searches and do not read large unrelated trees into the conversation.
+When remediating an existing artifact, preserve all unrelated content and
+structure. Prefer the narrowest valid edit, inspect the resulting diff, and
+verify that the requested transformation did not rewrite adjacent semantics.
+Before opening opaque, damaged, forensic, migration, or recovery inputs with a
+tool that may create sidecars, checkpoint, repair, mount, migrate, or otherwise
+alter state, make a byte-for-byte working copy of the complete related input set
+in an isolated location. Use stateful tools only on that working copy; do not
+open or probe the originals with a tool that can alter them merely because a
+separate output copy already exists. The originals may be examined only with
+operations known to be read-only. If an unexpected input-state change occurs,
+stop and reassess from the preserved copy rather than continuing a destructive
+investigation.
+Treat search output as candidate evidence, not a conclusion. For every
+candidate occurrence reported by a search, inspect its smallest containing
+source record or region before deciding it is benign. A partial, truncated, or
+errored search leaves its candidate set unresolved; do not use a different
+broad query to dismiss it. Partition the source by path, record, or line range
+until the relevant evidence is bounded, then verify the completed edit.
+For a content search that encounters a large record, ask the available shell
+or search tool for bounded match snippets and source coordinates, including
+structured-data files; do not infer that an oversized record contains no
+relevant content.
+If a shell command is unavailable, switch once to an available host tool or a
+standard fallback command; do not retry the missing command.
+Treat expensive end-to-end checks as a bounded verification budget. Do not
+repeat a command that has already shown itself to be slow merely with a longer
+timeout, a different output formatter, or an equivalent wrapper. After one
+focused bounded investigation identifies a credible implementation, make that
+change promptly. Reserve a full-scale check for after the candidate change,
+and use a smaller representative check when the baseline is known to be
+expensive. A pre-change benchmark alone is not completion evidence.
 """
 
 
@@ -76,12 +115,13 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     agent_wheel: str | None = None,
     provider_source: str | None = None,
     uv_binary: str | None = None,
+    python_runtime_archive: str | None = None,
     opencode_binary: str | None = None,
     temperature: float = 0.0,
-    max_turns: int = 24,
-    timeout_seconds: float = 180.0,
-    run_timeout_seconds: float = 900.0,
-    tool_budget: int = 64,
+    max_turns: int | None = None,
+    timeout_seconds: float | None = None,
+    run_timeout_seconds: float = 3600.0,
+    tool_budget: int | None = None,
     **kwargs: Any,
   ) -> None:
     super().__init__(*args, **kwargs)
@@ -89,12 +129,15 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     self._agent_wheel = self._require_wheel(agent_wheel, "agent_wheel")
     self._provider_source = self._require_provider(provider_source)
     self._uv_binary = self._require_file(uv_binary, "uv_binary")
+    self._python_runtime_archive = self._require_file(
+      python_runtime_archive, "python_runtime_archive"
+    )
     self._opencode_binary = self._require_file(opencode_binary, "opencode_binary")
     self._temperature = float(temperature)
-    self._max_turns = int(max_turns)
-    self._timeout_seconds = float(timeout_seconds)
+    self._max_turns = int(max_turns) if max_turns is not None else None
+    self._timeout_seconds = float(timeout_seconds) if timeout_seconds is not None else None
     self._run_timeout_seconds = float(run_timeout_seconds)
-    self._tool_budget = int(tool_budget)
+    self._tool_budget = int(tool_budget) if tool_budget is not None else None
 
   @staticmethod
   def name() -> str:
@@ -149,33 +192,46 @@ class OpenCodeHarborAgent(_HarborOpenCode):
           "npm": f"file:{_PROVIDER_DIR}",
           "name": "Nonoka Terminal-Bench bridge",
           "options": {
-            "serverCommand": [_PYTHON, "-m", "nonoka_cli", "--server"],
+            "serverCommand": [_PYTHON, "-Es", "-m", "nonoka_cli", "--server"],
             "configPath": _CONFIG_PATH,
-            "model": self.model_name or "deepseek-chat",
+            "model": self.model_name or "deepseek/deepseek-v4-pro",
             "temperature": self._temperature,
-            "maxTurns": self._max_turns,
-            "timeoutSeconds": self._timeout_seconds,
-            "toolBudget": self._tool_budget,
+            "wallTimeoutSeconds": self._run_timeout_seconds,
+            "maxContextBytes": 256 * 1024,
+            "maxExternalResultBytes": 64 * 1024,
+            # Terminal-Bench tasks may modify the cwd, system packages,
+            # services, databases, or repositories outside /app. Require a
+            # typed host-observed effect instead of forcing every task to
+            # manufacture a workspace file solely to satisfy the bridge.
+            "requireObservedEffect": True,
           },
           "models": {"default": {"name": f"Nonoka {self.model_name or 'default'}"}},
         }
       },
-      "permission": {"*": "allow"},
+      "permission": {"*": "allow", "task": "deny"},
       # Native task delegation can return an unbounded research report into
       # the parent transcript. The benchmark bridge is already an autonomous
       # agent and should use its direct task tools instead.
       "tools": {"skill": False, "task": False},
     }
+    options = payload["provider"]["nonoka"]["options"]
+    if self._max_turns is not None:
+      options["maxTurns"] = self._max_turns
+    if self._timeout_seconds is not None:
+      options["timeoutSeconds"] = self._timeout_seconds
+    if self._tool_budget is not None:
+      options["toolBudget"] = self._tool_budget
     return json.dumps(payload, sort_keys=True)
 
   def _bridge_config(self) -> str:
     """Return only non-secret runtime configuration for the bridge server."""
     payload = {
-      "model": self.model_name or "deepseek-chat",
+      "model": self.model_name or "deepseek/deepseek-v4-pro",
       "system_prompt": _BENCHMARK_SYSTEM_PROMPT,
       "cli": {"auto_approve": True},
-      "agents": {"executor": {"max_turns": self._max_turns}},
     }
+    if self._max_turns is not None:
+      payload["agents"] = {"executor": {"max_turns": self._max_turns}}
     # JSON is valid YAML. It avoids a runtime PyYAML dependency merely to
     # serialize a three-field benchmark configuration.
     return json.dumps(payload, sort_keys=True)
@@ -186,8 +242,10 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     Some official Terminal-Bench verifiers bootstrap ``uv`` at scoring time.
     The download is unrelated to the task under test and makes a completed
     solution depend on transient verifier-network availability.  Stage the
-    same pinned host ``uv`` used for the bridge at the conventional location
-    those scripts source.  This deliberately provides no task-specific test
+    same host ``uv`` used for the bridge at the conventional location those
+    scripts source, and make its official installer a no-op when it is invoked
+    through ``curl | sh``.  All other curl requests retain the image's normal
+    implementation.  This deliberately provides no task-specific test
     packages, data, or solution artifacts.
     """
     if not _HAS_HARBOR:  # pragma: no cover - protects accidental direct use.
@@ -201,6 +259,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     await environment.upload_file(self._cli_wheel, cli_wheel_target)
     await environment.upload_file(self._agent_wheel, agent_wheel_target)
     await environment.upload_file(self._uv_binary, f"{_RUNTIME_DIR}/uv")
+    await environment.upload_file(self._python_runtime_archive, _STAGED_PYTHON_ARCHIVE)
     await environment.upload_file(self._opencode_binary, _OPENCODE)
     await environment.upload_dir(self._provider_source, _PROVIDER_DIR)
 
@@ -210,25 +269,56 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         "set -euo pipefail; "
         f"chmod +x {_RUNTIME_DIR}/uv {_OPENCODE}; "
         f"{_OPENCODE} --version; "
-        "if command -v python3.13 >/dev/null 2>&1; then "
-        "BENCHMARK_PYTHON=$(command -v python3.13); "
+        f"mkdir -p {_STAGED_PYTHON_DIR}; "
+        f"tar -xzf {_STAGED_PYTHON_ARCHIVE} -C {_STAGED_PYTHON_DIR} "
+        "--strip-components=1; "
+        f"if {_STAGED_PYTHON} -c 'import sys; assert sys.version_info[:2] == (3, 13)'; then "
+        f"BENCHMARK_PYTHON={_STAGED_PYTHON}; "
+        f"STAGED_VERSION=$({_STAGED_PYTHON} -c 'import platform; print(platform.python_version())'); "
+        f"STAGED_ARCH=$({_STAGED_PYTHON} -c 'import platform; print(platform.machine())'); "
+        "mkdir -p /root/.local/share/uv/python /usr/local/bin; "
+        f"ln -sfn {_STAGED_PYTHON_DIR} "
+        '"/root/.local/share/uv/python/cpython-${STAGED_VERSION}-linux-${STAGED_ARCH}-gnu"; '
+        f"ln -sfn {_STAGED_PYTHON} /usr/local/bin/python3.13; "
+        # Do not use an arbitrary root-only python3.13 found on PATH. Harbor
+        # may expose one below /root during setup; uv then creates a venv whose
+        # interpreter symlink is invisible to the non-root agent phase.
+        "elif test -x /usr/bin/python3.13; then "
+        "BENCHMARK_PYTHON=/usr/bin/python3.13; "
+        "elif test -x /usr/local/bin/python3.13; then "
+        "BENCHMARK_PYTHON=/usr/local/bin/python3.13; "
         "else "
         f"export UV_PYTHON_INSTALL_DIR={_UV_PYTHON_DIR}; "
         f"{_RUNTIME_DIR}/uv python install 3.13; "
         "BENCHMARK_PYTHON=3.13; "
         "fi; "
         f"{_RUNTIME_DIR}/uv venv {_RUNTIME_DIR}/venv --python \"$BENCHMARK_PYTHON\"; "
-        f"{_RUNTIME_DIR}/uv pip install --python {_PYTHON} "
+        # Harbor can move an installed runtime across filesystem scopes between
+        # setup and execution.  uv's default cache links are fast locally but
+        # are not a portable runtime artifact, so materialize package files.
+        f"{_RUNTIME_DIR}/uv pip install --link-mode=copy --python {_VENV_PYTHON} "
         f"{shlex.quote(agent_wheel_target)} {shlex.quote(cli_wheel_target)}; "
         f"chmod -R a+rX {_RUNTIME_DIR}/venv; "
         f"test ! -d {_UV_PYTHON_DIR} || chmod -R a+rX {_UV_PYTHON_DIR}; "
         f"mkdir -p {_VERIFIER_UV_BIN_DIR}; "
         f"ln -sf {_RUNTIME_DIR}/uv {_VERIFIER_UV_BIN_DIR}/uv; "
-        f"ln -sf {_RUNTIME_DIR}/uv {_VERIFIER_UV_BIN_DIR}/uvx; "
+        f"printf '%s\\n' '#!/bin/sh' 'exec {_RUNTIME_DIR}/uv tool run \"$@\"' "
+        f"> {_VERIFIER_UV_BIN_DIR}/uvx; "
+        f"chmod +x {_VERIFIER_UV_BIN_DIR}/uvx; "
         f"printf '%s\\n' 'export PATH={_VERIFIER_UV_BIN_DIR}:$PATH' > {_VERIFIER_UV_ENV}; "
+        # A number of official verifier scripts unconditionally run Astral's
+        # installer even after uv is available on PATH.  Keep the verifier
+        # offline-capable by accepting that specific bootstrap request; the
+        # script it would install is already represented by uv/uvx/env above.
+        # The match intentionally permits any Astral uv installer version.
+        f"printf '%s\\n' '#!/bin/sh' 'case \"$*\" in' "
+        "'*https://astral.sh/uv/*/install.sh*) exit 0 ;;' 'esac' "
+        "'exec /usr/bin/curl \"$@\"' "
+        f"> {_VERIFIER_CURL_SHIM}; "
+        f"chmod +x {_VERIFIER_CURL_SHIM}; "
         f"{_VERIFIER_UV_BIN_DIR}/uv --version; "
         f"printf '%s\\n' {config} > {_CONFIG_PATH}; "
-        f"{_PYTHON} -c 'import nonoka, nonoka_cli'"
+        f"{_PYTHON} -Es -c 'import nonoka, nonoka_cli'"
       ),
       user="root",
       env={"DEBIAN_FRONTEND": "noninteractive"},
@@ -243,6 +333,9 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         f"printf '%s\\n' {profile} > ~/.config/opencode/opencode.json"
       )
     )
+    # The bridge itself runs as this default task user.  Verify the exact
+    # launcher under that identity before a costly model call begins.
+    await environment.exec(command=f"{_PYTHON} -Es -c 'import nonoka, nonoka_cli'")
 
   async def run(
     self,
@@ -254,23 +347,48 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     if not _HAS_HARBOR:  # pragma: no cover - direct tests exercise helpers only.
       raise RuntimeError("Harbor is required to run the OpenCode benchmark adapter")
 
+    watchdog_command = " ".join([
+      shlex.quote(_PYTHON),
+      "-Es",
+      "-m", "nonoka_cli.benchmark.watchdog",
+      "--timeout", shlex.quote(str(self._run_timeout_seconds)),
+      "--grace", "5",
+      "--log", shlex.quote(f"{_AGENT_LOG_DIR}/opencode.txt"),
+      "--evidence-log", shlex.quote(f"{_AGENT_LOG_DIR}/run-evidence.ndjson"),
+      "--artifact-dir", shlex.quote("/logs/artifacts/agent"),
+      "--allow-scorable-budget-exit",
+      "--",
+      shlex.quote(_OPENCODE),
+      "--model=nonoka/default", "run", "--format=json", "--thinking",
+      "--dangerously-skip-permissions", "--", shlex.quote(instruction),
+    ])
+    # Keep launcher failures observable too. The watchdog captures OpenCode's
+    # own NDJSON, but an incompatible task image can fail before the watchdog
+    # starts (for example, an unusable staged Python interpreter). Harbor's
+    # environment result does not otherwise persist that shell diagnostic.
     command = (
-      f"{_OPENCODE} --model=nonoka/default run --format=json --thinking "
-      "--dangerously-skip-permissions -- "
-      f"{shlex.quote(instruction)} 2>&1 </dev/null | "
-      f"stdbuf -oL tee {_AGENT_LOG_DIR}/opencode.txt"
+      f"mkdir -p {_AGENT_LOG_DIR} /logs/artifacts/agent; "
+      f"{watchdog_command} > {_AGENT_LOG_DIR}/watchdog-launcher.log 2>&1; "
+      "WATCHDOG_STATUS=$?; "
+      f"cp {_AGENT_LOG_DIR}/watchdog-launcher.log /logs/artifacts/agent/; "
+      "exit $WATCHDOG_STATUS"
     )
     result = await environment.exec(
       command=command,
-      timeout_sec=self._run_timeout_seconds,
+      timeout_sec=self._run_timeout_seconds + 15,
       env={
         "OPENCODE_FAKE_VCS": "git",
         "NONOKA_PROVIDER_LOG_PATH": f"{_AGENT_LOG_DIR}/provider.log",
         "NONOKA_LOG_FILE": f"{_AGENT_LOG_DIR}/bridge-server.log",
         "NONOKA_TRACE_DIR": f"{_AGENT_LOG_DIR}/bridge-events",
         "NONOKA_TIMELINE_PATH": f"{_AGENT_LOG_DIR}/bridge-timeline.ndjson",
+        "NONOKA_RUN_EVIDENCE_PATH": f"{_AGENT_LOG_DIR}/run-evidence.ndjson",
       },
     )
+    if result.return_code == 124:
+      raise TimeoutError(
+        f"OpenCode process group exceeded {self._run_timeout_seconds} seconds"
+      )
     if result.return_code != 0:
       raise RuntimeError(f"OpenCode exited with status {result.return_code}")
 

@@ -55,6 +55,7 @@ class PrefixedCapability:
     self.description = getattr(wrapped, "description", "")
     self.parameters = getattr(wrapped, "parameters", {})
     self.external = getattr(wrapped, "external", False)
+    self.execution = getattr(wrapped, "execution", None)
     self.metadata = dict(getattr(wrapped, "metadata", {}) or {})
 
   async def invoke(self, ctx: Any, arguments: dict[str, Any]) -> Any:

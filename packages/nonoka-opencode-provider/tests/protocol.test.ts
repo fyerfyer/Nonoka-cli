@@ -45,11 +45,16 @@ describe("encodeChatRequest", () => {
       type: "chat",
       messages: [{
         role: "tool", content: "done", tool_call_id: "call-1",
-        result: { result: "done", workspace: { root: "/tmp", before_digest: "a", after_digest: "b" } },
+        result: {
+          result: "done",
+          completeness: "complete",
+          workspace: { root: "/tmp", before_digest: "a", after_digest: "b" },
+        },
       }],
       cwd: "/tmp",
     };
     expect(JSON.parse(encodeChatRequest(req)).messages[0].result.workspace.after_digest).toBe("b");
+    expect(JSON.parse(encodeChatRequest(req)).messages[0].result.completeness).toBe("complete");
   });
 });
 

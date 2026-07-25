@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from nonoka.core.runner import StreamEvent
 
 from nonoka_cli.bridge.events import translate_stream_event
@@ -32,6 +35,27 @@ def test_translate_error():
   assert messages[0].message == "something failed"
   assert isinstance(messages[1], FinishEvent)
   assert messages[1].finish_reason == "error"
+
+
+def test_translate_error_persists_typed_termination_evidence(
+  tmp_path: Path, monkeypatch,
+):
+  evidence = tmp_path / "run-evidence.ndjson"
+  monkeypatch.setenv("NONOKA_RUN_EVIDENCE_PATH", str(evidence))
+  termination = {
+    "reason": "turn_budget_exhausted",
+    "message": "budget reached",
+    "dimension": "max_model_turns",
+  }
+
+  translate_stream_event(StreamEvent(
+    type="error",
+    data={"error": "budget reached", "termination": termination},
+  ))
+
+  records = [json.loads(line) for line in evidence.read_text().splitlines()]
+  assert {record["reason"] for record in records} == {"turn_budget_exhausted"}
+  assert all(record["kind"] == "termination" for record in records)
 
 
 def test_translate_final_success():
@@ -112,6 +136,33 @@ def test_translate_tool_call_start_forwards_metadata():
     "server": "fs",
     "original_name": "list",
   }
+
+
+def test_translate_tool_events_omits_host_hidden_local_capability():
+  start = StreamEvent(
+    type="tool_call_start",
+    data={
+      "tool_calls": [
+        {
+          "id": "local_1",
+          "host_visible": False,
+          "function": {"name": "nonoka__search_evidence", "arguments": "{}"},
+        }
+      ]
+    },
+  )
+  result = StreamEvent(
+    type="tool_call_result",
+    data={
+      "tool_call_id": "local_1",
+      "name": "nonoka__search_evidence",
+      "result_preview": "bounded evidence",
+      "host_visible": False,
+    },
+  )
+
+  assert translate_stream_event(start) == []
+  assert translate_stream_event(result) == []
 
 
 def test_translate_tool_call_result():

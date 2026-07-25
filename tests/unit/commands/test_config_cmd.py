@@ -88,7 +88,7 @@ def test_config_init_saves_api_key_to_env(tmp_path: Path, monkeypatch):
 
   assert config_path.exists()
   cfg = ConfigLoader.load(config_path)
-  assert cfg.model == "deepseek-chat"
+  assert cfg.model == "deepseek/deepseek-v4-pro"
   assert cfg.api_key == ""
 
   values = config_cmd._load_env_file(env_path)

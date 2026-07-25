@@ -24,6 +24,17 @@ from nonoka import (
 from nonoka.core.types import Capability
 
 try:
+  from nonoka.ext.coding import WorkspaceProgressExtension
+except ImportError:  # Compatibility with framework builds before extensions.
+  WorkspaceProgressExtension = None  # type: ignore[assignment,misc]
+
+try:
+  from nonoka import CompletionContract, RuntimeLimits
+except ImportError:  # Published nonoka 1.3.5 predates persisted runtime policy.
+  CompletionContract = None  # type: ignore[assignment,misc]
+  RuntimeLimits = None  # type: ignore[assignment,misc]
+
+try:
   from nonoka.core.execution import ToolExecution
 except ImportError:  # nonoka<=1.3.5; retain conservative metadata locally.
 
@@ -44,6 +55,7 @@ else:
   _SUPPORTS_EXECUTION_METADATA = True
 
 from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.bridge.nonoka_tools import get_hosted_tools
 from nonoka_cli.core.namespaces import (
   PrefixedCapability,
   mcp_tool_name,
@@ -96,6 +108,9 @@ Guidelines:
   report the blocked dependency.
 - Bound expensive exploration and validation commands with a timeout. Prefer
   small representative checks before an intentionally slow full baseline.
+- Once the requested change has a successful focused check, stop and report the
+  result. Do not create optional verification artifacts or rerun equivalent
+  checks unless the evidence identifies a concrete unmet requirement.
 - Keep responses concise but thorough.
 
 You operate in the user's current working directory.
@@ -127,6 +142,9 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "or report the dependency as blocked.\n"
   "- Bound expensive commands and validate on a small representative case before a "
   "known-slow full baseline.\n"
+  "- After the requested change passes a focused check, stop and report the result. "
+  "Do not create optional verification artifacts or rerun equivalent checks without "
+  "a concrete unmet requirement.\n"
   "- Keep responses concise but thorough.\n\n"
   "You operate in the user's current working directory.\n"
 )
@@ -173,7 +191,13 @@ class AgentFactory:
     self._generation_max_turns: int | None = None
     self._generation_temperature: float | None = None
     self._generation_timeout_seconds: float | None = None
+    self._generation_wall_timeout_seconds: float | None = None
     self._generation_tool_budget: int | None = None
+    self._generation_max_context_bytes: int | None = None
+    self._generation_max_external_result_bytes: int | None = None
+    self._require_workspace_mutation = False
+    self._require_observed_effect = False
+    self._generation_options_set = False
 
   @property
   def config(self) -> CLIConfig:
@@ -190,9 +214,9 @@ class AgentFactory:
     """Current skill registry, if any."""
     return self._skill_registry
 
-  def _executor_max_turns(self) -> int:
-    """Return the configured executor max turns, falling back to 20."""
-    if self._generation_max_turns is not None:
+  def _executor_max_turns(self) -> int | None:
+    """Return the per-run override, including an explicit unlimited policy."""
+    if self._generation_options_set:
       return self._generation_max_turns
     configured = getattr(
       self._config.agents.executor, "max_turns", None
@@ -205,7 +229,12 @@ class AgentFactory:
     max_turns: int | None = None,
     temperature: float | None = None,
     timeout_seconds: float | None = None,
+    wall_timeout_seconds: float | None = None,
     tool_budget: int | None = None,
+    max_context_bytes: int | None = None,
+    max_external_result_bytes: int | None = None,
+    require_workspace_mutation: bool = False,
+    require_observed_effect: bool = False,
   ) -> None:
     """Apply per-run generation limits used by the OpenCode bridge.
 
@@ -216,22 +245,64 @@ class AgentFactory:
     self._generation_max_turns = max_turns
     self._generation_temperature = temperature
     self._generation_timeout_seconds = timeout_seconds
+    self._generation_wall_timeout_seconds = wall_timeout_seconds
     self._generation_tool_budget = tool_budget
+    self._generation_max_context_bytes = max_context_bytes
+    self._generation_max_external_result_bytes = max_external_result_bytes
+    self._require_workspace_mutation = require_workspace_mutation
+    self._require_observed_effect = require_observed_effect
+    self._generation_options_set = True
 
   def _apply_generation_options(self, builder: AgentBuilder) -> AgentBuilder:
     """Attach optional bridge generation settings with old-framework fallback."""
-    if self._generation_tool_budget is not None and hasattr(builder, "max_steps"):
+    if self._generation_options_set and hasattr(builder, "max_steps"):
       builder = builder.max_steps(self._generation_tool_budget)
     if self._generation_timeout_seconds is not None and hasattr(builder, "timeout"):
       builder = builder.timeout(self._generation_timeout_seconds)
     return builder
 
   def _finalize_agent(self, agent: Agent) -> Agent:
-    """Set temperature after builder construction across supported frameworks."""
-    if self._generation_temperature is None:
-      return agent
+    """Attach bridge generation and persisted runtime policy to the Agent."""
+    updates: dict[str, Any] = {}
+    if self._generation_temperature is not None:
+      updates["temperature"] = self._generation_temperature
+    if RuntimeLimits is not None:
+      updates["runtime_limits"] = RuntimeLimits(
+        max_model_turns=self._generation_max_turns,
+        max_tool_calls=self._generation_tool_budget,
+        wall_timeout_seconds=self._generation_wall_timeout_seconds,
+        model_timeout_seconds=self._generation_timeout_seconds,
+        max_context_bytes=self._generation_max_context_bytes,
+        max_context_tokens=(
+          self._config.context.max_tokens if self._config.context.enabled else None
+        ),
+        max_external_result_bytes=self._generation_max_external_result_bytes,
+      )
+    if (
+      (self._require_workspace_mutation or self._require_observed_effect)
+      and CompletionContract is not None
+    ):
+      updates["completion_contract"] = CompletionContract(
+        require_workspace_mutation=self._require_workspace_mutation,
+        require_observed_effect=self._require_observed_effect,
+        require_complete_observations=True,
+        max_corrections=1,
+        # The Harbor verifier is authoritative for a concrete workspace. Give
+        # the model one evidence-focused correction, then preserve the state
+        # for scoring instead of converting an imperfect self-review into an
+        # unscorable host error.
+        enforcement="advisory",
+      )
+      if WorkspaceProgressExtension is not None:
+        extensions = list(getattr(agent, "extensions", []))
+        if not any(
+          getattr(extension, "name", None) == "workspace_progress"
+          for extension in extensions
+        ):
+          extensions.append(WorkspaceProgressExtension(max_exploration_turns=3))
+        updates["extensions"] = extensions
     try:
-      return replace(agent, temperature=self._generation_temperature)
+      return replace(agent, **updates)
     except (AttributeError, TypeError):
       # Released framework versions predate generation metadata. They remain
       # usable, but cannot safely mutate a frozen Agent instance.
@@ -323,6 +394,27 @@ class AgentFactory:
 
     self._agent = self._finalize_agent(self._apply_generation_options(builder).build())
     return self._agent
+
+  def build_title_agent(self) -> Agent:
+    """Build a one-turn, tool-free agent for OpenCode conversation titles."""
+    if not self._config.model:
+      raise AgentBuildError("No model configured. Set 'model' in config.yaml.")
+    agent = (
+      AgentBuilder()
+      .model(self._config.model)
+      .system_prompt(
+        "Generate one concise plain-text conversation title. "
+        "Do not call tools and do not explain the title."
+      )
+      .max_turns(1)
+      .build()
+    )
+    if self._generation_temperature is not None:
+      try:
+        agent = replace(agent, temperature=self._generation_temperature)
+      except (AttributeError, TypeError):
+        pass
+    return agent
 
   def _build_system_prompt(
     self,
@@ -456,17 +548,23 @@ class AgentFactory:
       ])
       external_skill_tool_names = [cap.name for cap in external_skill_registry.get_tools()]
 
-    # 4. Internal skills (configured in nonoka.yaml).
+    # 4. Nonoka-managed bridge tools run locally and are deliberately
+    # namespaced.  They complement rather than replace the host's coding
+    # tools, so a host's implementation detail cannot shadow them.
+    hosted_tools = get_hosted_tools()
+    hosted_tool_names = [cap.name for cap in hosted_tools]
+
+    # 5. Internal skills (configured in nonoka.yaml).
     skill_registry = self._skill_registry_for_build(cwd)
 
-    # 5. Internal MCP tools are prefixed with the server name to avoid collisions.
+    # 6. Internal MCP tools are prefixed with the server name to avoid collisions.
     mcp_tools: list[tuple[str, Capability]] = []
     mcp_tool_names: list[str] = []
     if self._mcp_manager is not None:
       mcp_tools = self._mcp_manager.get_tools()
       mcp_tool_names = [mcp_tool_name(server, cap.name) for server, cap in mcp_tools]
 
-    # 6. Internal skill tools are prefixed with the skill name.
+    # 7. Internal skill tools are prefixed with the skill name.
     skill_tool_names: list[str] = []
     if skill_registry is not None:
       for info in skill_registry.enabled:
@@ -481,6 +579,7 @@ class AgentFactory:
       model=self._config.model,
       cwd=cwd,
       host_tools=host_tool_names,
+      nonoka_tools=hosted_tool_names,
       external_mcp_tools=external_mcp_tool_names,
       external_skill_tools=external_skill_tool_names,
       internal_mcp_tools=mcp_tool_names,
@@ -497,6 +596,7 @@ class AgentFactory:
       "building_agent_with_external_tools",
       model=self._config.model,
       host_tool_count=len(host_tool_names),
+      nonoka_tool_count=len(hosted_tool_names),
       external_mcp_tool_count=len(external_mcp_tool_names),
       external_skill_tool_count=len(external_skill_tool_names),
       internal_mcp_tool_count=len(mcp_tool_names),
@@ -511,6 +611,11 @@ class AgentFactory:
       .system_prompt(system_prompt)
       .max_turns(self._executor_max_turns())
     )
+
+    # Register bridge-local nonoka tools. They execute in this process, while
+    # host_caps below still use the external receipt/resume boundary.
+    for cap in hosted_tools:
+      builder = builder.tool(cap)
 
     # Register lazy-load internal skills with prefixed tool names.
     if skill_registry is not None:
@@ -573,24 +678,11 @@ class AgentFactory:
     ``invoke`` method must never be called: execution is delegated to the host
     via the ``external=True`` marker.
     """
-    lowered = name.lower()
-    read_only = lowered in {"read", "list", "glob", "grep", "search", "webfetch"}
-    mutates_workspace = lowered in {
-      "bash",
-      "write",
-      "edit",
-      "delete",
-      "apply_patch",
-      "write_file",
-      "edit_file",
-      "delete_file",
-      "execute_command",
-    }
-    execution = ToolExecution(
-      read_only=read_only,
-      mutates_workspace=mutates_workspace,
-      stateful_action=not read_only,
-    )
+    # Host tool names are not a reliable side-effect contract. Treat external
+    # execution conservatively and require an observed before/after workspace
+    # attestation for every result. The attestation, rather than the name,
+    # determines whether a mutation actually occurred.
+    execution = ToolExecution(stateful_action=True)
     kwargs: dict[str, Any] = {}
     if _SUPPORTS_EXECUTION_METADATA:
       kwargs["execution"] = execution
@@ -599,11 +691,12 @@ class AgentFactory:
       description=description,
       parameters=parameters,
       metadata=metadata or {"kind": "host_tool", "original_name": name},
+      audit_required=True,
       **kwargs,
     )
     if not _SUPPORTS_EXECUTION_METADATA:
       capability.execution = execution
-      capability.requires_workspace_attestation = execution.mutates_workspace
+      capability.audit_required = True
     return capability
 
   @staticmethod

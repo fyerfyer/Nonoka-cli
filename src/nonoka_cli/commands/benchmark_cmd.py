@@ -207,6 +207,51 @@ def _stage_uv_binary(directory: Path) -> Path:
     return target
 
 
+def _stage_python_runtime_archive(directory: Path) -> Path:
+    """Package the host's uv-managed Python 3.13 for offline task setup.
+
+    Terminal-Bench images are intentionally heterogeneous and many do not ship
+    Python 3.13.  Downloading it independently inside every task container makes
+    bridge startup depend on transient network access and discards the host uv
+    cache.  A uv-managed CPython install is relocatable on compatible Linux
+    images, so stage it alongside the other immutable runtime artifacts.  The
+    adapter still validates it in the container and retains its system/uv
+    fallbacks for incompatible images.
+    """
+    uv = shutil.which("uv")
+    if not uv:
+        raise ValueError("uv is required to locate the Harbor Python runtime")
+    tar = shutil.which("tar")
+    if not tar:
+        raise ValueError("tar is required to package the Harbor Python runtime")
+
+    located = subprocess.run(
+        [uv, "python", "find", "3.13"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    executable = Path(located.stdout.strip()).expanduser().resolve()
+    runtime = executable.parent.parent
+    if located.returncode or not executable.is_file() or not (runtime / "bin").is_dir():
+        raise ValueError(
+            "A uv-managed Python 3.13 runtime is required; run `uv python install 3.13`"
+        )
+
+    staged = directory / "runtime-python"
+    staged.mkdir(parents=True, exist_ok=True)
+    archive = staged / "python-3.13.tar.gz"
+    packed = subprocess.run(
+        [tar, "-czf", str(archive), "-C", str(runtime.parent), runtime.name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if packed.returncode or not archive.is_file():
+        raise ValueError("Failed to package the Harbor Python 3.13 runtime")
+    return archive
+
+
 def _stage_opencode_binary(directory: Path) -> Path:
     """Copy a verified host OpenCode executable for network-free task setup."""
     opencode = shutil.which("opencode")
@@ -233,12 +278,14 @@ def _prepare_harbor_runtime(args: argparse.Namespace, directory: Path) -> dict[s
     )
     provider = _stage_provider_source(args, directory)
     uv_binary = _stage_uv_binary(directory)
+    python_runtime_archive = _stage_python_runtime_archive(directory)
     opencode_binary = _stage_opencode_binary(directory)
     return {
         "cli_wheel": str(cli_wheel),
         "agent_wheel": str(agent_wheel),
         "provider_source": str(provider),
         "uv_binary": str(uv_binary),
+        "python_runtime_archive": str(python_runtime_archive),
         "opencode_binary": str(opencode_binary),
     }
 
@@ -288,14 +335,13 @@ def _benchmark_config(args: argparse.Namespace, directory: Path) -> Path:
             raise ValueError(f"--config does not exist: {path}")
         return path
     path = directory / "nonoka.benchmark.yaml"
-    ConfigLoader.save(
-        CLIConfig(
-            model=args.model,
-            cli={"auto_approve": True},
-            agents={"executor": {"max_turns": args.max_turns}},
-        ),
-        path,
-    )
+    values: dict[str, Any] = {
+        "model": args.model,
+        "cli": {"auto_approve": True},
+    }
+    if args.max_turns is not None:
+        values["agents"] = {"executor": {"max_turns": args.max_turns}}
+    ConfigLoader.save(CLIConfig(**values), path)
     return path
 
 
@@ -326,9 +372,6 @@ def _write_opencode_profile(
                     "configPath": str(config_path),
                     "model": args.model,
                     "temperature": args.temperature,
-                    "maxTurns": args.max_turns,
-                    "timeoutSeconds": args.timeout,
-                    "toolBudget": args.tool_budget,
                 },
                 "models": {"default": {"name": f"Nonoka {args.model}"}},
             }
@@ -336,6 +379,13 @@ def _write_opencode_profile(
         "permission": {"*": "allow"},
         "tools": {"skill": False},
     }
+    options = payload["provider"]["nonoka"]["options"]
+    if args.max_turns is not None:
+        options["maxTurns"] = args.max_turns
+    if args.timeout is not None:
+        options["timeoutSeconds"] = args.timeout
+    if args.tool_budget is not None:
+        options["toolBudget"] = args.tool_budget
     profile.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (directory / "opencode.profile.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -444,22 +494,36 @@ def cmd_terminal_bench(args: argparse.Namespace) -> int:
     if args.mode == "opencode-nonoka":
         for key, value in runtime.items():
             command.extend(["--agent-kwarg", f"{key}={value}"])
-        command.extend(
-            [
-                "--agent-kwarg",
-                f"temperature={args.temperature}",
-                "--agent-kwarg",
-                f"max_turns={args.max_turns}",
-                "--agent-kwarg",
-                f"timeout_seconds={args.timeout}",
-                "--agent-kwarg",
-                f"run_timeout_seconds={args.run_timeout}",
-                "--agent-kwarg",
-                f"tool_budget={args.tool_budget}",
-            ]
-        )
-        api_key_env = _api_key_env_for_model(args.model)
-        command.extend(["--agent-env", f"{api_key_env}=${{{api_key_env}}}"])
+        command.extend([
+            "--agent-kwarg", f"temperature={args.temperature}",
+            "--agent-kwarg", f"run_timeout_seconds={args.run_timeout}",
+        ])
+        if args.timeout is not None:
+            command.extend(["--agent-kwarg", f"timeout_seconds={args.timeout}"])
+        if args.max_turns is not None:
+            command.extend(["--agent-kwarg", f"max_turns={args.max_turns}"])
+        if args.tool_budget is not None:
+            command.extend(["--agent-kwarg", f"tool_budget={args.tool_budget}"])
+        if not getattr(args, "install_only", False):
+            api_key_env = _api_key_env_for_model(args.model)
+            forwarded_env: list[str] = []
+            if os.environ.get(api_key_env):
+                forwarded_env.append(api_key_env)
+            # OpenAI-compatible gateways commonly serve models whose alias still
+            # contains "deepseek". Forward the generic endpoint variables when
+            # configured instead of forcing the container onto DeepSeek's public
+            # endpoint or dropping the user's base URL.
+            for env_name in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
+                if os.environ.get(env_name) and env_name not in forwarded_env:
+                    forwarded_env.append(env_name)
+            if not any(name.endswith("API_KEY") for name in forwarded_env):
+                print(
+                    f"Error: no API credential is configured for model '{args.model}'.",
+                    file=sys.stderr,
+                )
+                return 2
+            for env_name in forwarded_env:
+                command.extend(["--agent-env", f"{env_name}=${{{env_name}}}"])
     if getattr(args, "install_only", False):
         command.append("--install-only")
     for task in (getattr(args, "tasks", None) or TERMINAL_BENCH_TASKS):
@@ -480,17 +544,32 @@ def add_subparser(subparsers: Any) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config")
     common.add_argument("--cwd", default=".")
-    common.add_argument("--model", default="deepseek-chat")
+    common.add_argument("--model", default="deepseek/deepseek-v4-pro")
     common.add_argument("--temperature", type=float, default=0.0)
-    common.add_argument("--max-turns", type=int, default=24)
-    common.add_argument("--timeout", type=float, default=180.0)
+    common.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Optional cumulative model-turn budget (default: unlimited).",
+    )
+    common.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Optional timeout for each model API call (default: unlimited).",
+    )
     common.add_argument(
         "--run-timeout",
         type=float,
-        default=900.0,
+        default=3600.0,
         help="Hard per-task benchmark deadline in seconds (separate from LLM-call timeout).",
     )
-    common.add_argument("--tool-budget", type=int, default=64)
+    common.add_argument(
+        "--tool-budget",
+        type=int,
+        default=None,
+        help="Optional cumulative tool-call budget (default: unlimited).",
+    )
     common.add_argument("--artifact-dir")
     common.add_argument("--provider-source")
     modes = ("opencode-nonoka", "opencode-direct", "nonoka-framework")

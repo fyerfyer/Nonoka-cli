@@ -19,6 +19,7 @@ def test_parse_chat_request():
   line = json.dumps(
     {
       "type": "chat",
+      "purpose": "title",
       "messages": [{"role": "user", "content": "hello"}],
       "session_id": "sess-1",
       "cwd": "/tmp",
@@ -29,6 +30,7 @@ def test_parse_chat_request():
   assert msg.messages[0].content == "hello"
   assert msg.session_id == "sess-1"
   assert msg.cwd == "/tmp"
+  assert msg.purpose == "title"
 
 
 def test_parse_chat_request_with_tools():
