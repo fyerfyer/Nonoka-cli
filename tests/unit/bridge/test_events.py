@@ -27,6 +27,18 @@ def test_translate_empty_content_delta():
   assert translate_stream_event(event) == []
 
 
+def test_tool_call_progress_is_content_free_and_timeline_visible():
+  messages = translate_stream_event(StreamEvent(
+    type="tool_call_progress",
+    data={"tool_call_index": 2, "tool_name": "write_file", "argument_chars": 4096},
+  ))
+
+  assert len(messages) == 1
+  assert messages[0].type == "tool_call_progress"
+  assert messages[0].argument_chars == 4096
+  assert not hasattr(messages[0], "args")
+
+
 def test_translate_error():
   event = StreamEvent(type="error", data={"error": "something failed"})
   messages = translate_stream_event(event)

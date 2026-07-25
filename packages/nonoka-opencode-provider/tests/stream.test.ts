@@ -68,6 +68,19 @@ describe("createNonokaStreamTransformer", () => {
     expect(parts).toHaveLength(0);
   });
 
+  it("consumes tool-call progress without producing a model stream part", async () => {
+    const transformer = createNonokaStreamTransformer();
+    const input = createInputStream([
+      '{"type":"tool_call_progress","tool_call_index":0,"tool_name":"write","argument_chars":2048}',
+      '{"type":"finish","finish_reason":"tool_calls"}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0].type).toBe("finish");
+  });
+
   it("forwards tool_call metadata on allowed tools", async () => {
     const transformer = createNonokaStreamTransformer({
       allowedToolNames: new Set(["skill__foo__bar"]),

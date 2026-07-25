@@ -111,6 +111,7 @@ export const NONOKA_OUTBOUND_TYPES = {
   text_delta: 'text_delta',
   tool_call: 'tool_call',
   tool_result: 'tool_result',
+  tool_call_progress: 'tool_call_progress',
   approval_request: 'approval_request',
   debug: 'debug',
   finish: 'finish',
@@ -144,6 +145,13 @@ export interface NonokaToolResultEvent {
   content: string;
   result?: unknown;
   is_error?: boolean;
+}
+
+export interface NonokaToolCallProgressEvent {
+  type: typeof NONOKA_OUTBOUND_TYPES.tool_call_progress;
+  tool_call_index: number;
+  tool_name?: string;
+  argument_chars: number;
 }
 
 export interface NonokaApprovalRequestEvent {
@@ -191,6 +199,7 @@ export type NonokaOutboundEvent =
   | NonokaTextDeltaEvent
   | NonokaToolCallEvent
   | NonokaToolResultEvent
+  | NonokaToolCallProgressEvent
   | NonokaApprovalRequestEvent
   | NonokaDebugEvent
   | NonokaFinishEvent

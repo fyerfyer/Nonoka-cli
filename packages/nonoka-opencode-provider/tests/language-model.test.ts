@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'fs';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { createNonoka } from '../src/index';
 import {
   NonokaLanguageModel,
@@ -89,6 +91,28 @@ describe('NonokaLanguageModel', () => {
     );
 
     expect(() => model['spawnServer']()).toThrow('serverCommand must not be empty');
+  });
+
+  it('surfaces a child process error through the returned web stream', async () => {
+    class FakeChild extends EventEmitter {
+      stdin = new PassThrough();
+      stdout = new PassThrough();
+      stderr = new PassThrough();
+      pid = undefined;
+      exitCode: number | null = null;
+      kill() { return true; }
+    }
+
+    const model = new NonokaLanguageModel('deepseek-chat', {}, {
+      provider: 'nonoka', serverCommand: ['nonoka-cli', '--server'], cwd: '/tmp/nonoka-child-error',
+    });
+    const child = new FakeChild();
+    const stream = model['createOutputStream'](child as any, false);
+    const reader = stream.getReader();
+
+    child.emit('error', new Error('spawn failed'));
+
+    await expect(reader.read()).rejects.toThrow('spawn failed');
   });
 
   it('detects title generation and merges consecutive user messages', () => {

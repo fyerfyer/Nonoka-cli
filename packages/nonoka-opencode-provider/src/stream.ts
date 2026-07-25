@@ -99,6 +99,20 @@ export function createNonokaStreamTransformer(
           break;
         }
 
+        case NONOKA_OUTBOUND_TYPES.tool_call_progress: {
+          // Progress is deliberately not exposed as an AI SDK stream part:
+          // it contains no model content and must not trigger a new turn.
+          timelineLog(JSON.stringify({
+            ts: new Date().toISOString(),
+            source: 'bridge',
+            type: 'tool_call_progress',
+            toolCallIndex: event.tool_call_index,
+            toolName: event.tool_name,
+            argumentChars: event.argument_chars,
+          }));
+          break;
+        }
+
         case NONOKA_OUTBOUND_TYPES.text_delta: {
           const text = event.text ?? '';
           if (!text) break;

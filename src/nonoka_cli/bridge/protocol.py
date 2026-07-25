@@ -160,6 +160,15 @@ class ToolResultEvent(BaseModel):
   is_error: bool = False
 
 
+class ToolCallProgressEvent(BaseModel):
+  """Content-free progress while a model streams a large tool payload."""
+
+  type: Literal["tool_call_progress"] = "tool_call_progress"
+  tool_call_index: int
+  tool_name: str = ""
+  argument_chars: int
+
+
 class ApprovalRequestEvent(BaseModel):
   """A tool operation requires human approval."""
 
@@ -199,6 +208,7 @@ OutboundMessage = (
   | TextDeltaEvent
   | ToolCallEvent
   | ToolResultEvent
+  | ToolCallProgressEvent
   | ApprovalRequestEvent
   | FinishEvent
   | DebugEvent

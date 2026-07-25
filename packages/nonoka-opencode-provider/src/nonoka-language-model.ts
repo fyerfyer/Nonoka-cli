@@ -869,6 +869,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     allowedToolNames?: Set<string>,
   ): ReadableStream<LanguageModelV3StreamPart> {
     let cleanupDone = false;
+    let lifecycleController: TransformStreamDefaultController<LanguageModelV3StreamPart> | undefined;
 
     const cleanup = () => {
       if (cleanupDone) return;
@@ -909,9 +910,18 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       .pipeThrough(createLineSplitter())
       .pipeThrough(transformer);
 
-    child.on('error', (err) => {
+    // A spawn error occurs outside the stdout pipeline.  Bridge it into the
+    // returned Web Stream instead of throwing from an EventEmitter callback.
+    const lifecycle = new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
+      start(controller) {
+        lifecycleController = controller;
+      },
+    });
+
+    child.once('error', (err) => {
+      providerLog(`child process error: ${err}`);
+      lifecycleController?.error(err);
       cleanup();
-      throw err;
     });
 
     child.on('exit', (code) => {
@@ -921,7 +931,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       cleanup();
     });
 
-    return composed;
+    return composed.pipeThrough(lifecycle);
   }
 }
 

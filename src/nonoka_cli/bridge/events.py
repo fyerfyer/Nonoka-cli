@@ -17,6 +17,7 @@ from nonoka_cli.bridge.protocol import (
   OutboundMessage,
   TextDeltaEvent,
   ToolCallEvent,
+  ToolCallProgressEvent,
   ToolResultEvent,
 )
 from nonoka_cli.core.run_evidence import TerminationEvidence, append_run_evidence
@@ -43,6 +44,10 @@ def _timeline_log(event: StreamEvent, messages: list[OutboundMessage]) -> None:
         elif msg.type in {"tool_call", "tool_result"}:
           record["toolName"] = getattr(msg, "tool_name", "")
           record["toolCallId"] = getattr(msg, "tool_call_id", "")
+        elif msg.type == "tool_call_progress":
+          record["tool_call_index"] = msg.tool_call_index
+          record["tool_name"] = msg.tool_name
+          record["argument_chars"] = msg.argument_chars
         elif msg.type == "approval_request":
           record["toolName"] = getattr(msg, "tool_name", "")
           record["toolCallId"] = getattr(msg, "tool_call_id", "")
@@ -129,6 +134,16 @@ def translate_stream_event(event: StreamEvent) -> list[OutboundMessage]:
           is_error=bool(event.data.get("is_error", False)),
         )
       ]
+      _timeline_log(event, messages)
+      return messages
+
+    case "tool_call_progress":
+      message = ToolCallProgressEvent(
+        tool_call_index=int(event.data.get("tool_call_index", 0)),
+        tool_name=str(event.data.get("tool_name", "")),
+        argument_chars=int(event.data.get("argument_chars", 0)),
+      )
+      messages = [message]
       _timeline_log(event, messages)
       return messages
 
