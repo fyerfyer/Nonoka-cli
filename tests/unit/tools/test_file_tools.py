@@ -9,8 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from nonoka.core.errors import SafetyError
+from nonoka.safety import SafetyPolicy
 
-from nonoka_cli.tools.builtins.file_tools import execute_command
+from nonoka_cli.tools.builtins.file_tools import execute_command, read_file, write_file
 
 
 @pytest.mark.asyncio
@@ -42,3 +44,17 @@ async def test_execute_command_timeout_terminates_descendant_processes(tmp_path:
   assert result == "Error: command timed out after 0.1s"
   await asyncio.sleep(0.7)
   assert not survivor.exists()
+
+
+@pytest.mark.asyncio
+async def test_file_tools_enforce_filesystem_policy(tmp_path: Path) -> None:
+  protected = tmp_path / ".env"
+  protected.write_text("TOKEN=secret")
+  ctx = SimpleNamespace(
+    deps=SimpleNamespace(working_dir=tmp_path, safety_policy=SafetyPolicy([tmp_path]))
+  )
+
+  with pytest.raises(SafetyError):
+    await read_file._func(ctx, path=".env")
+  with pytest.raises(SafetyError):
+    await write_file._func(ctx, path=".env", content="changed")

@@ -1,0 +1,52 @@
+services:
+  nonoka-server:
+    build:
+      context: ../nonoka-agent
+    environment:
+      NONOKA_API_TOKEN: ${NONOKA_API_TOKEN:?set NONOKA_API_TOKEN in .env}
+      NONOKA_EVENT_DATABASE_URL: postgresql://nonoka:${POSTGRES_PASSWORD:-nonoka}@postgres:5432/nonoka
+    ports:
+      - "${NONOKA_PORT:-8000}:8000"
+    volumes:
+      - nonoka-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nonoka
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nonoka}
+      POSTGRES_DB: nonoka
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nonoka -d nonoka"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  opencode:
+    image: node:22-alpine
+    profiles: ["opencode"]
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    user: "1000:1000"
+    volumes:
+      - .:/workspace
+    command: ["npx", "opencode"]
+volumes:
+  nonoka-data:
+  postgres-data:

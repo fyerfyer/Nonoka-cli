@@ -26,3 +26,4 @@ class CLIContext:
   git_service: Any = field(default=None, repr=False)
   repo_map_service: Any = field(default=None, repr=False)
   plugin_manifests: list[Any] = field(default_factory=list, repr=False)
+  safety_policy: Any = field(default=None, repr=False)

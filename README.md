@@ -117,6 +117,48 @@ key with a real (small) call, use:
 nonoka-cli doctor --check-llm
 ```
 
+Verify the Docker-backed command sandbox separately:
+
+```bash
+nonoka-cli doctor --check-sandbox
+```
+
+## Execution Observability
+
+Every local runner session writes credential-redacted structured events to
+`~/.local/share/nonoka/events.db`. Events include LLM prompts/responses,
+tool I/O, errors, and LiteLLM token/cost usage. Inspect them without opening
+the database directly:
+
+```bash
+nonoka-cli sessions list
+nonoka-cli sessions show <session-id>
+nonoka-cli logs --session-id <session-id>
+nonoka-cli logs --json
+```
+
+The framework exposes a provider-neutral `TelemetryExporter` protocol and
+`ObservabilityPipeline`; downstream applications can add Langfuse, OTLP, or
+other exporters without coupling `Runner` to a vendor SDK. Export failures are
+best-effort and never interrupt an agent run.
+
+## Service Deployment
+
+`nonoka-agent` includes an authenticated FastAPI application with `/run`,
+`/chat`, `/tasks`, `/health`, and `/metrics`. Set a bearer token before
+starting it:
+
+```bash
+export NONOKA_API_TOKEN="replace-with-a-long-random-token"
+uv run uvicorn nonoka.server.app:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+For a containerized deployment, copy `.env.example` to `.env`, set
+`NONOKA_API_TOKEN`, then run `docker compose up --build`. Compose defaults to
+PostgreSQL for persisted events; local development stays on SQLite. The service
+is non-root, read-only, drops Linux capabilities, and does not mount the host
+Docker socket.
+
 ## Agent evaluation
 
 `nonoka-cli eval` is a thin frontend for the framework-owned benchmark engine. Its

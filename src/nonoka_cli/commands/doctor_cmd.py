@@ -193,6 +193,23 @@ def check_docker() -> CheckResult:
   )
 
 
+def check_sandbox() -> CheckResult:
+  """Run a harmless command with the production sandbox configuration."""
+  result = check_docker()
+  if result.status != "ok":
+    return CheckResult("error", "Docker sandbox unavailable", result.remedy)
+  try:
+    from nonoka_cli.safety import DockerSandbox
+    code, output = asyncio.run(DockerSandbox().run("printf sandbox-ok", Path.cwd(), 15))
+  except Exception as exc:
+    return CheckResult("error", f"Docker sandbox smoke test failed: {exc}")
+  if code == 0 and output == "sandbox-ok":
+    return CheckResult("ok", "Docker sandbox executed an isolated smoke test")
+  return CheckResult(
+    "error", f"Docker sandbox smoke test failed (exit {code})", output.strip()[:300]
+  )
+
+
 def check_config(config_path: str | None) -> tuple[CheckResult, CLIConfig | None]:
   """Check whether a nonoka config file exists and is valid."""
   try:
@@ -350,6 +367,8 @@ def run_doctor(args: argparse.Namespace) -> int:
   if getattr(args, "check_benchmarks", False) is True:
     results.append(check_harbor())
     results.append(check_docker())
+  if getattr(args, "check_sandbox", False) is True:
+    results.append(check_sandbox())
 
   for result in results:
     icon = _STATUS_ICONS.get(result.status, "?")
@@ -385,5 +404,10 @@ def add_subparser(subparsers: Any) -> None:
     "--check-llm",
     action="store_true",
     help="Perform a real (small) LLM call to verify the API key (costs tokens)",
+  )
+  parser.add_argument(
+    "--check-sandbox",
+    action="store_true",
+    help="Check Docker-backed sandbox prerequisites.",
   )
   parser.set_defaults(func=run_doctor)

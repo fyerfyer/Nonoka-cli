@@ -17,6 +17,7 @@ from nonoka_cli.commands.doctor_cmd import (
   check_opencode_config,
   check_provider,
   check_python_version,
+  check_sandbox,
   run_doctor,
 )
 from nonoka_cli.config.loader import ConfigLoader
@@ -147,6 +148,15 @@ class TestBenchmarkPrerequisites:
         return_value=mock.MagicMock(returncode=0, stdout="29.0.2\n"),
       ):
         assert check_docker().status == "ok"
+
+  def test_sandbox_runs_smoke_command(self):
+    async def run(*args, **kwargs):
+      return 0, "sandbox-ok"
+    with mock.patch(
+      "nonoka_cli.commands.doctor_cmd.check_docker",
+      return_value=mock.MagicMock(status="ok"),
+    ), mock.patch("nonoka_cli.safety.DockerSandbox.run", side_effect=run):
+      assert check_sandbox().status == "ok"
 
   def test_valid_global_config(self, tmp_path: Path, monkeypatch):
     config_dir = tmp_path / ".config" / "opencode"

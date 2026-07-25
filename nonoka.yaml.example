@@ -48,3 +48,11 @@ hitl:
     - delete_file
     - execute_command
 
+# Sandbox and filesystem policy. Docker is fail-closed: when unavailable,
+# execute_command returns an error rather than running directly on the host.
+safety:
+  enabled: true
+  sandbox: docker
+  # Additional directories an agent may access. The working directory is
+  # always allowed; .env, .ssh and .git remain denied.
+  allowed_roots: []

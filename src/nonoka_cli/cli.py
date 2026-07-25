@@ -26,7 +26,17 @@ import structlog
 from dotenv import load_dotenv
 
 from nonoka_cli.bridge.server import main as server_main
-from nonoka_cli.commands import benchmark_cmd, config_cmd, doctor_cmd, eval_cmd, opencode_cmd, plugin_cmd, run_cmd
+from nonoka_cli.commands import (
+  benchmark_cmd,
+  config_cmd,
+  doctor_cmd,
+  eval_cmd,
+  logs_cmd,
+  opencode_cmd,
+  plugin_cmd,
+  run_cmd,
+  sessions_cmd,
+)
 from nonoka_cli.utils.logging import setup_logging
 
 logger = structlog.get_logger("nonoka_cli.cli")
@@ -91,6 +101,8 @@ def _build_parser() -> argparse.ArgumentParser:
   run_cmd.add_subparser(subparsers)
   eval_cmd.add_subparser(subparsers)
   benchmark_cmd.add_subparser(subparsers)
+  logs_cmd.add_subparser(subparsers)
+  sessions_cmd.add_subparser(subparsers)
 
   return parser
 

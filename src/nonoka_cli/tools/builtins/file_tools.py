@@ -77,6 +77,12 @@ def _resolve_path(ctx: RunContext, path: str) -> Path:
   return target.resolve()
 
 
+def _check_path(ctx: RunContext, target: Path) -> Path:
+  """Enforce the configured filesystem policy before touching *target*."""
+  policy = getattr(ctx.deps, "safety_policy", None)
+  return policy.check_path(target) if policy is not None else target
+
+
 def _truncate(text: str, limit: int = 10000) -> str:
   """Truncate *text* to *limit* characters with a clear marker."""
   if len(text) <= limit:
@@ -99,6 +105,7 @@ async def read_file(
     limit: Maximum number of lines to return.
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: file not found: {target}"
@@ -143,6 +150,7 @@ async def view(
     limit: Maximum number of lines to return.
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: file not found: {target}"
@@ -187,6 +195,7 @@ async def view_dir(
     depth: Maximum depth to display (default 3, max 5).
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: directory not found: {target}"
@@ -253,6 +262,7 @@ async def write_file(
     append: If true, append instead of overwriting.
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   try:
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +294,7 @@ async def edit_file(
     new_string: Replacement text.
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: file not found: {target}"
@@ -333,6 +344,7 @@ async def search_and_replace(
     replace_all: Whether to replace all occurrences (default) or just the first.
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: file not found: {target}"
@@ -369,6 +381,7 @@ async def delete_file(
     path: File or empty directory path (absolute or relative to working dir).
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: path not found: {target}"
@@ -396,6 +409,7 @@ async def list_dir(
     path: Directory path (absolute or relative to working directory).
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: directory not found: {target}"
@@ -433,6 +447,7 @@ async def grep_files(
     glob: Glob pattern for files to search (e.g. "*.py").
   """
   target = _resolve_path(ctx, path)
+  _check_path(ctx, target)
 
   if not target.exists():
     return f"Error: directory not found: {target}"
@@ -483,6 +498,22 @@ async def execute_command(
     timeout: Maximum execution time in seconds.
   """
   working_dir = _resolve_path(ctx, cwd) if cwd else ctx.deps.working_dir
+  policy = getattr(ctx.deps, "safety_policy", None)
+  if policy is not None:
+    _check_path(ctx, working_dir)
+    decision = policy.check_command(command)
+    if decision == "approval":
+      return "Error: command requires explicit approval by safety policy"
+
+  sandbox_mode = getattr(getattr(ctx.deps, "config", None), "safety", None)
+  if getattr(sandbox_mode, "sandbox", None) == "docker":
+    from nonoka_cli.safety import DockerSandbox
+    try:
+      code, output = await DockerSandbox().run(command, working_dir, timeout)
+      status = "success" if code == 0 else "error"
+      return f"--- exit code {code} ({status}, docker-sandbox) ---\n{_truncate(output, 10000)}"
+    except OSError as exc:
+      return f"Error executing sandbox: {exc}"
 
   try:
     process_options: dict[str, Any] = {

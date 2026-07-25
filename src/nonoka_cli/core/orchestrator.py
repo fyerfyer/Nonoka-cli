@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ from nonoka.core.runner import StreamEvent
 from nonoka.core.types import Capability
 from nonoka.ext.hitl import HumanInTheLoopHooks
 from nonoka.ext.hitl.core import HumanApprover, ToolRule
+from nonoka.observability import ObservabilityPipeline, SQLiteEventStore
+from nonoka.safety import SafetyPolicy
 from nonoka.skills.registry import SkillRegistry
 
 from nonoka_cli.config.manager import ConfigManager
@@ -192,6 +195,12 @@ class Orchestrator:
     runner = Runner(
       checkpoint=SQLiteCheckpointStore(db_path=str(db_path)),
       hooks=self._build_hooks(),
+      observability=ObservabilityPipeline(
+        SQLiteEventStore(os.getenv(
+          "NONOKA_EVENT_DB",
+          str(Path.home() / ".local" / "share" / "nonoka" / "events.db"),
+        ))
+      ),
     )
     self._runner_service = RunnerService(runner)
 
@@ -395,6 +404,9 @@ class Orchestrator:
         config=self._config,
       ),
       plugin_manifests=self._plugin_manifests,
+      safety_policy=SafetyPolicy(
+        allowed_roots=[working_dir, *self._config.safety.allowed_roots],
+      ) if self._config.safety.enabled else None,
     )
 
   async def execute(

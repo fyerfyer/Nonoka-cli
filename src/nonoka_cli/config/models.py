@@ -23,6 +23,13 @@ class HITLConfigModel(BaseModel):
   dangerous_tools: list[str] = Field(default_factory=list)
 
 
+class SafetyConfig(BaseModel):
+  """Runtime command and filesystem restrictions."""
+  enabled: bool = True
+  allowed_roots: list[Path] = Field(default_factory=list)
+  sandbox: str = "docker"
+
+
 class MCPServerConfigModel(BaseModel):
   """Single MCP server configuration."""
   transport: str
@@ -150,6 +157,7 @@ class CLIConfig(BaseModel):
   skills: list[str] = Field(default_factory=list)
   cli: CLIBehaviorConfig = Field(default_factory=CLIBehaviorConfig)
   hitl: HITLConfigModel = Field(default_factory=HITLConfigModel)
+  safety: SafetyConfig = Field(default_factory=SafetyConfig)
   context: ContextConfig = Field(default_factory=ContextConfig)
   tool_output: ToolOutputConfig = Field(default_factory=ToolOutputConfig)
   task_state: TaskStateConfig = Field(default_factory=TaskStateConfig)
