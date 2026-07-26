@@ -193,20 +193,38 @@ def check_docker() -> CheckResult:
   )
 
 
-def check_sandbox() -> CheckResult:
+def check_sandbox(config: CLIConfig | None = None) -> CheckResult:
   """Run a harmless command with the production sandbox configuration."""
-  result = check_docker()
-  if result.status != "ok":
-    return CheckResult("error", "Docker sandbox unavailable", result.remedy)
-  try:
+  selected = config.safety.sandbox if config is not None else "docker"
+  if selected == "disabled":
+    return CheckResult("warn", "sandbox is disabled by configuration")
+
+  if selected == "docker":
+    result = check_docker()
+    if result.status != "ok":
+      return CheckResult("error", "Docker sandbox unavailable", result.remedy)
     from nonoka_cli.safety import DockerSandbox
-    code, output = asyncio.run(DockerSandbox().run("printf sandbox-ok", Path.cwd(), 15))
+    backend_name = "Docker"
+    backend = DockerSandbox()
+  else:
+    from nonoka_cli.safety import SrtSandbox
+    if not SrtSandbox.executable():
+      return CheckResult(
+        "error", "SRT sandbox unavailable",
+        "Install @anthropic-ai/sandbox-runtime and ensure `srt` is on PATH.",
+      )
+    backend_name = "SRT"
+    domains = config.safety.allowed_domains if config is not None else []
+    backend = SrtSandbox(domains)
+
+  try:
+    code, output = asyncio.run(backend.run("printf sandbox-ok", Path.cwd(), 15))
   except Exception as exc:
-    return CheckResult("error", f"Docker sandbox smoke test failed: {exc}")
+    return CheckResult("error", f"{backend_name} sandbox smoke test failed: {exc}")
   if code == 0 and output == "sandbox-ok":
-    return CheckResult("ok", "Docker sandbox executed an isolated smoke test")
+    return CheckResult("ok", f"{backend_name} sandbox executed an isolated smoke test")
   return CheckResult(
-    "error", f"Docker sandbox smoke test failed (exit {code})", output.strip()[:300]
+    "error", f"{backend_name} sandbox smoke test failed (exit {code})", output.strip()[:300]
   )
 
 
@@ -368,7 +386,7 @@ def run_doctor(args: argparse.Namespace) -> int:
     results.append(check_harbor())
     results.append(check_docker())
   if getattr(args, "check_sandbox", False) is True:
-    results.append(check_sandbox())
+    results.append(check_sandbox(config))
 
   for result in results:
     icon = _STATUS_ICONS.get(result.status, "?")

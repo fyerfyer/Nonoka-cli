@@ -158,6 +158,18 @@ class TestBenchmarkPrerequisites:
     ), mock.patch("nonoka_cli.safety.DockerSandbox.run", side_effect=run):
       assert check_sandbox().status == "ok"
 
+  def test_srt_sandbox_runs_when_configured(self, monkeypatch):
+    async def run(*args, **kwargs):
+      return 0, "sandbox-ok"
+    config = CLIConfig(model="deepseek-chat")
+    config.safety.sandbox = "srt"
+    with mock.patch("nonoka_cli.safety.SrtSandbox.executable", return_value="/bin/srt"), mock.patch(
+      "nonoka_cli.safety.SrtSandbox.run", side_effect=run,
+    ):
+      result = check_sandbox(config)
+    assert result.status == "ok"
+    assert result.message.startswith("SRT sandbox")
+
   def test_valid_global_config(self, tmp_path: Path, monkeypatch):
     config_dir = tmp_path / ".config" / "opencode"
     config_dir.mkdir(parents=True)

@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'fs';
 import path from 'path';
+import { appendFileSync } from 'fs';
 import { appendRunEvidence } from './evidence.js';
 
 const EXCLUDED = new Set(['.git', '.nonoka', 'node_modules', '.venv', 'venv', '__pycache__']);
@@ -26,6 +27,21 @@ const MAX_EXTERNAL_TARGETS = 8;
 const MAX_DIRECTORY_ENTRIES = 64;
 const MAX_HASH_BYTES = 64 * 1024;
 const EXCLUDED_EXTERNAL_ROOTS = ['/dev', '/proc', '/sys'];
+const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH;
+
+function workspaceLog(message: string): void {
+  if (!PROVIDER_LOG_PATH) return;
+  try {
+    appendFileSync(PROVIDER_LOG_PATH, `${new Date().toISOString()} workspace ${message}\n`);
+  } catch {
+    // Diagnostic logging must not affect tool execution or receipt creation.
+  }
+}
+
+function errorDescription(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  return String(error);
+}
 
 type ExternalTargetSnapshot = {
   path: string;
@@ -170,18 +186,44 @@ function walk(
   modes: Map<string, number>,
   protectedFiles: Set<string>,
 ): void {
-  for (const entry of readdirSync(current, { withFileTypes: true })) {
+  let directoryEntries;
+  try {
+    directoryEntries = readdirSync(current, { withFileTypes: true });
+  } catch {
+    if (current !== root) {
+      entries.push(`${path.relative(root, current)}\0unreadable-directory`);
+    }
+    return;
+  }
+  for (const entry of directoryEntries) {
     if (EXCLUDED.has(entry.name)) continue;
     const absolute = path.join(current, entry.name);
     const relative = path.relative(root, absolute);
     if (entry.isDirectory()) {
       walk(root, absolute, entries, modes, protectedFiles);
     } else if (entry.isFile()) {
-      const data = readFileSync(absolute);
-      const mode = statSync(absolute).mode;
+      let stat;
+      try {
+        stat = statSync(absolute);
+      } catch {
+        protectedFiles.add(relative);
+        entries.push(`${relative}\0unreadable-file`);
+        continue;
+      }
+      const mode = stat.mode;
       modes.set(relative, mode);
-      if ((mode & 0o222) === 0) protectedFiles.add(relative);
-      entries.push(`${relative}\0${createHash('sha256').update(data).digest('hex')}`);
+      try {
+        const data = readFileSync(absolute);
+        if ((mode & 0o222) === 0) protectedFiles.add(relative);
+        entries.push(`${relative}\0${createHash('sha256').update(data).digest('hex')}`);
+      } catch {
+        // Some sandbox runtimes project host-owned support files into the
+        // workspace without granting the provider read access. Keep a stable
+        // metadata fingerprint so this file cannot disable attestation for
+        // every other workspace mutation.
+        protectedFiles.add(relative);
+        entries.push(`${relative}\0unreadable:${mode}:${stat.size}:${stat.mtimeMs}`);
+      }
     }
   }
 }
@@ -235,8 +277,13 @@ function restored(value: Record<string, unknown>): Snapshot | undefined {
 function preserveProtectedFiles(value: Snapshot, directory: string): void {
   for (const relative of value.protected) {
     const target = path.join(directory, relative);
-    mkdirSync(path.dirname(target), { recursive: true });
-    copyFileSync(path.join(value.root, relative), target, constants.COPYFILE_FICLONE);
+    try {
+      mkdirSync(path.dirname(target), { recursive: true });
+      copyFileSync(path.join(value.root, relative), target, constants.COPYFILE_FICLONE);
+    } catch {
+      // The unreadable path remains attested through its metadata fingerprint.
+      // There is intentionally no writable fallback copy of host-owned data.
+    }
   }
 }
 
@@ -269,15 +316,18 @@ export function recordWorkspaceBefore(
   toolArguments?: Record<string, unknown>,
 ): void {
   if (!toolCallId) return;
+  const state = statePath(cwd, toolCallId);
+  const backup = backupPath(cwd, toolCallId);
   try {
     const targets = externalTargetsForAction(cwd, toolName, toolArguments);
     const before = snapshot(cwd, targets);
-    const backup = backupPath(cwd, toolCallId);
     rmSync(backup, { recursive: true, force: true });
     preserveProtectedFiles(before, backup);
-    writeFileSync(statePath(cwd, toolCallId), JSON.stringify(persisted(before)), 'utf-8');
-  } catch {
+    writeFileSync(state, JSON.stringify(persisted(before)), 'utf-8');
+    workspaceLog(`before tool=${toolName} call=${toolCallId} cwd=${path.resolve(cwd)} state=${state} stateExists=${existsSync(state)} files=${before.files.size}`);
+  } catch (error) {
     // Workspace auditing must not prevent a host tool from rendering.
+    workspaceLog(`before_failed tool=${toolName} call=${toolCallId} cwd=${path.resolve(cwd)} state=${state} error=${errorDescription(error)}`);
   }
 }
 
@@ -288,16 +338,18 @@ export function receiptForWorkspaceResult(
   result: unknown,
   toolArguments?: Record<string, unknown>,
 ): unknown {
+  const state = statePath(cwd, toolCallId);
+  const backup = backupPath(cwd, toolCallId);
   try {
-    const state = statePath(cwd, toolCallId);
+    workspaceLog(`result_start tool=${toolName} call=${toolCallId} cwd=${path.resolve(cwd)} state=${state} stateExists=${existsSync(state)} backupExists=${existsSync(backup)}`);
     const beforeRaw: unknown = existsSync(state) ? JSON.parse(readFileSync(state, 'utf-8')) : undefined;
     const before = beforeRaw && typeof beforeRaw === 'object'
       ? restored(beforeRaw as Record<string, unknown>)
       : undefined;
-    const backup = backupPath(cwd, toolCallId);
     if (!before) {
       if (existsSync(state)) rmSync(state, { force: true });
       rmSync(backup, { recursive: true, force: true });
+      workspaceLog(`result_missing_before tool=${toolName} call=${toolCallId} state=${state}`);
       return result;
     }
     const externalTargets = before.externalTargets.map((target) => target.path);
@@ -356,6 +408,7 @@ export function receiptForWorkspaceResult(
             : 'A successful stateful host action was observed outside the task workspace.',
       });
     }
+    workspaceLog(`result_success tool=${toolName} call=${toolCallId} changed=${workspaceChanged} created=${created.length} modified=${modified.length} deleted=${deleted.length}`);
     return {
       ...receipt,
       host: 'opencode',
@@ -385,7 +438,8 @@ export function receiptForWorkspaceResult(
           : undefined,
       },
     };
-  } catch {
+  } catch (error) {
+    workspaceLog(`result_failed tool=${toolName} call=${toolCallId} cwd=${path.resolve(cwd)} state=${state} error=${errorDescription(error)}`);
     return result;
   }
 }

@@ -277,6 +277,9 @@ class AgentFactory:
           self._config.context.max_tokens if self._config.context.enabled else None
         ),
         max_external_result_bytes=self._generation_max_external_result_bytes,
+        max_total_tokens=self._config.budget.max_total_tokens,
+        max_cost_usd=self._config.budget.max_cost_usd,
+        fail_on_unknown_cost=self._config.budget.fail_on_unknown_cost,
       )
     if (
       (self._require_workspace_mutation or self._require_observed_effect)
@@ -678,11 +681,17 @@ class AgentFactory:
     ``invoke`` method must never be called: execution is delegated to the host
     via the ``external=True`` marker.
     """
-    # Host tool names are not a reliable side-effect contract. Treat external
-    # execution conservatively and require an observed before/after workspace
-    # attestation for every result. The attestation, rather than the name,
-    # determines whether a mutation actually occurred.
-    execution = ToolExecution(stateful_action=True)
+    # Keep the conservative contract for unknown host tools, but OpenCode's
+    # built-in observation tools have stable semantics and cannot produce a
+    # workspace receipt. Marking `read` as mutating made every real OpenCode
+    # session fail before its first edit.
+    normalized_name = name.lower()
+    read_only = normalized_name in {"read", "glob", "grep", "list", "ls", "find"}
+    ui_state_only = normalized_name in {"todowrite", "todo"}
+    execution = ToolExecution(
+      read_only=read_only,
+      stateful_action=not read_only,
+    )
     kwargs: dict[str, Any] = {}
     if _SUPPORTS_EXECUTION_METADATA:
       kwargs["execution"] = execution
@@ -691,12 +700,12 @@ class AgentFactory:
       description=description,
       parameters=parameters,
       metadata=metadata or {"kind": "host_tool", "original_name": name},
-      audit_required=True,
+      audit_required=not (read_only or ui_state_only),
       **kwargs,
     )
     if not _SUPPORTS_EXECUTION_METADATA:
       capability.execution = execution
-      capability.audit_required = True
+      capability.audit_required = not (read_only or ui_state_only)
     return capability
 
   @staticmethod

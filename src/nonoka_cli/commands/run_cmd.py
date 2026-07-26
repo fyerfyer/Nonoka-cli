@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from nonoka_cli.commands.opencode_cmd import cmd_init
+from nonoka_cli.config.loader import ConfigLoader
+from nonoka_cli.safety import SrtSandbox
 
 
 def _has_opencode() -> bool:
@@ -67,6 +69,24 @@ def launch_tui(args: argparse.Namespace) -> int:
     else:
         cmd = ["opencode", str(cwd)]
 
+    # OpenCode-native bash/edit/write are descendants of this process, so the
+    # only reliable boundary is wrapping the entire TUI process tree.
+    try:
+        config = ConfigLoader.load(getattr(args, "config", None))
+    except Exception:
+        config = None
+    settings = None
+    if config and config.safety.enabled and config.safety.sandbox in {"auto", "srt"}:
+        srt = SrtSandbox(config.safety.allowed_domains)
+        executable = srt.executable()
+        if not executable:
+            if config.safety.required:
+                print("Error: required SRT sandbox is unavailable. Run `nonoka-cli doctor --check-sandbox`.", file=sys.stderr)
+                return 1
+        else:
+            settings = srt.settings(cwd)
+            cmd = [executable, "--settings", str(settings), *cmd]
+
     try:
         result = subprocess.run(cmd, cwd=cwd)
         return result.returncode
@@ -75,6 +95,9 @@ def launch_tui(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print("Error: opencode disappeared during launch.", file=sys.stderr)
         return 1
+    finally:
+        if settings is not None:
+            settings.unlink(missing_ok=True)
 
 
 def cmd_run(args: argparse.Namespace) -> int:

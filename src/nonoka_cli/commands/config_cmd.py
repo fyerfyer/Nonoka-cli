@@ -14,7 +14,7 @@ import yaml
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.manager import ConfigManager
-from nonoka_cli.config.models import CLIBehaviorConfig, CLIConfig, HITLConfigModel
+from nonoka_cli.config.models import CLIBehaviorConfig, CLIConfig, HITLConfigModel, SafetyConfig
 from nonoka_cli.utils.errors import ConfigError
 
 logger = structlog.get_logger("nonoka_cli.commands.config")
@@ -231,6 +231,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         policy="auto" if auto_approve else "interactive",
         dangerous_tools=[] if auto_approve else _DEFAULT_DANGEROUS_TOOLS,
       ),
+      safety=SafetyConfig(sandbox="auto", required=True),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     ConfigLoader.save(config, path)
@@ -271,6 +272,7 @@ def cmd_init(args: argparse.Namespace) -> int:
       policy="auto" if auto_approve else "interactive",
       dangerous_tools=[] if auto_approve else _DEFAULT_DANGEROUS_TOOLS,
     ),
+    safety=SafetyConfig(sandbox="auto", required=True),
   )
 
   path.parent.mkdir(parents=True, exist_ok=True)

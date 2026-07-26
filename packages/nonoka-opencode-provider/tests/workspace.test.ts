@@ -134,6 +134,26 @@ describe('workspace receipts', () => {
     }
   });
 
+  it('keeps attesting when a sandbox-projected file is unreadable', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
+    const unreadable = path.join(cwd, 'sandbox-support-file');
+    try {
+      fs.writeFileSync(path.join(cwd, 'input.txt'), 'input');
+      fs.writeFileSync(unreadable, 'host-owned');
+      fs.chmodSync(unreadable, 0o000);
+
+      recordWorkspaceBefore(cwd, 'call-unreadable', 'write');
+      fs.writeFileSync(path.join(cwd, 'created.txt'), 'created');
+      const receipt: any = receiptForWorkspaceResult(cwd, 'call-unreadable', 'write', 'ok');
+
+      expect(receipt.workspace.created).toEqual(['created.txt']);
+      expect(receipt.workspace.before_digest).not.toBe(receipt.workspace.after_digest);
+    } finally {
+      fs.chmodSync(unreadable, 0o644);
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('restores files protected by filesystem permissions and reports the violation', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
     try {

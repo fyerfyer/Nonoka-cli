@@ -65,13 +65,19 @@ def test_create_external_tool_capability():
   assert "command" in schema["function"]["parameters"]["properties"]
 
 
-def test_external_tool_effects_are_observed_instead_of_inferred_from_name():
+def test_known_read_only_external_tools_do_not_require_workspace_attestation():
   cap = AgentFactory.create_external_tool_capability(
     name="read", description="Read a file", parameters={"type": "object", "properties": {}},
   )
-  assert cap.execution.read_only is False
-  assert cap.execution.parallel_safe is False
-  assert cap.requires_workspace_attestation is True
+  assert cap.execution.read_only is True
+  assert cap.execution.parallel_safe is True
+  assert cap.requires_workspace_attestation is False
+
+  unknown = AgentFactory.create_external_tool_capability(
+    name="vendor_action", description="Run an unknown host action", parameters={"type": "object", "properties": {}},
+  )
+  assert unknown.execution.read_only is False
+  assert unknown.requires_workspace_attestation is True
 
 
 @pytest.mark.asyncio
@@ -459,6 +465,18 @@ def test_generation_options_attach_persisted_runtime_and_completion_contract():
   assert agent.completion_contract.max_corrections == 1
   assert agent.completion_contract.enforcement == "advisory"
   assert [extension.name for extension in agent.extensions] == ["workspace_progress"]
+
+
+def test_factory_propagates_hard_token_and_cost_budgets():
+  config = CLIConfig.model_validate({
+    "model": "gpt-4o",
+    "budget": {"max_total_tokens": 4000, "max_cost_usd": 0.25, "fail_on_unknown_cost": True},
+  })
+  agent = AgentFactory(config).build()
+
+  assert agent.runtime_limits.max_total_tokens == 4000
+  assert agent.runtime_limits.max_cost_usd == 0.25
+  assert agent.runtime_limits.fail_on_unknown_cost is True
 
 
 def test_generation_options_can_explicitly_disable_cumulative_budgets():

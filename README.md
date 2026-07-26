@@ -294,6 +294,46 @@ nonoka-cli config set hitl.dangerous_tools '["write_file", "execute_command"]'
 
 Print the resolved configuration and its file path.
 
+### Cost controls and response cache
+
+The runner keeps a local SQLite exact-response cache by default. It only stores
+complete responses without tool calls, and its key includes the model, complete
+message history, tool schema, generation settings, and workspace namespace.
+
+Semantic reuse is opt-in because it has a stricter correctness contract. It
+uses an OpenAI-compatible embedding endpoint only for deterministic, tool-free,
+single-turn requests in a Git worktree. The cache scope is recomputed before
+each completion from `HEAD`, tracked/untracked changes, the repo-map index,
+system prompt, and workspace path. A write made earlier in the same OpenCode
+session therefore invalidates semantic candidates immediately. Non-Git
+workspaces, tool calls, and multi-turn conversations fall back to the model.
+
+```yaml
+cache:
+  enabled: true
+  path: ~/.cache/nonoka/llm-cache.sqlite3
+  ttl_seconds: 604800
+  semantic_enabled: true
+  embedding_model: qwen3.7-text-embedding
+  embedding_api_base: https://your-endpoint/compatible-mode/v1
+  embedding_api_key_env: DASHSCOPE_API_KEY
+  embedding_dimensions: 1024
+  semantic_threshold: 0.92
+
+budget:
+  max_total_tokens: 120000
+  max_cost_usd: 5.0
+  fail_on_unknown_cost: true
+```
+
+Keep the embedding credential in the named environment variable or
+`~/.config/nonoka/.env`, never in `config.yaml`. A semantic hit is recorded as
+saved usage rather than actual spend; the event store exposes cache source and
+similarity score without storing raw cache queries. `max_total_tokens` and
+`max_cost_usd` are hard limits persisted with the task session; when price data
+is unavailable, `fail_on_unknown_cost: true` terminates the task rather than
+silently exceeding the cost budget.
+
 ### `nonoka-cli opencode init`
 
 Generate or merge an `opencode.json` in the current directory and create

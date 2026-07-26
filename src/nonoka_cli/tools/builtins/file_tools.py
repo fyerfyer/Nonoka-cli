@@ -506,13 +506,21 @@ async def execute_command(
       return "Error: command requires explicit approval by safety policy"
 
   sandbox_mode = getattr(getattr(ctx.deps, "config", None), "safety", None)
-  if getattr(sandbox_mode, "sandbox", None) == "docker":
-    from nonoka_cli.safety import DockerSandbox
+  selected_sandbox = getattr(sandbox_mode, "sandbox", None)
+  if selected_sandbox in {"docker", "srt", "auto"}:
+    from nonoka_cli.safety import DockerSandbox, SrtSandbox
     try:
-      code, output = await DockerSandbox().run(command, working_dir, timeout)
+      backend = DockerSandbox() if selected_sandbox == "docker" else SrtSandbox(
+        getattr(sandbox_mode, "allowed_domains", []),
+      )
+      code, output = await backend.run(command, working_dir, timeout)
       status = "success" if code == 0 else "error"
-      return f"--- exit code {code} ({status}, docker-sandbox) ---\n{_truncate(output, 10000)}"
-    except OSError as exc:
+      return f"--- exit code {code} ({status}, {selected_sandbox}-sandbox) ---\n{_truncate(output, 10000)}"
+    except (OSError, RuntimeError) as exc:
+      if getattr(sandbox_mode, "required", False):
+        return f"Error executing required sandbox: {exc}"
+      if selected_sandbox == "auto":
+        return f"Warning: sandbox unavailable ({exc}); command was not executed."
       return f"Error executing sandbox: {exc}"
 
   try:

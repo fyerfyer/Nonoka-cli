@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -201,6 +203,7 @@ class Orchestrator:
           str(Path.home() / ".local" / "share" / "nonoka" / "events.db"),
         ))
       ),
+      **self._runner_cache_options(),
     )
     self._runner_service = RunnerService(runner)
 
@@ -221,6 +224,64 @@ class Orchestrator:
       skills=self._config.skills,
     )
     self._initialized = True
+
+  def _runner_cache_options(self) -> dict[str, Any]:
+    """Keep cache construction at the CLI boundary, not in agent defaults."""
+    if not self._config or not self._config.cache.enabled:
+      return {}
+    from nonoka.core.cache import SQLiteResponseCache
+    options: dict[str, Any] = {
+      "response_cache": SQLiteResponseCache(self._config.cache.path),
+      "cache_ttl_seconds": self._config.cache.ttl_seconds,
+    }
+    cache = self._config.cache
+    if cache.semantic_enabled and cache.embedding_model and cache.embedding_api_base:
+      from nonoka_cli.core.semantic_cache import OpenAICompatibleEmbedder, SQLiteSemanticResponseCache
+      workspace = Path.cwd()
+      scope = self._semantic_cache_scope(workspace)
+      if scope is None:
+        logger.warning("semantic_cache_disabled_without_revision_scope")
+        return options
+      options.update({
+        "semantic_cache": SQLiteSemanticResponseCache(cache.path),
+        "semantic_embedder": OpenAICompatibleEmbedder(
+          api_base=cache.embedding_api_base, model=cache.embedding_model,
+          api_key_env=cache.embedding_api_key_env, dimensions=cache.embedding_dimensions,
+        ),
+        "semantic_threshold": cache.semantic_threshold,
+        # The workspace may change during an OpenCode session.  Recompute the
+        # revision fingerprint per completion so semantic reuse never crosses
+        # a write made earlier in the same task.
+        "cache_namespace": lambda: self._semantic_cache_scope(workspace),
+      })
+    return options
+
+  def _semantic_cache_scope(self, workspace: Path) -> str | None:
+    """Return a content-sensitive scope or disable semantic reuse conservatively."""
+    try:
+      def git(*args: str) -> bytes:
+        return subprocess.run(
+          ["git", *args], cwd=workspace, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        ).stdout
+      head = git("rev-parse", "HEAD")
+      diff = git("diff", "--no-ext-diff", "--binary", "HEAD", "--")
+      untracked = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+      digest = hashlib.sha256(head + diff)
+      for raw_path in untracked:
+        if not raw_path:
+          continue
+        path = workspace / raw_path.decode("utf-8", errors="surrogateescape")
+        if path.is_file():
+          digest.update(raw_path)
+          digest.update(hashlib.sha256(path.read_bytes()).digest())
+      index = workspace / self._config.repo_map.index_path
+      if index.is_file():
+        digest.update(hashlib.sha256(index.read_bytes()).digest())
+      digest.update(hashlib.sha256(self._config.system_prompt.encode("utf-8")).digest())
+      digest.update(str(workspace.resolve()).encode("utf-8"))
+      return f"semantic-v2:{digest.hexdigest()}"
+    except (OSError, subprocess.CalledProcessError):
+      return None
 
   def _build_hooks(self) -> HumanInTheLoopHooks | Hooks | None:
     """Build combined hooks: HITL + context trimming + tool-output pruning."""

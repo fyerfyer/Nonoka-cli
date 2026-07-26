@@ -27,7 +27,36 @@ class SafetyConfig(BaseModel):
   """Runtime command and filesystem restrictions."""
   enabled: bool = True
   allowed_roots: list[Path] = Field(default_factory=list)
-  sandbox: str = "docker"
+  # Preserve the legacy no-section behaviour. `config init` writes the new
+  # secure profile explicitly, so upgrades are never silently disruptive.
+  sandbox: str = "docker"  # auto | srt | docker | disabled
+  required: bool = False
+  allow_read: list[Path] = Field(default_factory=list)
+  allow_write: list[Path] = Field(default_factory=list)
+  deny_read: list[Path] = Field(default_factory=list)
+  deny_write: list[Path] = Field(default_factory=lambda: [Path(".env"), Path(".git/hooks")])
+  allowed_domains: list[str] = Field(default_factory=list)
+  command_timeout_seconds: int = Field(default=120, ge=1)
+  max_output_bytes: int = Field(default=1_000_000, ge=1024)
+  docker_image: str = "alpine:3.20"
+
+
+class CacheConfig(BaseModel):
+  enabled: bool = True
+  path: Path = Field(default_factory=lambda: Path.home() / ".cache" / "nonoka" / "llm-cache.sqlite3")
+  ttl_seconds: int = Field(default=604800, ge=1)
+  semantic_enabled: bool = False
+  embedding_model: str | None = None
+  embedding_api_base: str | None = None
+  embedding_api_key_env: str = "DASHSCOPE_API_KEY"
+  embedding_dimensions: int | None = Field(default=None, ge=1)
+  semantic_threshold: float = Field(default=0.92, ge=0.0, le=1.0)
+
+
+class BudgetConfig(BaseModel):
+  max_total_tokens: int | None = Field(default=None, ge=1)
+  max_cost_usd: float | None = Field(default=None, gt=0)
+  fail_on_unknown_cost: bool = True
 
 
 class MCPServerConfigModel(BaseModel):
@@ -158,6 +187,8 @@ class CLIConfig(BaseModel):
   cli: CLIBehaviorConfig = Field(default_factory=CLIBehaviorConfig)
   hitl: HITLConfigModel = Field(default_factory=HITLConfigModel)
   safety: SafetyConfig = Field(default_factory=SafetyConfig)
+  cache: CacheConfig = Field(default_factory=CacheConfig)
+  budget: BudgetConfig = Field(default_factory=BudgetConfig)
   context: ContextConfig = Field(default_factory=ContextConfig)
   tool_output: ToolOutputConfig = Field(default_factory=ToolOutputConfig)
   task_state: TaskStateConfig = Field(default_factory=TaskStateConfig)

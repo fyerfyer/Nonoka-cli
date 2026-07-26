@@ -9,6 +9,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from nonoka_cli.commands import run_cmd
+from nonoka_cli.config.models import CLIConfig, SafetyConfig
+
+
+def _unsandboxed_test_config() -> CLIConfig:
+    return CLIConfig(safety=SafetyConfig(enabled=False, sandbox="disabled"))
 
 
 def test_run_missing_opencode_returns_error(tmp_path: Path, monkeypatch):
@@ -22,6 +27,7 @@ def test_run_missing_opencode_returns_error(tmp_path: Path, monkeypatch):
 
 def test_run_auto_initializes_opencode_config(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    monkeypatch.setattr(run_cmd.ConfigLoader, "load", lambda *_: _unsandboxed_test_config())
 
     args = argparse.Namespace(config=None, cwd=str(tmp_path), message=None)
 
@@ -43,6 +49,7 @@ def test_run_auto_initializes_opencode_config(tmp_path: Path, monkeypatch):
 
 def test_run_skips_init_when_config_exists(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    monkeypatch.setattr(run_cmd.ConfigLoader, "load", lambda *_: _unsandboxed_test_config())
     (tmp_path / "opencode.json").write_text("{}")
 
     args = argparse.Namespace(config=None, cwd=str(tmp_path), message=None)
@@ -65,6 +72,7 @@ def test_run_skips_init_when_config_exists(tmp_path: Path, monkeypatch):
 
 def test_run_one_shot_message_mode(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    monkeypatch.setattr(run_cmd.ConfigLoader, "load", lambda *_: _unsandboxed_test_config())
     (tmp_path / "opencode.json").write_text("{}")
 
     args = argparse.Namespace(config=None, cwd=str(tmp_path), message="hello")
@@ -101,6 +109,7 @@ def test_run_propagates_init_failure(tmp_path: Path, monkeypatch):
 
 def test_run_keyboard_interrupt_returns_130(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    monkeypatch.setattr(run_cmd.ConfigLoader, "load", lambda *_: _unsandboxed_test_config())
     (tmp_path / "opencode.json").write_text("{}")
 
     args = argparse.Namespace(config=None, cwd=str(tmp_path), message=None)
