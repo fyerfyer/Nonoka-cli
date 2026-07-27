@@ -26,6 +26,34 @@ function createInputStream(lines: string[]): ReadableStream<string> {
 }
 
 describe("createNonokaStreamTransformer", () => {
+  it("requires a compatible protocol acknowledgement in production mode", async () => {
+    const transformer = createNonokaStreamTransformer({ requireProtocolAck: true });
+    const input = createInputStream([
+      '{"type":"session_init","session_id":"legacy"}',
+    ]);
+    await expect(collectStream(input.pipeThrough(transformer))).rejects.toThrow(
+      "did not acknowledge",
+    );
+  });
+
+  it("rejects a server that closes before acknowledging the protocol", async () => {
+    const transformer = createNonokaStreamTransformer({ requireProtocolAck: true });
+    const input = createInputStream([]);
+    await expect(collectStream(input.pipeThrough(transformer))).rejects.toThrow(
+      "closed before acknowledging",
+    );
+  });
+
+  it("accepts a compatible protocol acknowledgement", async () => {
+    const transformer = createNonokaStreamTransformer({ requireProtocolAck: true });
+    const input = createInputStream([
+      '{"type":"protocol_ack","version":"1.0","capabilities":["external_tool_receipts","persistent_runtime_limits","termination_reasons","tool_approval_resume"],"cli_version":"0.2.7","framework_version":"1.3.5"}',
+      '{"type":"finish","finish_reason":"stop"}',
+    ]);
+    const parts = await collectStream(input.pipeThrough(transformer));
+    expect(parts[parts.length - 1].type).toBe("finish");
+  });
+
   it("emits text-delta parts", async () => {
     const transformer = createNonokaStreamTransformer();
     const input = createInputStream([

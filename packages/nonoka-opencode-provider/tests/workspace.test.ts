@@ -179,6 +179,48 @@ describe('workspace receipts', () => {
     }
   });
 
+  it('reports mutations to adapter-configured external harness paths', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
+    const harness = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-harness-'));
+    const evidence = path.join(cwd, 'evidence.ndjson');
+    const previousPaths = process.env.NONOKA_PROTECTED_PATHS;
+    const previousEvidence = process.env.NONOKA_RUN_EVIDENCE_PATH;
+    try {
+      const nested = path.join(harness, 'nested');
+      fs.mkdirSync(nested);
+      const target = path.join(nested, 'test_case.py');
+      fs.writeFileSync(target, 'before');
+      process.env.NONOKA_PROTECTED_PATHS = harness;
+      process.env.NONOKA_RUN_EVIDENCE_PATH = evidence;
+
+      recordWorkspaceBefore(cwd, 'call-harness', 'bash', {
+        command: `printf changed > ${target}`,
+      });
+      fs.writeFileSync(target, 'after');
+      const receipt: any = receiptForWorkspaceResult(
+        cwd,
+        'call-harness',
+        'bash',
+        { result: 'changed', exit_code: 0 },
+        { command: `printf changed > ${target}` },
+      );
+
+      expect(receipt.workspace.policy_violations).toEqual([harness]);
+      const events = fs.readFileSync(evidence, 'utf8').trim().split('\n').map(JSON.parse);
+      expect(events.find((event) => event.kind === 'workspace_effect').policy_violations)
+        .toEqual([harness]);
+      expect(events.find((event) => event.kind === 'task_effect').policy_violations)
+        .toEqual([harness]);
+    } finally {
+      if (previousPaths === undefined) delete process.env.NONOKA_PROTECTED_PATHS;
+      else process.env.NONOKA_PROTECTED_PATHS = previousPaths;
+      if (previousEvidence === undefined) delete process.env.NONOKA_RUN_EVIDENCE_PATH;
+      else process.env.NONOKA_RUN_EVIDENCE_PATH = previousEvidence;
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(harness, { recursive: true, force: true });
+    }
+  });
+
   it('preserves output artifact metadata while adding workspace attestation', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
     try {

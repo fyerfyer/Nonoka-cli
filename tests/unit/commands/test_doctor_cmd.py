@@ -111,7 +111,7 @@ class TestCheckProvider:
   def test_npm_global_provider(self):
     npm_output = json.dumps({
       "dependencies": {
-        "nonoka-opencode-provider": {"version": "0.2.0"}
+        "nonoka-opencode-provider": {"version": "0.2.14"}
       }
     })
     with mock.patch(
@@ -120,7 +120,7 @@ class TestCheckProvider:
     ):
       result = check_provider()
     assert result.status == "ok"
-    assert "0.2.0" in result.message
+    assert "0.2.14" in result.message
 
   def test_provider_missing(self):
     with mock.patch("nonoka_cli.commands.doctor_cmd.shutil.which", return_value=None):
@@ -153,8 +153,7 @@ class TestBenchmarkPrerequisites:
     async def run(*args, **kwargs):
       return 0, "sandbox-ok"
     with mock.patch(
-      "nonoka_cli.commands.doctor_cmd.check_docker",
-      return_value=mock.MagicMock(status="ok"),
+      "nonoka_cli.safety.preflight.shutil.which", return_value="/bin/docker",
     ), mock.patch("nonoka_cli.safety.DockerSandbox.run", side_effect=run):
       assert check_sandbox().status == "ok"
 
@@ -209,12 +208,12 @@ class TestRunDoctor:
       with mock.patch(
         "nonoka_cli.commands.doctor_cmd._run",
         return_value=mock.MagicMock(returncode=0, stdout=json.dumps({
-          "dependencies": {"nonoka-opencode-provider": {"version": "0.2.0"}}
+          "dependencies": {"nonoka-opencode-provider": {"version": "0.2.14"}}
         })),
       ):
         with mock.patch(
           "nonoka_cli.commands.doctor_cmd.importlib.metadata.version",
-          return_value="0.2.1",
+          return_value="1.3.6",
         ):
           code = run_doctor(args)
 

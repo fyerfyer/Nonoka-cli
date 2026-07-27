@@ -12,6 +12,21 @@ export const NONOKA_MESSAGE_ROLES = {
 
 export type NonokaMessageRole = keyof typeof NONOKA_MESSAGE_ROLES;
 
+export const NONOKA_BRIDGE_PROTOCOL_VERSION = '1.0';
+export const NONOKA_PROVIDER_VERSION = '0.2.14';
+export const NONOKA_REQUIRED_CAPABILITIES = [
+  'external_tool_receipts',
+  'persistent_runtime_limits',
+  'termination_reasons',
+  'tool_approval_resume',
+] as const;
+
+export interface NonokaProtocolContract {
+  version: string;
+  required_capabilities: string[];
+  provider_version?: string;
+}
+
 export interface NonokaChatToolCall {
   id: string;
   name: string;
@@ -71,6 +86,7 @@ export type NonokaInboundEventType = keyof typeof NONOKA_INBOUND_TYPES;
 
 export interface NonokaChatRequest {
   type: typeof NONOKA_INBOUND_TYPES.chat;
+  protocol?: NonokaProtocolContract;
   purpose?: 'chat' | 'title';
   messages: NonokaChatMessage[];
   tools?: ExternalToolDefinition[];
@@ -107,6 +123,7 @@ export interface NonokaCancelMessage {
 export type NonokaInboundMessage = NonokaChatRequest | NonokaApprovalMessage | NonokaCancelMessage;
 
 export const NONOKA_OUTBOUND_TYPES = {
+  protocol_ack: 'protocol_ack',
   session_init: 'session_init',
   text_delta: 'text_delta',
   tool_call: 'tool_call',
@@ -119,6 +136,14 @@ export const NONOKA_OUTBOUND_TYPES = {
 } as const;
 
 export type NonokaOutboundEventType = keyof typeof NONOKA_OUTBOUND_TYPES;
+
+export interface NonokaProtocolAckEvent {
+  type: typeof NONOKA_OUTBOUND_TYPES.protocol_ack;
+  version: string;
+  capabilities: string[];
+  cli_version: string;
+  framework_version: string;
+}
 
 export interface NonokaSessionInitEvent {
   type: typeof NONOKA_OUTBOUND_TYPES.session_init;
@@ -195,6 +220,7 @@ export interface NonokaErrorEvent {
 }
 
 export type NonokaOutboundEvent =
+  | NonokaProtocolAckEvent
   | NonokaSessionInitEvent
   | NonokaTextDeltaEvent
   | NonokaToolCallEvent

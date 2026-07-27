@@ -1,6 +1,8 @@
 import type { LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import {
   NONOKA_FINISH_REASONS,
+  NONOKA_BRIDGE_PROTOCOL_VERSION,
+  NONOKA_REQUIRED_CAPABILITIES,
   NONOKA_OUTBOUND_TYPES,
   type NonokaOutboundEvent,
 } from './protocol.js';
@@ -52,6 +54,7 @@ export function createNonokaStreamTransformer(
     onFinish?: () => void;
     allowedToolNames?: Set<string>;
     cwd?: string;
+    requireProtocolAck?: boolean;
   } = {},
 ): TransformStream<string, LanguageModelV3StreamPart> {
   let textBlockId: string | null = null;
@@ -63,6 +66,7 @@ export function createNonokaStreamTransformer(
   // by nonoka-cli. We must not forward them as tool-call parts to OpenCode;
   // instead we render their results as inline text.
   const suppressedToolCalls = new Set<string>();
+  let protocolAcknowledged = !options.requireProtocolAck;
 
   function startTextBlock(controller: TransformStreamDefaultController<LanguageModelV3StreamPart>) {
     if (textBlockId === null) {
@@ -93,7 +97,32 @@ export function createNonokaStreamTransformer(
         return;
       }
 
+      if (!protocolAcknowledged && event.type !== NONOKA_OUTBOUND_TYPES.protocol_ack) {
+        if (event.type === NONOKA_OUTBOUND_TYPES.error) {
+          protocolAcknowledged = true;
+        } else {
+          controller.error(new Error('nonoka-cli did not acknowledge the bridge protocol contract'));
+          return;
+        }
+      }
+
       switch (event.type) {
+        case NONOKA_OUTBOUND_TYPES.protocol_ack: {
+          const bridgeMajor = event.version.split('.', 1)[0];
+          const expectedMajor = NONOKA_BRIDGE_PROTOCOL_VERSION.split('.', 1)[0];
+          const missing = NONOKA_REQUIRED_CAPABILITIES.filter(
+            (capability) => !event.capabilities.includes(capability),
+          );
+          if (bridgeMajor !== expectedMajor || missing.length > 0) {
+            controller.error(new Error(
+              `nonoka-cli protocol acknowledgement is incompatible (version=${event.version}, missing=${missing.join(',')})`,
+            ));
+            return;
+          }
+          protocolAcknowledged = true;
+          break;
+        }
+
         case NONOKA_OUTBOUND_TYPES.session_init: {
           options.onSessionInit?.(event.session_id);
           break;
@@ -272,6 +301,9 @@ export function createNonokaStreamTransformer(
         const endPart = { type: 'text-end' as const, id: textBlockId };
         logStreamPart(endPart);
         controller.enqueue(endPart);
+      }
+      if (!protocolAcknowledged) {
+        controller.error(new Error('nonoka-cli closed before acknowledging the bridge protocol contract'));
       }
     },
   });

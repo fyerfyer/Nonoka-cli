@@ -14,11 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nonoka_cli.bridge.protocol import BRIDGE_CAPABILITIES, BRIDGE_PROTOCOL_VERSION
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.utils.errors import ConfigError
 
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+_MIN_FRAMEWORK_VERSION = "1.3.6"
+_MIN_PROVIDER_VERSION = "0.2.14"
 
 
 @dataclass
@@ -75,6 +79,21 @@ def check_nonoka_cli_version() -> CheckResult:
     return CheckResult("ok", f"nonoka-cli {version}")
   except Exception as exc:
     return CheckResult("error", "nonoka-cli version unknown", str(exc))
+
+
+def check_framework_version() -> CheckResult:
+  """Report the resolved nonoka-agent framework distribution."""
+  try:
+    version = importlib.metadata.version("nonoka")
+    if not _version_at_least(version, _MIN_FRAMEWORK_VERSION):
+      return CheckResult(
+        "error",
+        f"nonoka framework {version} is incompatible",
+        f"Install nonoka>={_MIN_FRAMEWORK_VERSION} with this nonoka-cli release.",
+      )
+    return CheckResult("ok", f"nonoka framework {version}")
+  except Exception as exc:
+    return CheckResult("error", "nonoka framework version unknown", str(exc))
 
 
 def check_python_version() -> CheckResult:
@@ -155,11 +174,55 @@ def check_provider() -> CheckResult:
   """Check whether the OpenCode provider is installed."""
   version = _provider_version_from_npm_global() or _provider_version_from_opencode_dir()
   if version:
+    if not _version_at_least(version, _MIN_PROVIDER_VERSION):
+      return CheckResult(
+        "error",
+        f"provider nonoka-opencode-provider@{version} is incompatible",
+        f"Install nonoka-opencode-provider@>={_MIN_PROVIDER_VERSION}.",
+      )
     return CheckResult("ok", f"provider nonoka-opencode-provider@{version}")
   return CheckResult(
     "warn",
     "provider nonoka-opencode-provider not found",
     "Install with: npm install -g nonoka-opencode-provider  (OpenCode may also auto-install it)",
+  )
+
+
+def _version_at_least(value: str, minimum: str) -> bool:
+  """Compare the numeric prefix of release versions without a new dependency."""
+  def numeric_parts(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for raw in version.split("."):
+      digits = "".join(char for char in raw if char.isdigit())
+      if not digits:
+        break
+      parts.append(int(digits))
+    return tuple(parts)
+
+  actual = numeric_parts(value)
+  required = numeric_parts(minimum)
+  return actual >= required if actual else False
+
+
+def check_release_contract() -> CheckResult:
+  """Report the protocol contract shared by provider, CLI, and framework."""
+  capabilities = ", ".join(sorted(BRIDGE_CAPABILITIES))
+  return CheckResult(
+    "ok",
+    f"bridge protocol {BRIDGE_PROTOCOL_VERSION}; capabilities: {capabilities}",
+  )
+
+
+def check_tool_trust_boundary(config: CLIConfig | None) -> CheckResult:
+  """Describe which host owns each class of tool execution."""
+  local = "local MCP/skill tools -> nonoka runtime"
+  hosted = "OpenCode tools -> opencode host + attested receipt"
+  if config is None:
+    return CheckResult("warn", f"tool hosts: {hosted}; {local}; sandbox unknown")
+  requirement = "required" if config.safety.required else "optional"
+  return CheckResult(
+    "ok",
+    f"tool hosts: {hosted}; {local}; sandbox preflight={config.safety.sandbox} ({requirement})",
   )
 
 
@@ -195,37 +258,10 @@ def check_docker() -> CheckResult:
 
 def check_sandbox(config: CLIConfig | None = None) -> CheckResult:
   """Run a harmless command with the production sandbox configuration."""
-  selected = config.safety.sandbox if config is not None else "docker"
-  if selected == "disabled":
-    return CheckResult("warn", "sandbox is disabled by configuration")
-
-  if selected == "docker":
-    result = check_docker()
-    if result.status != "ok":
-      return CheckResult("error", "Docker sandbox unavailable", result.remedy)
-    from nonoka_cli.safety import DockerSandbox
-    backend_name = "Docker"
-    backend = DockerSandbox()
-  else:
-    from nonoka_cli.safety import SrtSandbox
-    if not SrtSandbox.executable():
-      return CheckResult(
-        "error", "SRT sandbox unavailable",
-        "Install @anthropic-ai/sandbox-runtime and ensure `srt` is on PATH.",
-      )
-    backend_name = "SRT"
-    domains = config.safety.allowed_domains if config is not None else []
-    backend = SrtSandbox(domains)
-
-  try:
-    code, output = asyncio.run(backend.run("printf sandbox-ok", Path.cwd(), 15))
-  except Exception as exc:
-    return CheckResult("error", f"{backend_name} sandbox smoke test failed: {exc}")
-  if code == 0 and output == "sandbox-ok":
-    return CheckResult("ok", f"{backend_name} sandbox executed an isolated smoke test")
-  return CheckResult(
-    "error", f"{backend_name} sandbox smoke test failed (exit {code})", output.strip()[:300]
-  )
+  from nonoka_cli.safety import inspect_sandbox
+  safety = config.safety if config is not None else CLIConfig().safety
+  result = asyncio.run(inspect_sandbox(safety, Path.cwd()))
+  return CheckResult(result.status, result.message, result.remedy)
 
 
 def check_config(config_path: str | None) -> tuple[CheckResult, CLIConfig | None]:
@@ -370,12 +406,15 @@ def run_doctor(args: argparse.Namespace) -> int:
   results: list[CheckResult] = []
 
   results.append(check_nonoka_cli_version())
+  results.append(check_framework_version())
   results.append(check_python_version())
   results.append(check_opencode())
   results.append(check_provider())
 
   config_result, config = check_config(args.config)
   results.append(config_result)
+  results.append(check_release_contract())
+  results.append(check_tool_trust_boundary(config))
   results.append(check_api_key(config))
 
   if getattr(args, "check_llm", False) is True:
@@ -385,7 +424,8 @@ def run_doctor(args: argparse.Namespace) -> int:
   if getattr(args, "check_benchmarks", False) is True:
     results.append(check_harbor())
     results.append(check_docker())
-  if getattr(args, "check_sandbox", False) is True:
+  sandbox_required = config is not None and config.safety.required
+  if getattr(args, "check_sandbox", False) is True or sandbox_required:
     results.append(check_sandbox(config))
 
   for result in results:

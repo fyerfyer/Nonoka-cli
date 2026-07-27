@@ -12,6 +12,9 @@ import path from 'path';
 import { Readable } from 'stream';
 import {
   NONOKA_INBOUND_TYPES,
+  NONOKA_BRIDGE_PROTOCOL_VERSION,
+  NONOKA_PROVIDER_VERSION,
+  NONOKA_REQUIRED_CAPABILITIES,
   encodeCancelMessage,
   NONOKA_MESSAGE_ROLES,
   encodeChatRequest,
@@ -620,6 +623,11 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     );
     return {
       type: NONOKA_INBOUND_TYPES.chat,
+      protocol: {
+        version: NONOKA_BRIDGE_PROTOCOL_VERSION,
+        required_capabilities: [...NONOKA_REQUIRED_CAPABILITIES],
+        provider_version: NONOKA_PROVIDER_VERSION,
+      },
       purpose: isTitle ? 'title' : 'chat',
       messages,
       tools,
@@ -899,6 +907,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       },
       allowedToolNames,
       cwd: this.config.cwd,
+      requireProtocolAck: true,
     });
 
     const readable = Readable.toWeb(

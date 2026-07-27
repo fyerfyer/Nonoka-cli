@@ -5,21 +5,25 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterator
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 import structlog
-from nonoka.core.runner import StreamEvent
 from nonoka.core.errors import RuntimeTerminatedError
+from nonoka.core.runner import StreamEvent
 
 from nonoka_cli.bridge.events import translate_stream_event
 from nonoka_cli.bridge.protocol import (
+  BRIDGE_CAPABILITIES,
+  BRIDGE_PROTOCOL_VERSION,
   ChatMessage,
   ChatRequest,
   DebugEvent,
   ErrorEvent,
   FinishEvent,
   OutboundMessage,
+  ProtocolAckEvent,
   SessionInitEvent,
   encode_outbound_message,
 )
@@ -31,6 +35,14 @@ from nonoka_cli.utils.errors import SessionNotFoundError
 from nonoka_cli.utils.trace_logger import TraceLogger
 
 logger = structlog.get_logger("nonoka_cli.bridge.handler")
+
+
+def _package_version(distribution: str) -> str:
+  """Resolve an installed distribution version without breaking the bridge."""
+  try:
+    return metadata.version(distribution)
+  except metadata.PackageNotFoundError:
+    return "unknown"
 
 
 class ChatRequestHandler:
@@ -92,6 +104,8 @@ class ChatRequestHandler:
 
   async def handle(self, msg: ChatRequest) -> None:
     """Handle a chat request end-to-end."""
+    if not await self._negotiate_protocol(msg):
+      return
     try:
       await self._ensure_orchestrator(msg)
     except Exception as exc:
@@ -225,6 +239,42 @@ class ChatRequestHandler:
     )
 
     await self._consume_stream(stream, trace_logger)
+
+  async def _negotiate_protocol(self, msg: ChatRequest) -> bool:
+    """Verify the provider contract before creating or resuming a session."""
+    contract = msg.protocol
+    if contract is None:
+      await self._send(ErrorEvent(
+        message="Provider did not declare a bridge protocol contract.",
+        code="protocol_contract_required",
+        retryable=False,
+        details={"supported_version": BRIDGE_PROTOCOL_VERSION},
+      ))
+      return False
+
+    requested_major = contract.version.split(".", 1)[0]
+    supported_major = BRIDGE_PROTOCOL_VERSION.split(".", 1)[0]
+    missing = sorted(set(contract.required_capabilities) - BRIDGE_CAPABILITIES)
+    if requested_major != supported_major or missing:
+      await self._send(ErrorEvent(
+        message="Bridge protocol is incompatible with the provider request.",
+        code="protocol_incompatible",
+        retryable=False,
+        details={
+          "requested_version": contract.version,
+          "supported_version": BRIDGE_PROTOCOL_VERSION,
+          "missing_capabilities": missing,
+          "supported_capabilities": sorted(BRIDGE_CAPABILITIES),
+        },
+      ))
+      return False
+
+    await self._send(ProtocolAckEvent(
+      capabilities=sorted(BRIDGE_CAPABILITIES),
+      cli_version=_package_version("nonoka-cli"),
+      framework_version=_package_version("nonoka"),
+    ))
+    return True
 
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
     """Initialize the orchestrator on first request."""
@@ -467,6 +517,12 @@ class ChatRequestHandler:
             event_type=event.type,
             data=self._summarize_stream_event(event),
           )
+          trace = event.data.get("trace") if event.data else None
+          completed_run = event.type == "error" or not (
+            event.data.get("requires_external_execution") or event.data.get("requires_approval")
+          )
+          if completed_run and isinstance(trace, dict):
+            trace_logger.log_execution_trace(self._session_id, trace)
         self._sync_task_state(event)
         for outbound in translate_stream_event(event):
           await self._send(outbound)

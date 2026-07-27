@@ -53,6 +53,7 @@ _AGENT_LOG_DIR = "/logs/agent"
 _UV_PYTHON_DIR = f"{_RUNTIME_DIR}/python"
 _STAGED_PYTHON_DIR = f"{_RUNTIME_DIR}/python-host"
 _STAGED_PYTHON_ARCHIVE = f"{_RUNTIME_DIR}/python-3.13.tar.gz"
+_SITE_PACKAGES_ARCHIVE = f"{_RUNTIME_DIR}/site-packages.tar.gz"
 _STAGED_PYTHON = f"{_STAGED_PYTHON_DIR}/bin/python3.13"
 _VERIFIER_UV_BIN_DIR = "/root/.local/bin"
 _VERIFIER_UV_ENV = f"{_VERIFIER_UV_BIN_DIR}/env"
@@ -96,6 +97,14 @@ focused bounded investigation identifies a credible implementation, make that
 change promptly. Reserve a full-scale check for after the candidate change,
 and use a smaller representative check when the baseline is known to be
 expensive. A pre-change benchmark alone is not completion evidence.
+The benchmark harness is outside the task workspace. In particular, never
+create, copy, or modify files under `/tests`; those are verifier assets rather
+than solution files. A test is valid only when its runner reports collected
+and executed results. Directly running a Python source file that declares
+tests is not a passing verification unless that file intentionally provides
+an executable test entrypoint. If the runner is unavailable, collection is
+empty, or output is inconclusive, leave verification unresolved rather than
+claiming success.
 """
 
 
@@ -113,6 +122,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     *args: Any,
     cli_wheel: str | None = None,
     agent_wheel: str | None = None,
+    site_packages_archive: str | None = None,
     provider_source: str | None = None,
     uv_binary: str | None = None,
     python_runtime_archive: str | None = None,
@@ -127,6 +137,9 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     super().__init__(*args, **kwargs)
     self._cli_wheel = self._require_wheel(cli_wheel, "cli_wheel")
     self._agent_wheel = self._require_wheel(agent_wheel, "agent_wheel")
+    self._site_packages_archive = self._require_file(
+      site_packages_archive, "site_packages_archive"
+    )
     self._provider_source = self._require_provider(provider_source)
     self._uv_binary = self._require_file(uv_binary, "uv_binary")
     self._python_runtime_archive = self._require_file(
@@ -180,6 +193,15 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         "provider_source must contain package.json, built dist/, and node_modules/"
       )
     return path
+
+  @staticmethod
+  def _require_success(result: Any, phase: str) -> None:
+    """Turn non-zero Harbor environment commands into actionable setup failures."""
+    if result.return_code == 0:
+      return
+    output = (getattr(result, "stderr", None) or getattr(result, "stdout", None) or "").strip()
+    detail = f": {output[-2000:]}" if output else ""
+    raise RuntimeError(f"{phase} failed with status {result.return_code}{detail}")
 
   def _bridge_profile(self) -> str:
     """Return a project-agnostic OpenCode profile for the task container."""
@@ -258,13 +280,14 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     agent_wheel_target = f"{_RUNTIME_DIR}/{self._agent_wheel.name}"
     await environment.upload_file(self._cli_wheel, cli_wheel_target)
     await environment.upload_file(self._agent_wheel, agent_wheel_target)
+    await environment.upload_file(self._site_packages_archive, _SITE_PACKAGES_ARCHIVE)
     await environment.upload_file(self._uv_binary, f"{_RUNTIME_DIR}/uv")
     await environment.upload_file(self._python_runtime_archive, _STAGED_PYTHON_ARCHIVE)
     await environment.upload_file(self._opencode_binary, _OPENCODE)
     await environment.upload_dir(self._provider_source, _PROVIDER_DIR)
 
     config = shlex.quote(self._bridge_config())
-    await environment.exec(
+    setup_result = await environment.exec(
       command=(
         "set -euo pipefail; "
         f"chmod +x {_RUNTIME_DIR}/uv {_OPENCODE}; "
@@ -274,7 +297,8 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         "--strip-components=1; "
         f"if {_STAGED_PYTHON} -c 'import sys; assert sys.version_info[:2] == (3, 13)'; then "
         f"BENCHMARK_PYTHON={_STAGED_PYTHON}; "
-        f"STAGED_VERSION=$({_STAGED_PYTHON} -c 'import platform; print(platform.python_version())'); "
+        f"STAGED_VERSION=$({_STAGED_PYTHON} "
+        "-c 'import platform; print(platform.python_version())'); "
         f"STAGED_ARCH=$({_STAGED_PYTHON} -c 'import platform; print(platform.machine())'); "
         "mkdir -p /root/.local/share/uv/python /usr/local/bin; "
         f"ln -sfn {_STAGED_PYTHON_DIR} "
@@ -293,11 +317,9 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         "BENCHMARK_PYTHON=3.13; "
         "fi; "
         f"{_RUNTIME_DIR}/uv venv {_RUNTIME_DIR}/venv --python \"$BENCHMARK_PYTHON\"; "
-        # Harbor can move an installed runtime across filesystem scopes between
-        # setup and execution.  uv's default cache links are fast locally but
-        # are not a portable runtime artifact, so materialize package files.
-        f"{_RUNTIME_DIR}/uv pip install --link-mode=copy --python {_VENV_PYTHON} "
-        f"{shlex.quote(agent_wheel_target)} {shlex.quote(cli_wheel_target)}; "
+        # Dependencies are materialized on the host and uploaded as a regular
+        # package tree.  Task containers cannot reliably reach a package index.
+        f"tar -xzf {_SITE_PACKAGES_ARCHIVE} -C {_RUNTIME_DIR}/venv; "
         f"chmod -R a+rX {_RUNTIME_DIR}/venv; "
         f"test ! -d {_UV_PYTHON_DIR} || chmod -R a+rX {_UV_PYTHON_DIR}; "
         f"mkdir -p {_VERIFIER_UV_BIN_DIR}; "
@@ -318,24 +340,29 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         f"chmod +x {_VERIFIER_CURL_SHIM}; "
         f"{_VERIFIER_UV_BIN_DIR}/uv --version; "
         f"printf '%s\\n' {config} > {_CONFIG_PATH}; "
-        f"{_PYTHON} -Es -c 'import nonoka, nonoka_cli'"
+        f"{_PYTHON} -Es -c 'import nonoka, nonoka_cli, nonoka_cli.benchmark.watchdog'"
       ),
       user="root",
       env={"DEBIAN_FRONTEND": "noninteractive"},
     )
+    self._require_success(setup_result, "Harbor bridge runtime setup")
     # Harbor runs the agent as the task's default user, not root.  Write the
     # OpenCode profile in that user's config directory so the spawned CLI sees
     # the pinned local provider.
     profile = shlex.quote(self._bridge_profile())
-    await environment.exec(
+    profile_result = await environment.exec(
       command=(
         "mkdir -p ~/.config/opencode; "
         f"printf '%s\\n' {profile} > ~/.config/opencode/opencode.json"
       )
     )
+    self._require_success(profile_result, "Harbor OpenCode profile setup")
     # The bridge itself runs as this default task user.  Verify the exact
     # launcher under that identity before a costly model call begins.
-    await environment.exec(command=f"{_PYTHON} -Es -c 'import nonoka, nonoka_cli'")
+    import_result = await environment.exec(
+      command=f"{_PYTHON} -Es -c 'import nonoka, nonoka_cli, nonoka_cli.benchmark.watchdog'"
+    )
+    self._require_success(import_result, "Harbor bridge runtime verification")
 
   async def run(
     self,
@@ -383,6 +410,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         "NONOKA_TRACE_DIR": f"{_AGENT_LOG_DIR}/bridge-events",
         "NONOKA_TIMELINE_PATH": f"{_AGENT_LOG_DIR}/bridge-timeline.ndjson",
         "NONOKA_RUN_EVIDENCE_PATH": f"{_AGENT_LOG_DIR}/run-evidence.ndjson",
+        "NONOKA_PROTECTED_PATHS": "/tests",
       },
     )
     if result.return_code == 124:

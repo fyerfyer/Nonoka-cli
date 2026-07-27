@@ -10,6 +10,8 @@ from pathlib import Path
 
 from nonoka.observability import SQLiteEventStore
 
+from nonoka_cli.core.operational_signals import load_traces, summarize_traces
+
 
 def _event_db() -> Path:
   default = Path.home() / ".local" / "share" / "nonoka" / "events.db"
@@ -17,6 +19,16 @@ def _event_db() -> Path:
 
 
 def run_logs(args: argparse.Namespace) -> int:
+  trace_paths = getattr(args, "trace", None) or []
+  if trace_paths:
+    traces = [
+      trace
+      for path in trace_paths
+      for trace in load_traces(Path(path).expanduser())
+    ]
+    print(summarize_traces(traces).model_dump_json(indent=2))
+    return 0
+
   async def query() -> list[dict]:
     store = SQLiteEventStore(_event_db())
     try:
@@ -41,4 +53,9 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
   parser.add_argument("--session-id")
   parser.add_argument("--limit", type=int, default=100)
   parser.add_argument("--json", action="store_true")
+  parser.add_argument(
+    "--trace",
+    action="append",
+    help="Analyze an ExecutionTrace JSON or bridge NDJSON artifact.",
+  )
   parser.set_defaults(func=run_logs)

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -43,6 +43,7 @@ from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.core.tool_service import ToolService
 from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.mcp.models import MCPStatus
+from nonoka_cli.safety import require_sandbox
 from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import ConfigError, MCPRestartExhaustedError, OrchestratorError
@@ -142,6 +143,12 @@ class Orchestrator:
       except Exception as exc:
         raise ConfigError(f"Failed to load configuration: {exc}") from exc
 
+    if self._config.safety.required:
+      try:
+        await require_sandbox(self._config.safety, Path.cwd())
+      except RuntimeError as exc:
+        raise ConfigError(f"Required sandbox preflight failed: {exc}") from exc
+
     if self._config.mcp_servers:
       try:
         await self._mcp_manager.start_all(self._config.mcp_servers)
@@ -236,7 +243,10 @@ class Orchestrator:
     }
     cache = self._config.cache
     if cache.semantic_enabled and cache.embedding_model and cache.embedding_api_base:
-      from nonoka_cli.core.semantic_cache import OpenAICompatibleEmbedder, SQLiteSemanticResponseCache
+      from nonoka_cli.core.semantic_cache import (
+        OpenAICompatibleEmbedder,
+        SQLiteSemanticResponseCache,
+      )
       workspace = Path.cwd()
       scope = self._semantic_cache_scope(workspace)
       if scope is None:
@@ -261,7 +271,11 @@ class Orchestrator:
     try:
       def git(*args: str) -> bytes:
         return subprocess.run(
-          ["git", *args], cwd=workspace, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+          ["git", *args],
+          cwd=workspace,
+          check=True,
+          stdout=subprocess.PIPE,
+          stderr=subprocess.DEVNULL,
         ).stdout
       head = git("rev-parse", "HEAD")
       diff = git("diff", "--no-ext-diff", "--binary", "HEAD", "--")

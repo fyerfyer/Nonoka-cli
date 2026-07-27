@@ -11,6 +11,24 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+BRIDGE_PROTOCOL_VERSION = "1.0"
+"""CLI/provider NDJSON contract version; major changes break compatibility."""
+
+BRIDGE_CAPABILITIES = frozenset({
+  "external_tool_receipts",
+  "persistent_runtime_limits",
+  "termination_reasons",
+  "tool_approval_resume",
+})
+
+
+class ProtocolContract(BaseModel):
+  """Capabilities the provider requires from the bridge for this request."""
+
+  version: str
+  required_capabilities: list[str] = Field(default_factory=list)
+  provider_version: str | None = None
+
 # --------------------------------------------------------------------------- #
 # Inbound messages: OpenCode provider -> nonoka-cli
 # --------------------------------------------------------------------------- #
@@ -80,6 +98,7 @@ class ChatRequest(BaseModel):
   """Request nonoka-cli to run one user turn."""
 
   type: Literal["chat"] = "chat"
+  protocol: ProtocolContract | None = None
   purpose: Literal["chat", "title"] = "chat"
   messages: list[ChatMessage]
   tools: list[ExternalToolDefinition] | None = None
@@ -121,6 +140,16 @@ class SessionInitEvent(BaseModel):
 
   type: Literal["session_init"] = "session_init"
   session_id: str
+
+
+class ProtocolAckEvent(BaseModel):
+  """Confirmation that the bridge accepted the provider contract."""
+
+  type: Literal["protocol_ack"] = "protocol_ack"
+  version: str = BRIDGE_PROTOCOL_VERSION
+  capabilities: list[str]
+  cli_version: str
+  framework_version: str
 
 
 class TextDeltaEvent(BaseModel):
@@ -204,7 +233,8 @@ class ErrorEvent(BaseModel):
 
 
 OutboundMessage = (
-  SessionInitEvent
+  ProtocolAckEvent
+  | SessionInitEvent
   | TextDeltaEvent
   | ToolCallEvent
   | ToolResultEvent

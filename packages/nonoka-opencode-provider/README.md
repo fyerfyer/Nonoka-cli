@@ -4,7 +4,9 @@ OpenCode provider for the [Nonoka](https://pypi.org/project/nonoka/) Agent frame
 
 This package implements the Vercel AI SDK provider protocol so that OpenCode can
 use `nonoka-cli --server` as a backend. Communication happens over stdin/stdout
-using newline-delimited JSON (NDJSON).
+using newline-delimited JSON (NDJSON). The provider requires a compatible bridge
+protocol acknowledgement before it accepts streamed model output, so update the
+provider and `nonoka-cli` together.
 
 ## Installation
 

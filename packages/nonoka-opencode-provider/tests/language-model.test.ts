@@ -57,6 +57,9 @@ describe('NonokaLanguageModel', () => {
     expect(request.max_external_result_bytes).toBe(65536);
     expect(request.require_workspace_mutation).toBe(true);
     expect(request.require_observed_effect).toBe(true);
+    expect(request.protocol.version).toBe('1.0');
+    expect(request.protocol.required_capabilities).toContain('persistent_runtime_limits');
+    expect(request.protocol.provider_version).toBe('0.2.14');
   });
 
   it('constructs with the given model id and config', () => {

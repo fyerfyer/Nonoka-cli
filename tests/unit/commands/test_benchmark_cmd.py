@@ -12,6 +12,7 @@ from nonoka_cli.commands.benchmark_cmd import (
     _harbor_env,
     _redact_text,
     _stage_python_runtime_archive,
+    cmd_scorecard,
     cmd_smoke,
     cmd_terminal_bench,
 )
@@ -36,6 +37,34 @@ def _args(tmp_path: Path, **values: object) -> argparse.Namespace:
     }
     defaults.update(values)
     return argparse.Namespace(**defaults)
+
+
+def test_scorecard_command_records_fixed_manifest_without_aggregate(tmp_path: Path):
+    lane = tmp_path / "deterministic.json"
+    lane.write_text(json.dumps({"status": "passed", "passed": 10, "failed": 0}))
+    args = argparse.Namespace(
+        output=str(tmp_path / "scorecard.json"),
+        release_candidate="0.3.0-rc1",
+        artifact_root=str(tmp_path / "artifacts"),
+        model="provider/model",
+        temperature=0.0,
+        max_turns=20,
+        tool_budget=40,
+        timeout=90.0,
+        run_timeout=1800.0,
+        max_context_bytes=262144,
+        max_cost_usd=2.0,
+        sample_ids=["repair-1"],
+        verifier="official-harbor",
+        deterministic_outcome=str(lane),
+        framework_outcome=None,
+        opencode_outcome=None,
+    )
+    assert cmd_scorecard(args) == 0
+    data = json.loads(Path(args.output).read_text())
+    assert data["deterministic_regression"]["status"] == "passed"
+    assert data["framework_diagnostic"]["status"] == "pending"
+    assert "aggregate" not in data
 
 
 def test_smoke_writes_manifest_and_captures_opencode_output(tmp_path: Path, monkeypatch):

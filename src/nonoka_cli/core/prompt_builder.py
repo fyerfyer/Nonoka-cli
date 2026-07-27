@@ -17,8 +17,6 @@ Static skill registry blocks are still injected by nonoka-agent's
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 
 _OPENCODE_TODO_WORKFLOW_BLOCK = """\
 MANDATORY TODO WORKFLOW for multi-step tasks:
@@ -39,6 +37,20 @@ Use these statuses exactly:
 - `in_progress` for the step currently being worked on.
 - `completed` for steps that finished successfully.
 - `cancelled` for steps that failed or were skipped.
+"""
+
+
+_VERIFICATION_DISCIPLINE_BLOCK = """\
+## Verification Discipline
+Command exit status alone is not proof that a check executed. When a file
+declares `test_*` functions, invoke it through the appropriate test runner
+(for example `pytest`) unless it has a deliberate executable entrypoint. Do
+not treat an interpreter run with no collected tests or no test output as a
+passing check. After the final mutation, run one focused acceptance command
+and inspect the runner's reported result. Missing dependencies, skipped
+collection, empty output, or an unavailable test runner leave verification
+unresolved; report that honestly rather than claiming success from static
+reasoning or an explanation alone.
 """
 
 
@@ -129,6 +141,10 @@ class SystemPromptBuilder:
     approval_block = self._build_approval_block()
     if approval_block:
       parts.append(approval_block)
+
+    verification_block = self._build_verification_discipline_block()
+    if verification_block:
+      parts.append(verification_block)
 
     if self._repo_map:
       parts.append(self._repo_map)
@@ -229,6 +245,12 @@ class SystemPromptBuilder:
       f"{listed}\n\n"
       "All other tool calls require human approval before execution."
     )
+
+  def _build_verification_discipline_block(self) -> str:
+    """Return generic completion evidence guidance unless already supplied."""
+    if "## Verification Discipline" in self._base:
+      return ""
+    return _VERIFICATION_DISCIPLINE_BLOCK
 
   def _build_namespaces_block(self) -> str:
     """Return a block describing exact tool names/namespaces."""

@@ -52,6 +52,20 @@ type ExternalTargetSnapshot = {
   digest?: string;
 };
 
+function configuredProtectedPaths(cwd: string): string[] {
+  const configured = process.env.NONOKA_PROTECTED_PATHS;
+  if (!configured) return [];
+  const resolvedCwd = path.resolve(cwd);
+  const targets = new Set<string>();
+  for (const candidate of configured.split(path.delimiter)) {
+    if (!candidate || !path.isAbsolute(candidate)) continue;
+    if (!isAllowedExternalTarget(candidate, resolvedCwd)) continue;
+    targets.add(path.resolve(candidate));
+    if (targets.size >= MAX_EXTERNAL_TARGETS) break;
+  }
+  return [...targets];
+}
+
 /** Conservatively classify shell syntax that is intended to alter durable
  * host state. This is Adapter evidence only: core never parses commands, and
  * the classifier contains no benchmark task names, paths, or data patterns. */
@@ -127,7 +141,58 @@ export function externalTargetsForAction(
   return [...targets];
 }
 
-function snapshotExternalTarget(target: string): ExternalTargetSnapshot {
+function directoryDigest(target: string, recursive: boolean): string {
+  const entries: string[] = [];
+  let observed = 0;
+  let truncated = false;
+  const visit = (current: string, relative: string): void => {
+    let children;
+    try {
+      children = readdirSync(current, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+    } catch {
+      entries.push(`${relative}\0unreadable-directory`);
+      return;
+    }
+    for (const child of children) {
+      if (observed >= MAX_DIRECTORY_ENTRIES) {
+        truncated = true;
+        return;
+      }
+      observed += 1;
+      const childPath = path.join(current, child.name);
+      const childRelative = relative ? path.join(relative, child.name) : child.name;
+      if (child.isDirectory()) {
+        entries.push(`${childRelative}\0directory`);
+        if (recursive) visit(childPath, childRelative);
+      } else if (child.isFile()) {
+        try {
+          const stat = statSync(childPath);
+          const marker = stat.size <= MAX_HASH_BYTES
+            ? createHash('sha256').update(readFileSync(childPath)).digest('hex')
+            : `metadata:${stat.size}:${stat.mtimeMs}`;
+          entries.push(`${childRelative}\0file:${marker}`);
+        } catch {
+          entries.push(`${childRelative}\0unreadable-file`);
+        }
+      } else if (child.isSymbolicLink()) {
+        try {
+          entries.push(`${childRelative}\0symlink:${readlinkSync(childPath)}`);
+        } catch {
+          entries.push(`${childRelative}\0unreadable-symlink`);
+        }
+      } else {
+        entries.push(`${childRelative}\0other`);
+      }
+    }
+  };
+  visit(target, '');
+  entries.sort();
+  entries.push(`truncated:${truncated}`);
+  return createHash('sha256').update(entries.join('\n')).digest('hex');
+}
+
+function snapshotExternalTarget(target: string, recursive = false): ExternalTargetSnapshot {
   try {
     const stat = lstatSync(target);
     let kind: ExternalTargetSnapshot['kind'] = 'other';
@@ -139,11 +204,7 @@ function snapshotExternalTarget(target: string): ExternalTargetSnapshot {
       }
     } else if (stat.isDirectory()) {
       kind = 'directory';
-      const entries = readdirSync(target, { withFileTypes: true })
-        .slice(0, MAX_DIRECTORY_ENTRIES)
-        .map((entry) => `${entry.name}:${entry.isDirectory() ? 'd' : entry.isFile() ? 'f' : 'o'}`)
-        .sort();
-      digest = createHash('sha256').update(entries.join('\n')).digest('hex');
+      digest = directoryDigest(target, recursive);
     } else if (stat.isSymbolicLink()) {
       kind = 'symlink';
       digest = createHash('sha256').update(readlinkSync(target)).digest('hex');
@@ -168,6 +229,7 @@ type Snapshot = {
   modes: Map<string, number>;
   protected: Set<string>;
   externalTargets: ExternalTargetSnapshot[];
+  protectedExternalTargets: Set<string>;
 };
 
 function statePath(cwd: string, toolCallId: string): string {
@@ -228,7 +290,11 @@ function walk(
   }
 }
 
-function snapshot(cwd: string, externalTargets: string[] = []): Snapshot {
+function snapshot(
+  cwd: string,
+  externalTargets: string[] = [],
+  protectedExternalTargets: string[] = [],
+): Snapshot {
   const root = path.resolve(cwd);
   const entries: string[] = [];
   const modes = new Map<string, number>();
@@ -245,7 +311,10 @@ function snapshot(cwd: string, externalTargets: string[] = []): Snapshot {
     files,
     modes,
     protected: protectedFiles,
-    externalTargets: externalTargets.map(snapshotExternalTarget),
+    externalTargets: externalTargets.map((target) => (
+      snapshotExternalTarget(target, protectedExternalTargets.includes(target))
+    )),
+    protectedExternalTargets: new Set(protectedExternalTargets),
   };
 }
 
@@ -257,6 +326,7 @@ function persisted(snapshotValue: Snapshot): Record<string, unknown> {
     modes: [...snapshotValue.modes.entries()],
     protected: [...snapshotValue.protected],
     external_targets: snapshotValue.externalTargets,
+    protected_external_targets: [...snapshotValue.protectedExternalTargets],
   };
 }
 
@@ -271,6 +341,11 @@ function restored(value: Record<string, unknown>): Snapshot | undefined {
     externalTargets: Array.isArray(value.external_targets)
       ? value.external_targets as ExternalTargetSnapshot[]
       : [],
+    protectedExternalTargets: new Set(
+      Array.isArray(value.protected_external_targets)
+        ? value.protected_external_targets as string[]
+        : [],
+    ),
   };
 }
 
@@ -319,8 +394,14 @@ export function recordWorkspaceBefore(
   const state = statePath(cwd, toolCallId);
   const backup = backupPath(cwd, toolCallId);
   try {
-    const targets = externalTargetsForAction(cwd, toolName, toolArguments);
-    const before = snapshot(cwd, targets);
+    const protectedTargets = looksStatefulHostAction(toolName, toolArguments)
+      ? configuredProtectedPaths(cwd)
+      : [];
+    const targets = [...new Set([
+      ...externalTargetsForAction(cwd, toolName, toolArguments),
+      ...protectedTargets,
+    ])];
+    const before = snapshot(cwd, targets, protectedTargets);
     rmSync(backup, { recursive: true, force: true });
     preserveProtectedFiles(before, backup);
     writeFileSync(state, JSON.stringify(persisted(before)), 'utf-8');
@@ -353,15 +434,28 @@ export function receiptForWorkspaceResult(
       return result;
     }
     const externalTargets = before.externalTargets.map((target) => target.path);
-    const observed = snapshot(cwd, externalTargets);
+    const protectedExternalTargets = [...before.protectedExternalTargets];
+    const observed = snapshot(cwd, externalTargets, protectedExternalTargets);
     const policy = restoreProtectedFiles(before, observed, backup);
-    const after = policy.restored.length > 0 ? snapshot(cwd, externalTargets) : observed;
+    const after = policy.restored.length > 0
+      ? snapshot(cwd, externalTargets, protectedExternalTargets)
+      : observed;
     if (existsSync(state)) rmSync(state, { force: true });
     rmSync(backup, { recursive: true, force: true });
     const created = [...after.files.keys()].filter((file) => !before.files.has(file));
     const deleted = [...before.files.keys()].filter((file) => !after.files.has(file));
     const modified = [...after.files.keys()].filter((file) => before.files.has(file) && before.files.get(file) !== after.files.get(file));
     const workspaceChanged = before.digest !== after.digest;
+    const protectedExternalViolations = before.externalTargets
+      .filter((target, index) => (
+        before.protectedExternalTargets.has(target.path)
+        && JSON.stringify(target) !== JSON.stringify(after.externalTargets[index])
+      ))
+      .map((target) => target.path);
+    const policyViolations = [...new Set([
+      ...policy.violations,
+      ...protectedExternalViolations,
+    ])];
     appendRunEvidence({
       schema_version: 1,
       kind: 'workspace_effect',
@@ -372,7 +466,7 @@ export function receiptForWorkspaceResult(
       created,
       modified,
       deleted,
-      policy_violations: policy.violations,
+      policy_violations: policyViolations,
       restored_paths: policy.restored,
       before_digest: before.digest,
       after_digest: after.digest,
@@ -406,6 +500,7 @@ export function receiptForWorkspaceResult(
           : externalChanged
             ? 'A bounded external target changed.'
             : 'A successful stateful host action was observed outside the task workspace.',
+        policy_violations: policyViolations,
       });
     }
     workspaceLog(`result_success tool=${toolName} call=${toolCallId} changed=${workspaceChanged} created=${created.length} modified=${modified.length} deleted=${deleted.length}`);
@@ -419,7 +514,7 @@ export function receiptForWorkspaceResult(
         created,
         modified,
         deleted,
-        policy_violations: policy.violations,
+        policy_violations: policyViolations,
         restored_paths: policy.restored,
         collector: 'nonoka-opencode-provider',
       },

@@ -5,16 +5,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 from nonoka.core.runtime import TerminalReason
+
 from nonoka_cli.core.run_evidence import (
-  TerminationEvidence,
   TaskEffectEvidence,
+  TerminationEvidence,
   WorkspaceEffectEvidence,
   read_run_evidence,
 )
@@ -43,6 +44,24 @@ def is_scorable_budget_exit(evidence_path: Path) -> bool:
   return saw_mutation and saw_budget_error
 
 
+def protected_harness_violations(evidence_path: Path) -> list[str]:
+  """Return configured external harness paths altered during the agent phase.
+
+  The provider records generic permission-protected workspace files relatively.
+  Adapter-configured harness boundaries are absolute paths, which lets the
+  watchdog reject only the latter without imposing benchmark semantics on
+  ordinary CLI runs.
+  """
+  violations: set[str] = set()
+  for event in read_run_evidence(evidence_path):
+    if not isinstance(event, (WorkspaceEffectEvidence, TaskEffectEvidence)):
+      continue
+    for candidate in event.policy_violations:
+      if Path(candidate).is_absolute():
+        violations.add(candidate)
+  return sorted(violations)
+
+
 def run_with_watchdog(
   command: list[str],
   *,
@@ -68,6 +87,16 @@ def run_with_watchdog(
     )
     try:
       return_code = process.wait(timeout=timeout_seconds)
+      violations = protected_harness_violations(evidence_path) if evidence_path is not None else []
+      if violations:
+        if log_path is not None:
+          status_path = log_path.parent / "adapter-exit.json"
+          status_path.write_text(json.dumps({
+            "classification": "protected_harness_mutation",
+            "original_return_code": return_code,
+            "violations": violations,
+          }) + "\n")
+        return 2
       if (
         return_code != 0
         and allow_scorable_budget_exit

@@ -16,6 +16,12 @@ from typing import Any
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.core.scorecard import (
+    LaneOutcome,
+    RuntimeBudgets,
+    build_scorecard,
+    read_lane_outcome,
+)
 
 TERMINAL_BENCH_TASKS = (
     "adaptive-rejection-sampler",
@@ -252,6 +258,91 @@ def _stage_python_runtime_archive(directory: Path) -> Path:
     return archive
 
 
+def _stage_runtime_site_packages(
+    *, directory: Path, agent_wheel: Path, cli_wheel: Path
+) -> Path:
+    """Materialize bridge dependencies for network-free task-container startup.
+
+    Harbor task containers intentionally have no dependable package-index
+    access.  Installing just the two local wheels in the container therefore
+    leaves the runtime partially installed when their dependencies cannot be
+    resolved.  Build a disposable, non-editable venv on the host and archive
+    its site-packages tree instead.  The task adapter creates its own venv
+    against the staged Python runtime, then overlays this portable package
+    tree.
+    """
+    uv = shutil.which("uv")
+    tar = shutil.which("tar")
+    if not uv or not tar:
+        raise ValueError("uv and tar are required to stage Harbor Python dependencies")
+
+    runtime = subprocess.run(
+        [uv, "python", "find", "3.13"], capture_output=True, text=True, check=False
+    )
+    python = Path(runtime.stdout.strip()).expanduser().resolve()
+    if runtime.returncode or not python.is_file():
+        raise ValueError("A uv-managed Python 3.13 runtime is required for Harbor dependencies")
+
+    staging = directory / "runtime-site-packages-staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    venv = staging / "venv"
+    archive_dir = directory / "runtime-site-packages"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive = archive_dir / "site-packages.tar.gz"
+
+    commands = (
+        [uv, "venv", str(venv), "--python", str(python)],
+        [
+            uv,
+            "pip",
+            "install",
+            "--link-mode=copy",
+            "--python",
+            str(venv / "bin" / "python"),
+            str(agent_wheel),
+            str(cli_wheel),
+        ],
+    )
+    try:
+        for command in commands:
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            with (directory / "runtime-build.log").open("a", encoding="utf-8") as log:
+                log.write(f"$ {' '.join(command)}\n")
+                log.write(_redact_text(result.stdout))
+                log.write(_redact_text(result.stderr))
+            if result.returncode:
+                raise ValueError(
+                    "Failed to materialize Harbor runtime dependencies; see runtime-build.log"
+                )
+
+        location = subprocess.run(
+            [
+                str(venv / "bin" / "python"),
+                "-c",
+                "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        site_packages = Path(location.stdout.strip()).resolve()
+        if location.returncode or not site_packages.is_dir() or venv not in site_packages.parents:
+            raise ValueError("Could not locate materialized Harbor site-packages")
+        relative = site_packages.relative_to(venv)
+        packed = subprocess.run(
+            [tar, "-czf", str(archive), "-C", str(venv), str(relative)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if packed.returncode or not archive.is_file():
+            raise ValueError("Failed to package Harbor runtime dependencies")
+        return archive
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def _stage_opencode_binary(directory: Path) -> Path:
     """Copy a verified host OpenCode executable for network-free task setup."""
     opencode = shutil.which("opencode")
@@ -276,6 +367,9 @@ def _prepare_harbor_runtime(args: argparse.Namespace, directory: Path) -> dict[s
     agent_wheel = _build_runtime_wheel(
         directory=directory, project=agent_root, distribution="nonoka"
     )
+    site_packages_archive = _stage_runtime_site_packages(
+        directory=directory, agent_wheel=agent_wheel, cli_wheel=cli_wheel
+    )
     provider = _stage_provider_source(args, directory)
     uv_binary = _stage_uv_binary(directory)
     python_runtime_archive = _stage_python_runtime_archive(directory)
@@ -283,6 +377,7 @@ def _prepare_harbor_runtime(args: argparse.Namespace, directory: Path) -> dict[s
     return {
         "cli_wheel": str(cli_wheel),
         "agent_wheel": str(agent_wheel),
+        "site_packages_archive": str(site_packages_archive),
         "provider_source": str(provider),
         "uv_binary": str(uv_binary),
         "python_runtime_archive": str(python_runtime_archive),
@@ -539,6 +634,48 @@ def cmd_terminal_bench(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def _lane_outcome(path: str | None) -> LaneOutcome:
+    """Load an optional lane outcome, defaulting to a pending lane."""
+    if path is None:
+        return LaneOutcome()
+    return read_lane_outcome(Path(path).expanduser().resolve())
+
+
+def cmd_scorecard(args: argparse.Namespace) -> int:
+    """Write a fixed release manifest without collapsing evaluation lanes."""
+    output = Path(args.output).expanduser().resolve()
+    artifact_root = Path(args.artifact_root or output.parent).expanduser().resolve()
+    root = _checkout_root()
+    scorecard = build_scorecard(
+        release_candidate=args.release_candidate,
+        cli_root=root,
+        framework_root=root.parent / "nonoka-agent",
+        model=args.model,
+        temperature=args.temperature,
+        budgets=RuntimeBudgets(
+            max_turns=args.max_turns,
+            tool_budget=args.tool_budget,
+            timeout_seconds=args.timeout,
+            wall_timeout_seconds=args.run_timeout,
+            max_context_bytes=args.max_context_bytes,
+            max_cost_usd=args.max_cost_usd,
+        ),
+        sample_ids=list(args.sample_ids),
+        verifier=args.verifier,
+        artifact_root=artifact_root,
+        deterministic=_lane_outcome(args.deterministic_outcome),
+        framework=_lane_outcome(args.framework_outcome),
+        opencode=_lane_outcome(args.opencode_outcome),
+    )
+    try:
+        scorecard.write(output)
+    except FileExistsError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(f"Scorecard: {output}")
+    return 0
+
+
 def add_subparser(subparsers: Any) -> None:
     parser = subparsers.add_parser("benchmark", help="Run reproducible OpenCode bridge benchmarks")
     common = argparse.ArgumentParser(add_help=False)
@@ -600,3 +737,29 @@ def add_subparser(subparsers: Any) -> None:
         help="Provision the adapter in the selected task containers without scoring them.",
     )
     terminal.set_defaults(func=cmd_terminal_bench)
+    scorecard = children.add_parser(
+        "scorecard",
+        help="Write a lane-separated release-candidate scorecard",
+    )
+    scorecard.add_argument("--output", required=True)
+    scorecard.add_argument("--release-candidate", required=True)
+    scorecard.add_argument("--artifact-root")
+    scorecard.add_argument("--model", required=True)
+    scorecard.add_argument("--temperature", type=float, default=0.0)
+    scorecard.add_argument("--max-turns", type=int)
+    scorecard.add_argument("--tool-budget", type=int)
+    scorecard.add_argument("--timeout", type=float)
+    scorecard.add_argument("--run-timeout", type=float)
+    scorecard.add_argument("--max-context-bytes", type=int)
+    scorecard.add_argument("--max-cost-usd", type=float)
+    scorecard.add_argument(
+        "--sample-id",
+        dest="sample_ids",
+        action="append",
+        required=True,
+    )
+    scorecard.add_argument("--verifier", required=True)
+    scorecard.add_argument("--deterministic-outcome")
+    scorecard.add_argument("--framework-outcome")
+    scorecard.add_argument("--opencode-outcome")
+    scorecard.set_defaults(func=cmd_scorecard)

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from nonoka.core.runner import StreamEvent
@@ -63,6 +63,7 @@ def _fake_orchestrator() -> Any:
 def _handler_with_mock_orch() -> tuple[ChatRequestHandler, Any, _RecordingSender]:
   sender = _RecordingSender()
   handler = ChatRequestHandler(send=sender)
+  handler._negotiate_protocol = AsyncMock(return_value=True)
   orch = _fake_orchestrator()
   handler._orchestrator = orch
   handler._session_id = "sess-1"

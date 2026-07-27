@@ -12,6 +12,7 @@ from nonoka.core.runtime import TerminalReason, Termination
 
 from nonoka_cli.bridge.handler import ChatRequestHandler
 from nonoka_cli.bridge.protocol import (
+  BRIDGE_PROTOCOL_VERSION,
   ChatMessage,
   ChatRequest,
   ExternalMCPServerDefinition,
@@ -19,6 +20,7 @@ from nonoka_cli.bridge.protocol import (
   ExternalSkillDefinition,
   ExternalSkillToolDefinition,
   ExternalToolDefinition,
+  ProtocolContract,
   ToolCall,
 )
 from nonoka_cli.core.task_state import TaskStateService
@@ -31,7 +33,43 @@ def sent():
 
 @pytest.fixture
 def handler(sent):
-  return ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
+  value = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
+  value._negotiate_protocol = AsyncMock(return_value=True)
+  return value
+
+
+async def test_handle_rejects_missing_protocol_contract(sent):
+  handler = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
+  await handler.handle(ChatRequest(messages=[ChatMessage(role="user", content="hello")]))
+  error = next(message for message in sent if message.type == "error")
+  assert error.code == "protocol_contract_required"
+  assert handler.orchestrator is None
+
+
+async def test_handle_acknowledges_compatible_protocol_before_initialization(sent):
+  handler = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
+  initialized = AsyncMock(side_effect=RuntimeError("stop"))
+  with patch.object(handler, "_ensure_orchestrator", new=initialized):
+    await handler.handle(ChatRequest(
+      protocol=ProtocolContract(
+        version=BRIDGE_PROTOCOL_VERSION,
+        required_capabilities=["persistent_runtime_limits"],
+      ),
+      messages=[ChatMessage(role="user", content="hello")],
+    ))
+  assert sent[0].type == "protocol_ack"
+  assert "persistent_runtime_limits" in sent[0].capabilities
+
+
+async def test_handle_rejects_missing_required_capability(sent):
+  handler = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
+  await handler.handle(ChatRequest(
+    protocol=ProtocolContract(version="1.0", required_capabilities=["not_supported"]),
+    messages=[ChatMessage(role="user", content="hello")],
+  ))
+  error = next(message for message in sent if message.type == "error")
+  assert error.code == "protocol_incompatible"
+  assert error.details["missing_capabilities"] == ["not_supported"]
 
 
 async def test_handle_new_session(handler, sent):

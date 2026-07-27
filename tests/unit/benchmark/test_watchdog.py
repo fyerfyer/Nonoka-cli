@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nonoka_cli.benchmark.watchdog import (
   is_scorable_budget_exit,
+  protected_harness_violations,
   run_with_watchdog,
 )
 
@@ -14,7 +15,7 @@ def _event(**values: object) -> str:
   return json.dumps(values)
 
 
-def _workspace_effect(*, changed: bool) -> str:
+def _workspace_effect(*, changed: bool, policy_violations: list[str] | None = None) -> str:
   return _event(
     schema_version=1,
     kind="workspace_effect",
@@ -27,6 +28,7 @@ def _workspace_effect(*, changed: bool) -> str:
     deleted=[],
     before_digest="before",
     after_digest="after" if changed else "before",
+    policy_violations=policy_violations or [],
   )
 
 
@@ -113,5 +115,33 @@ def test_watchdog_converts_only_scorable_budget_exit_to_success(tmp_path: Path):
   assert json.loads((tmp_path / "agent" / "adapter-exit.json").read_text()) == {
     "classification": "scorable_budget_exit",
     "original_return_code": 1,
+  }
+  assert (tmp_path / "artifacts" / "adapter-exit.json").is_file()
+
+
+def test_watchdog_rejects_protected_external_harness_mutation(tmp_path: Path):
+  log = tmp_path / "agent" / "opencode.txt"
+  evidence = tmp_path / "agent" / "run-evidence.ndjson"
+  evidence.parent.mkdir(parents=True)
+  evidence.write_text("\n".join([
+    _workspace_effect(changed=True, policy_violations=["/tests"]),
+    _termination("tool_budget_exhausted"),
+  ]))
+
+  assert protected_harness_violations(evidence) == ["/tests"]
+  return_code = run_with_watchdog(
+    [sys.executable, "-c", "import sys; sys.exit(1)"],
+    timeout_seconds=5,
+    log_path=log,
+    evidence_path=evidence,
+    artifact_dir=tmp_path / "artifacts",
+    allow_scorable_budget_exit=True,
+  )
+
+  assert return_code == 2
+  assert json.loads((tmp_path / "agent" / "adapter-exit.json").read_text()) == {
+    "classification": "protected_harness_mutation",
+    "original_return_code": 1,
+    "violations": ["/tests"],
   }
   assert (tmp_path / "artifacts" / "adapter-exit.json").is_file()

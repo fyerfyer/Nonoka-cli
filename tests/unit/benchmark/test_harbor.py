@@ -12,11 +12,13 @@ from nonoka_cli.benchmark.harbor import OpenCodeHarborAgent
 def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Path):
   cli_wheel = tmp_path / "nonoka_cli-0.0.0-py3-none-any.whl"
   agent_wheel = tmp_path / "nonoka-0.0.0-py3-none-any.whl"
+  site_packages_archive = tmp_path / "site-packages.tar.gz"
   uv_binary = tmp_path / "uv"
   python_runtime_archive = tmp_path / "python-3.13.tar.gz"
   opencode_binary = tmp_path / "opencode"
   cli_wheel.touch()
   agent_wheel.touch()
+  site_packages_archive.touch()
   uv_binary.touch()
   python_runtime_archive.touch()
   opencode_binary.touch()
@@ -30,6 +32,7 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
     model_name="deepseek-chat",
     cli_wheel=str(cli_wheel),
     agent_wheel=str(agent_wheel),
+    site_packages_archive=str(site_packages_archive),
     provider_source=str(provider),
     uv_binary=str(uv_binary),
     python_runtime_archive=str(python_runtime_archive),
@@ -73,6 +76,8 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
   assert "sidecars, checkpoint, repair, mount, migrate" in config["system_prompt"]
   assert "stateful tools only on that working copy" in config["system_prompt"]
   assert "originals may be examined only" in config["system_prompt"]
+  assert "never\ncreate, copy, or modify files under `/tests`" in config["system_prompt"]
+  assert "runner reports collected\nand executed results" in config["system_prompt"]
 
 
 def test_adapter_requires_explicit_runtime_artifacts(tmp_path: Path):
@@ -87,10 +92,18 @@ def test_adapter_requires_explicit_runtime_artifacts(tmp_path: Path):
 def test_adapter_omits_cumulative_budgets_by_default(tmp_path: Path):
   cli_wheel = tmp_path / "nonoka_cli-0.0.0-py3-none-any.whl"
   agent_wheel = tmp_path / "nonoka-0.0.0-py3-none-any.whl"
+  site_packages_archive = tmp_path / "site-packages.tar.gz"
   uv_binary = tmp_path / "uv"
   python_runtime_archive = tmp_path / "python-3.13.tar.gz"
   opencode_binary = tmp_path / "opencode"
-  for path in (cli_wheel, agent_wheel, uv_binary, python_runtime_archive, opencode_binary):
+  for path in (
+    cli_wheel,
+    agent_wheel,
+    site_packages_archive,
+    uv_binary,
+    python_runtime_archive,
+    opencode_binary,
+  ):
     path.touch()
   provider = tmp_path / "provider"
   (provider / "dist").mkdir(parents=True)
@@ -101,6 +114,7 @@ def test_adapter_omits_cumulative_budgets_by_default(tmp_path: Path):
     logs_dir=tmp_path / "logs",
     cli_wheel=str(cli_wheel),
     agent_wheel=str(agent_wheel),
+    site_packages_archive=str(site_packages_archive),
     provider_source=str(provider),
     uv_binary=str(uv_binary),
     python_runtime_archive=str(python_runtime_archive),
@@ -119,11 +133,13 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
 ):
   cli_wheel = tmp_path / "nonoka_cli-0.0.0-py3-none-any.whl"
   agent_wheel = tmp_path / "nonoka-0.0.0-py3-none-any.whl"
+  site_packages_archive = tmp_path / "site-packages.tar.gz"
   uv_binary = tmp_path / "uv"
   python_runtime_archive = tmp_path / "python-3.13.tar.gz"
   opencode_binary = tmp_path / "opencode"
   cli_wheel.touch()
   agent_wheel.touch()
+  site_packages_archive.touch()
   uv_binary.touch()
   python_runtime_archive.touch()
   opencode_binary.touch()
@@ -139,6 +155,7 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
 
     async def exec(self, command: str, **_):
       self.commands.append(command)
+      return type("Result", (), {"return_code": 0, "stdout": "", "stderr": ""})()
 
     async def upload_file(self, source, target):
       self.uploads.append((source, target))
@@ -153,6 +170,7 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
     model_name="deepseek-chat",
     cli_wheel=str(cli_wheel),
     agent_wheel=str(agent_wheel),
+    site_packages_archive=str(site_packages_archive),
     provider_source=str(provider),
     uv_binary=str(uv_binary),
     python_runtime_archive=str(python_runtime_archive),
@@ -171,14 +189,24 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
   assert "BENCHMARK_PYTHON=/opt/nonoka-runtime/python-host/bin/python3.13" in provision_command
   assert "platform.python_version()" in provision_command
   assert "platform.machine()" in provision_command
-  assert "/root/.local/share/uv/python/cpython-${STAGED_VERSION}-linux-${STAGED_ARCH}-gnu" in provision_command
-  assert "ln -sfn /opt/nonoka-runtime/python-host/bin/python3.13 /usr/local/bin/python3.13" in provision_command
+  managed_python_dir = (
+    "/root/.local/share/uv/python/"
+    "cpython-${STAGED_VERSION}-linux-${STAGED_ARCH}-gnu"
+  )
+  staged_python_link = (
+    "ln -sfn /opt/nonoka-runtime/python-host/bin/python3.13 /usr/local/bin/python3.13"
+  )
+  assert managed_python_dir in provision_command
+  assert staged_python_link in provision_command
   assert "BENCHMARK_PYTHON=/usr/bin/python3.13" in provision_command
   assert "test -x /usr/local/bin/python3.13" in provision_command
   assert "BENCHMARK_PYTHON=/usr/local/bin/python3.13" in provision_command
   assert "command -v python3.13" not in provision_command
   assert "uv python install 3.13" in provision_command
-  assert "uv pip install --link-mode=copy --python /opt/nonoka-runtime/venv/bin/python" in provision_command
+  site_packages_extract = (
+    "tar -xzf /opt/nonoka-runtime/site-packages.tar.gz -C /opt/nonoka-runtime/venv"
+  )
+  assert site_packages_extract in provision_command
   assert any(
     "UV_PYTHON_INSTALL_DIR=/opt/nonoka-runtime/python" in command
     for command in environment.commands
@@ -188,9 +216,13 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
     in command
     for command in environment.commands
   )
-  assert "/opt/nonoka-runtime/venv/bin/python -Es -c 'import nonoka, nonoka_cli'" in provision_command
+  runtime_import_check = (
+    "/opt/nonoka-runtime/venv/bin/python -Es -c "
+    "'import nonoka, nonoka_cli, nonoka_cli.benchmark.watchdog'"
+  )
+  assert runtime_import_check in provision_command
   assert any(
-    command == "/opt/nonoka-runtime/venv/bin/python -Es -c 'import nonoka, nonoka_cli'"
+    command == runtime_import_check
     for command in environment.commands
   )
   assert "ln -sf /opt/nonoka-runtime/uv /root/.local/bin/uv" in provision_command
@@ -204,6 +236,7 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
   assert "/root/.local/bin/uv --version" in provision_command
   assert (cli_wheel, f"/opt/nonoka-runtime/{cli_wheel.name}") in environment.uploads
   assert (agent_wheel, f"/opt/nonoka-runtime/{agent_wheel.name}") in environment.uploads
+  assert (site_packages_archive, "/opt/nonoka-runtime/site-packages.tar.gz") in environment.uploads
   assert (python_runtime_archive, "/opt/nonoka-runtime/python-3.13.tar.gz") in environment.uploads
   assert all("apt-get" not in command for command in environment.commands)
 
@@ -211,10 +244,18 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
 async def test_adapter_applies_hard_run_timeout_to_opencode(tmp_path: Path, monkeypatch):
   cli_wheel = tmp_path / "nonoka_cli-0.0.0-py3-none-any.whl"
   agent_wheel = tmp_path / "nonoka-0.0.0-py3-none-any.whl"
+  site_packages_archive = tmp_path / "site-packages.tar.gz"
   uv_binary = tmp_path / "uv"
   python_runtime_archive = tmp_path / "python-3.13.tar.gz"
   opencode_binary = tmp_path / "opencode"
-  for path in (cli_wheel, agent_wheel, uv_binary, python_runtime_archive, opencode_binary):
+  for path in (
+    cli_wheel,
+    agent_wheel,
+    site_packages_archive,
+    uv_binary,
+    python_runtime_archive,
+    opencode_binary,
+  ):
     path.touch()
   provider = tmp_path / "provider"
   (provider / "dist").mkdir(parents=True)
@@ -225,10 +266,12 @@ async def test_adapter_applies_hard_run_timeout_to_opencode(tmp_path: Path, monk
     def __init__(self):
       self.command = ""
       self.timeout_sec: float | None = None
+      self.env: dict[str, str] | None = None
 
     async def exec(self, command: str, **kwargs):
       self.command = command
       self.timeout_sec = kwargs.get("timeout_sec")
+      self.env = kwargs.get("env")
       return type("Result", (), {"return_code": 0})()
 
   monkeypatch.setattr(harbor_adapter, "_HAS_HARBOR", True)
@@ -237,6 +280,7 @@ async def test_adapter_applies_hard_run_timeout_to_opencode(tmp_path: Path, monk
     model_name="deepseek-chat",
     cli_wheel=str(cli_wheel),
     agent_wheel=str(agent_wheel),
+    site_packages_archive=str(site_packages_archive),
     provider_source=str(provider),
     uv_binary=str(uv_binary),
     python_runtime_archive=str(python_runtime_archive),
@@ -258,3 +302,5 @@ async def test_adapter_applies_hard_run_timeout_to_opencode(tmp_path: Path, monk
   assert "cp /logs/agent/watchdog-launcher.log /logs/artifacts/agent/" in environment.command
   assert "exit $WATCHDOG_STATUS" in environment.command
   assert environment.timeout_sec == 336.0
+  assert environment.env is not None
+  assert environment.env["NONOKA_PROTECTED_PATHS"] == "/tests"

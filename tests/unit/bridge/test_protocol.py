@@ -8,6 +8,7 @@ from nonoka_cli.bridge.protocol import (
   ErrorEvent,
   ExternalToolDefinition,
   FinishEvent,
+  ProtocolAckEvent,
   SessionInitEvent,
   TextDeltaEvent,
   encode_outbound_message,
@@ -124,3 +125,14 @@ def test_encode_session_init():
   msg = SessionInitEvent(session_id="abc")
   data = json.loads(encode_outbound_message(msg))
   assert data == {"type": "session_init", "session_id": "abc"}
+
+
+def test_encode_protocol_ack():
+  msg = ProtocolAckEvent(
+    capabilities=["persistent_runtime_limits"],
+    cli_version="0.2.7",
+    framework_version="1.3.5",
+  )
+  data = json.loads(encode_outbound_message(msg))
+  assert data["type"] == "protocol_ack"
+  assert data["version"] == "1.0"

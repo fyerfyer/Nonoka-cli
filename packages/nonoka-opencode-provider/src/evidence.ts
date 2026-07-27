@@ -27,6 +27,7 @@ export type TaskEffectEvidence = {
   scope: string;
   collector: string;
   summary?: string;
+  policy_violations?: string[];
 };
 
 export function appendRunEvidence(event: WorkspaceEffectEvidence | TaskEffectEvidence): void {

@@ -10,7 +10,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 EVIDENCE_ENV = "NONOKA_RUN_EVIDENCE_PATH"
 
 
@@ -49,6 +48,7 @@ class TaskEffectEvidence(BaseModel):
   scope: str = "external"
   collector: str = "host"
   summary: str | None = None
+  policy_violations: list[str] = Field(default_factory=list)
 
 
 RunEvidence = WorkspaceEffectEvidence | TaskEffectEvidence | TerminationEvidence

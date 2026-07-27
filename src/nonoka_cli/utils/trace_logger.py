@@ -79,3 +79,7 @@ class TraceLogger:
       event_type=event_type,
       data=data,
     )
+
+  def log_execution_trace(self, session_id: str | None, trace: dict[str, Any]) -> None:
+    """Persist the framework's already-redacted terminal execution trace."""
+    self.log("execution_trace", session_id=session_id, trace=trace)
