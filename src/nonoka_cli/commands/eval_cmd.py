@@ -23,9 +23,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     )
     return 10
   forwarded = (
-    ["--help"]
-    if getattr(args, "eval_help", False)
-    else list(getattr(args, "eval_args", []))
+    ["--help"] if getattr(args, "eval_help", False) else list(getattr(args, "eval_args", []))
   )
   return int(eval_main(forwarded))
 
@@ -38,11 +36,13 @@ def add_subparser(subparsers: Any) -> None:
     description=(
       "Evaluation is implemented by nonoka-agent. Examples: "
       "nonoka-cli eval list; nonoka-cli eval run --dataset humaneval "
-      "--model deepseek/deepseek-v4-pro"
+      "--model deepseek/deepseek-v4-pro. Use `nonoka-cli benchmark swe-bench` "
+      "for the OpenCode bridge SWE-bench harness."
     ),
   )
   parser.add_argument(
-    "-h", "--help",
+    "-h",
+    "--help",
     dest="eval_help",
     action="store_true",
     help="Show framework evaluation command help.",

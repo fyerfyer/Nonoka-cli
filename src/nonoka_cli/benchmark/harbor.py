@@ -137,9 +137,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     super().__init__(*args, **kwargs)
     self._cli_wheel = self._require_wheel(cli_wheel, "cli_wheel")
     self._agent_wheel = self._require_wheel(agent_wheel, "agent_wheel")
-    self._site_packages_archive = self._require_file(
-      site_packages_archive, "site_packages_archive"
-    )
+    self._site_packages_archive = self._require_file(site_packages_archive, "site_packages_archive")
     self._provider_source = self._require_provider(provider_source)
     self._uv_binary = self._require_file(uv_binary, "uv_binary")
     self._python_runtime_archive = self._require_file(
@@ -189,9 +187,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
       or not (path / "dist").is_dir()
       or not (path / "node_modules").is_dir()
     ):
-      raise ValueError(
-        "provider_source must contain package.json, built dist/, and node_modules/"
-      )
+      raise ValueError("provider_source must contain package.json, built dist/, and node_modules/")
     return path
 
   @staticmethod
@@ -230,11 +226,16 @@ class OpenCodeHarborAgent(_HarborOpenCode):
           "models": {"default": {"name": f"Nonoka {self.model_name or 'default'}"}},
         }
       },
-      "permission": {"*": "allow", "task": "deny"},
+      "permission": "allow",
       # Native task delegation can return an unbounded research report into
       # the parent transcript. The benchmark bridge is already an autonomous
       # agent and should use its direct task tools instead.
-      "tools": {"skill": False, "task": False},
+      "agent": {
+        "build": {
+          "permission": {"skill": "deny", "task": "deny"},
+          "tools": {"skill": False, "task": False},
+        }
+      },
     }
     options = payload["provider"]["nonoka"]["options"]
     if self._max_turns is not None:
@@ -316,7 +317,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
         f"{_RUNTIME_DIR}/uv python install 3.13; "
         "BENCHMARK_PYTHON=3.13; "
         "fi; "
-        f"{_RUNTIME_DIR}/uv venv {_RUNTIME_DIR}/venv --python \"$BENCHMARK_PYTHON\"; "
+        f'{_RUNTIME_DIR}/uv venv {_RUNTIME_DIR}/venv --python "$BENCHMARK_PYTHON"; '
         # Dependencies are materialized on the host and uploaded as a regular
         # package tree.  Task containers cannot reliably reach a package index.
         f"tar -xzf {_SITE_PACKAGES_ARCHIVE} -C {_RUNTIME_DIR}/venv; "
@@ -352,8 +353,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     profile = shlex.quote(self._bridge_profile())
     profile_result = await environment.exec(
       command=(
-        "mkdir -p ~/.config/opencode; "
-        f"printf '%s\\n' {profile} > ~/.config/opencode/opencode.json"
+        f"mkdir -p ~/.config/opencode; printf '%s\\n' {profile} > ~/.config/opencode/opencode.json"
       )
     )
     self._require_success(profile_result, "Harbor OpenCode profile setup")
@@ -374,21 +374,33 @@ class OpenCodeHarborAgent(_HarborOpenCode):
     if not _HAS_HARBOR:  # pragma: no cover - direct tests exercise helpers only.
       raise RuntimeError("Harbor is required to run the OpenCode benchmark adapter")
 
-    watchdog_command = " ".join([
-      shlex.quote(_PYTHON),
-      "-Es",
-      "-m", "nonoka_cli.benchmark.watchdog",
-      "--timeout", shlex.quote(str(self._run_timeout_seconds)),
-      "--grace", "5",
-      "--log", shlex.quote(f"{_AGENT_LOG_DIR}/opencode.txt"),
-      "--evidence-log", shlex.quote(f"{_AGENT_LOG_DIR}/run-evidence.ndjson"),
-      "--artifact-dir", shlex.quote("/logs/artifacts/agent"),
-      "--allow-scorable-budget-exit",
-      "--",
-      shlex.quote(_OPENCODE),
-      "--model=nonoka/default", "run", "--format=json", "--thinking",
-      "--dangerously-skip-permissions", "--", shlex.quote(instruction),
-    ])
+    watchdog_command = " ".join(
+      [
+        shlex.quote(_PYTHON),
+        "-Es",
+        "-m",
+        "nonoka_cli.benchmark.watchdog",
+        "--timeout",
+        shlex.quote(str(self._run_timeout_seconds)),
+        "--grace",
+        "5",
+        "--log",
+        shlex.quote(f"{_AGENT_LOG_DIR}/opencode.txt"),
+        "--evidence-log",
+        shlex.quote(f"{_AGENT_LOG_DIR}/run-evidence.ndjson"),
+        "--artifact-dir",
+        shlex.quote("/logs/artifacts/agent"),
+        "--allow-scorable-budget-exit",
+        "--",
+        shlex.quote(_OPENCODE),
+        "--model=nonoka/default",
+        "run",
+        "--format=json",
+        "--thinking",
+        "--",
+        shlex.quote(instruction),
+      ]
+    )
     # Keep launcher failures observable too. The watchdog captures OpenCode's
     # own NDJSON, but an incompatible task image can fail before the watchdog
     # starts (for example, an unusable staged Python interpreter). Harbor's
@@ -414,9 +426,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
       },
     )
     if result.return_code == 124:
-      raise TimeoutError(
-        f"OpenCode process group exceeded {self._run_timeout_seconds} seconds"
-      )
+      raise TimeoutError(f"OpenCode process group exceeded {self._run_timeout_seconds} seconds")
     if result.return_code != 0:
       raise RuntimeError(f"OpenCode exited with status {result.return_code}")
 

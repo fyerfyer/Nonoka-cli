@@ -190,6 +190,7 @@ def check_provider() -> CheckResult:
 
 def _version_at_least(value: str, minimum: str) -> bool:
   """Compare the numeric prefix of release versions without a new dependency."""
+
   def numeric_parts(version: str) -> tuple[int, ...]:
     parts: list[int] = []
     for raw in version.split("."):
@@ -241,6 +242,18 @@ def check_harbor() -> CheckResult:
   return CheckResult("warn", "harbor is installed but did not report a version")
 
 
+def check_swe_bench() -> CheckResult:
+  """Check the official SWE-bench CLI without importing its heavy harness."""
+  executable = shutil.which("swebench")
+  if not executable:
+    return CheckResult(
+      "warn",
+      "swebench not found",
+      "Install the official swebench package in a dedicated benchmark environment.",
+    )
+  return CheckResult("ok", f"swebench {executable}")
+
+
 def check_docker() -> CheckResult:
   """Verify real Docker daemon access, not merely the client binary."""
   docker = shutil.which("docker")
@@ -259,6 +272,7 @@ def check_docker() -> CheckResult:
 def check_sandbox(config: CLIConfig | None = None) -> CheckResult:
   """Run a harmless command with the production sandbox configuration."""
   from nonoka_cli.safety import inspect_sandbox
+
   safety = config.safety if config is not None else CLIConfig().safety
   result = asyncio.run(inspect_sandbox(safety, Path.cwd()))
   return CheckResult(result.status, result.message, result.remedy)
@@ -423,6 +437,7 @@ def run_doctor(args: argparse.Namespace) -> int:
   results.append(check_opencode_config())
   if getattr(args, "check_benchmarks", False) is True:
     results.append(check_harbor())
+    results.append(check_swe_bench())
     results.append(check_docker())
   sandbox_required = config is not None and config.safety.required
   if getattr(args, "check_sandbox", False) is True or sandbox_required:
@@ -447,7 +462,7 @@ def _add_config_arg(parser: argparse.ArgumentParser) -> None:
   parser.add_argument(
     "--check-benchmarks",
     action="store_true",
-    help="Check Harbor and Docker prerequisites for Terminal-Bench 2.",
+    help="Check Harbor, SWE-bench, and Docker benchmark prerequisites.",
   )
 
 

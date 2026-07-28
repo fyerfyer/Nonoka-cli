@@ -48,7 +48,11 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
   options = profile["provider"]["nonoka"]["options"]
   assert profile["provider"]["nonoka"]["npm"] == "file:/opt/nonoka-provider"
   assert options["serverCommand"] == [
-    "/opt/nonoka-runtime/venv/bin/python", "-Es", "-m", "nonoka_cli", "--server"
+    "/opt/nonoka-runtime/venv/bin/python",
+    "-Es",
+    "-m",
+    "nonoka_cli",
+    "--server",
   ]
   assert options["model"] == "deepseek-chat"
   assert options["temperature"] == 0.2
@@ -60,8 +64,9 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
   assert options["maxExternalResultBytes"] == 64 * 1024
   assert options["requireObservedEffect"] is True
   assert "requireWorkspaceMutation" not in options
-  assert profile["tools"] == {"skill": False, "task": False}
-  assert profile["permission"]["task"] == "deny"
+  assert profile["permission"] == "allow"
+  assert profile["agent"]["build"]["tools"] == {"skill": False, "task": False}
+  assert profile["agent"]["build"]["permission"]["task"] == "deny"
 
   config = json.loads(agent._bridge_config())
   assert "autonomous coding benchmark agent" in config["system_prompt"]
@@ -190,8 +195,7 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
   assert "platform.python_version()" in provision_command
   assert "platform.machine()" in provision_command
   managed_python_dir = (
-    "/root/.local/share/uv/python/"
-    "cpython-${STAGED_VERSION}-linux-${STAGED_ARCH}-gnu"
+    "/root/.local/share/uv/python/cpython-${STAGED_VERSION}-linux-${STAGED_ARCH}-gnu"
   )
   staged_python_link = (
     "ln -sfn /opt/nonoka-runtime/python-host/bin/python3.13 /usr/local/bin/python3.13"
@@ -212,8 +216,7 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
     for command in environment.commands
   )
   assert any(
-    "test ! -d /opt/nonoka-runtime/python || chmod -R a+rX /opt/nonoka-runtime/python"
-    in command
+    "test ! -d /opt/nonoka-runtime/python || chmod -R a+rX /opt/nonoka-runtime/python" in command
     for command in environment.commands
   )
   runtime_import_check = (
@@ -221,10 +224,7 @@ async def test_adapter_installs_staged_runtime_and_task_agnostic_verifier_uv(
     "'import nonoka, nonoka_cli, nonoka_cli.benchmark.watchdog'"
   )
   assert runtime_import_check in provision_command
-  assert any(
-    command == runtime_import_check
-    for command in environment.commands
-  )
+  assert any(command == runtime_import_check for command in environment.commands)
   assert "ln -sf /opt/nonoka-runtime/uv /root/.local/bin/uv" in provision_command
   assert 'exec /opt/nonoka-runtime/uv tool run "$@"' in provision_command
   assert "chmod +x /root/.local/bin/uvx" in provision_command
@@ -297,6 +297,7 @@ async def test_adapter_applies_hard_run_timeout_to_opencode(tmp_path: Path, monk
   assert "--artifact-dir /logs/artifacts/agent" in environment.command
   assert "--evidence-log /logs/agent/run-evidence.ndjson" in environment.command
   assert "--allow-scorable-budget-exit" in environment.command
+  assert "--dangerously-skip-permissions" not in environment.command
   assert "mkdir -p /logs/agent /logs/artifacts/agent" in environment.command
   assert "> /logs/agent/watchdog-launcher.log 2>&1" in environment.command
   assert "cp /logs/agent/watchdog-launcher.log /logs/artifacts/agent/" in environment.command

@@ -248,9 +248,34 @@ artifact directory.
 
 Each bridge run writes a credential-redacted manifest, OpenCode JSON events,
 provider/bridge traces, and a reference to the official Harbor job directory
-under `.nonoka/eval/opencode/`. Docker access is required. SWE-bench remains
-an external harness because its official local evaluation requires substantially
-more host resources.
+under `.nonoka/eval/opencode/`. Docker access is required.
+
+SWE-bench Lite uses the official verifier and keeps its bridge artifacts
+separate from Terminal-Bench. It requires the official `swebench` package,
+Docker, at least 120 GiB free disk, and 16 GiB RAM for a full Lite run. A
+single explicit instance may be generated and verified on a constrained host:
+
+```bash
+nonoka-cli benchmark swe-bench --instance-id django__django-10914 \
+  --model deepseek/deepseek-v4-flash \
+  --swebench-python /path/to/swebench-venv/bin/python \
+  --max-workers 1 \
+  --artifact-dir .nonoka/eval/swe-flash-django-10914
+```
+
+To verify a previously generated prediction without another model call, pass
+its official `predictions.jsonl` instead:
+
+```bash
+nonoka-cli benchmark swe-bench --instance-id <instance-id> \
+  --predictions /path/to/predictions.jsonl \
+  --artifact-dir .nonoka/eval/swe-lite-<instance-id>
+```
+
+The command writes a verifier command, stdout/stderr, `diagnosis.json`, and a
+human-readable diagnosis. It classifies infrastructure, bridge/provider,
+agent-loop, and verifier failures separately; use the same instance for an
+explicit Aider or native OpenCode comparison after a healthy bridge run fails.
 
 Reference end-to-end validation with `deepseek/deepseek-v4-pro` against the
 pinned Terminal-Bench 2 revision (`69671fba`) has earned official Harbor reward
