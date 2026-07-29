@@ -47,7 +47,7 @@ describe("createNonokaStreamTransformer", () => {
   it("accepts a compatible protocol acknowledgement", async () => {
     const transformer = createNonokaStreamTransformer({ requireProtocolAck: true });
     const input = createInputStream([
-      '{"type":"protocol_ack","version":"1.0","capabilities":["external_tool_receipts","persistent_runtime_limits","termination_reasons","tool_approval_resume"],"cli_version":"0.2.7","framework_version":"1.3.5"}',
+      '{"type":"protocol_ack","version":"1.1","capabilities":["external_tool_receipts","persistent_runtime_limits","termination_reasons","tool_approval_resume","typed_verification_receipts"],"cli_version":"0.2.7","framework_version":"1.3.5"}',
       '{"type":"finish","finish_reason":"stop"}',
     ]);
     const parts = await collectStream(input.pipeThrough(transformer));

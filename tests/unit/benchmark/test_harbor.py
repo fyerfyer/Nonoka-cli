@@ -63,6 +63,8 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
   assert options["maxContextBytes"] == 256 * 1024
   assert options["maxExternalResultBytes"] == 64 * 1024
   assert options["requireObservedEffect"] is True
+  assert options["requireFocusedVerification"] is True
+  assert options["verificationEnforcement"] == "advisory"
   assert "requireWorkspaceMutation" not in options
   assert profile["permission"] == "allow"
   assert profile["agent"]["build"]["tools"] == {"skill": False, "task": False}
@@ -81,8 +83,9 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
   assert "sidecars, checkpoint, repair, mount, migrate" in config["system_prompt"]
   assert "stateful tools only on that working copy" in config["system_prompt"]
   assert "originals may be examined only" in config["system_prompt"]
-  assert "never\ncreate, copy, or modify files under `/tests`" in config["system_prompt"]
-  assert "runner reports collected\nand executed results" in config["system_prompt"]
+  assert "never\ncreate, copy, or modify repository test files" in config["system_prompt"]
+  assert "treat that test as stale input" in config["system_prompt"]
+  assert "runner reports collected and executed results" in config["system_prompt"]
 
 
 def test_adapter_requires_explicit_runtime_artifacts(tmp_path: Path):

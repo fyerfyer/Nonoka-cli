@@ -13,6 +13,9 @@ import {
   loadChatSessionId,
   saveChatSessionId,
   normalizeExternalToolOutput,
+  attachVerificationReceipt,
+  extractHostShellReceipt,
+  prepareHostShellCommand,
 } from '../src/nonoka-language-model';
 
 function makeChatPrompt(newConversation = false): any {
@@ -44,8 +47,13 @@ describe('NonokaLanguageModel', () => {
       maxExternalResultBytes: 65536,
       requireWorkspaceMutation: true,
       requireObservedEffect: true,
+      hostShellEnv: { TASK_ENV: 'testbed' },
+      hostShellInit: ['source /opt/task-env.sh'],
     });
     const model = provider('deepseek-chat');
+
+    expect((model as any).config.hostShellEnv).toEqual({ TASK_ENV: 'testbed' });
+    expect((model as any).config.hostShellInit).toEqual(['source /opt/task-env.sh']);
 
     const request = (model as any).buildChatRequest(
       { prompt: makeChatPrompt(true) },
@@ -57,9 +65,10 @@ describe('NonokaLanguageModel', () => {
     expect(request.max_external_result_bytes).toBe(65536);
     expect(request.require_workspace_mutation).toBe(true);
     expect(request.require_observed_effect).toBe(true);
-    expect(request.protocol.version).toBe('1.0');
+    expect(request.protocol.version).toBe('1.1');
     expect(request.protocol.required_capabilities).toContain('persistent_runtime_limits');
-    expect(request.protocol.provider_version).toBe('0.2.14');
+    expect(request.protocol.required_capabilities).toContain('typed_verification_receipts');
+    expect(request.protocol.provider_version).toBe('0.2.16');
   });
 
   it('constructs with the given model id and config', () => {
@@ -266,6 +275,7 @@ describe('NonokaLanguageModel', () => {
         maxExternalResultBytes: 65536,
         requireWorkspaceMutation: true,
         requireObservedEffect: true,
+        maxCompletionCorrections: 3,
       },
     );
 
@@ -282,6 +292,7 @@ describe('NonokaLanguageModel', () => {
     expect(request.max_external_result_bytes).toBe(65536);
     expect(request.require_workspace_mutation).toBe(true);
     expect(request.require_observed_effect).toBe(true);
+    expect(request.max_completion_corrections).toBe(3);
   });
 
   it('keeps only the latest contiguous external tool-result batch on resume', () => {
@@ -322,6 +333,135 @@ describe('NonokaLanguageModel', () => {
     expect(receipt.completeness).toBe('complete');
     expect(receipt.truncated).toBe(false);
     expect(receipt.artifact_ref).toBeUndefined();
+  });
+
+  it('wraps shell commands with pipefail and extracts the real exit code', () => {
+    const prepared = prepareHostShellCommand(
+      'call-verify', 'bash', { command: 'pytest -q | tail -20', timeout: 30 },
+    );
+
+    expect(prepared.command).toBe('pytest -q | tail -20');
+    expect(prepared.args.command).toContain('bash -o pipefail -c');
+    expect(prepared.timeoutSeconds).toBe(30);
+    const extracted = extractHostShellReceipt(
+      `one failed\n${prepared.marker}=1\n`, prepared.marker,
+    );
+    expect(extracted.exitCode).toBe(1);
+    expect(extracted.output).toBe('one failed');
+  });
+
+  it('applies explicit host shell environment and initialization before commands', () => {
+    const prepared = prepareHostShellCommand(
+      'call-env',
+      'bash',
+      { command: 'python -m pytest -q' },
+      {
+        env: { PATH: '/opt/miniconda3/envs/testbed/bin:/usr/bin', TASK_MODE: 'swe bench' },
+        init: [
+          'source /opt/miniconda3/etc/profile.d/conda.sh',
+          'conda activate testbed',
+        ],
+      },
+    );
+
+    const wrapped = String(prepared.args.command);
+    expect(wrapped).toContain('export PATH=');
+    expect(wrapped).toContain('/opt/miniconda3/envs/testbed/bin:/usr/bin');
+    expect(wrapped).toContain('export TASK_MODE=');
+    expect(wrapped).toContain('swe bench');
+    expect(wrapped).toContain('source /opt/miniconda3/etc/profile.d/conda.sh');
+    expect(wrapped).toContain('conda activate testbed');
+    expect(wrapped.indexOf('conda activate testbed')).toBeLessThan(
+      wrapped.indexOf('python -m pytest -q'),
+    );
+    expect(wrapped).toContain('if [ "$__nonoka_init_rc" -ne 0 ]');
+  });
+
+  it('rejects invalid host shell environment names', () => {
+    expect(() => prepareHostShellCommand(
+      'call-invalid-env',
+      'bash',
+      { command: 'true' },
+      { env: { 'BAD-NAME': 'value' } },
+    )).toThrow('Invalid host shell environment variable name');
+  });
+
+  it('creates a passed focused pytest receipt only with collected tests', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp', 'verify-pass', 'bash', '2 passed in 0.10s', undefined, false, 0,
+    );
+    attachVerificationReceipt(
+      receipt, 'NONOKA_VERIFY=focused pytest -q tests/test_api.py', '/tmp', 30, false,
+    );
+
+    expect(receipt.verification?.status).toBe('passed');
+    expect(receipt.verification?.collected_tests).toBe(2);
+    expect(receipt.verification?.executed_tests).toBe(2);
+    expect(receipt.verification?.level).toBe('focused');
+  });
+
+  it('accepts a repository bin/test runner as focused test verification', () => {
+    const receipt = normalizeExternalToolOutput(
+      '/tmp', 'verify-project-runner', 'bash',
+      'tests finished: 30 passed, in 0.08 seconds', undefined, false, 0,
+    );
+    attachVerificationReceipt(
+      receipt,
+      'NONOKA_VERIFY=focused python bin/test sympy/printing/tests/test_ccode.py -v',
+      '/tmp',
+      120,
+      false,
+      ['test'],
+    );
+
+    expect(receipt.verification).toMatchObject({
+      status: 'passed', kind: 'test', collected_tests: 30, executed_tests: 30,
+    });
+  });
+
+  it('records pytest selection counts and rejects evasive focused checks', () => {
+    const selected = normalizeExternalToolOutput(
+      '/tmp', 'verify-selected', 'bash', 'collected 100 items / 90 deselected / 10 selected\n10 passed', undefined, false, 0,
+    );
+    attachVerificationReceipt(
+      selected, 'NONOKA_VERIFY=focused pytest -q -k api', '/tmp', 30, false,
+    );
+    expect(selected.verification).toMatchObject({
+      status: 'unavailable', collected_tests: 100, executed_tests: 10, deselected_tests: 90,
+    });
+
+    const truncated = normalizeExternalToolOutput(
+      '/tmp', 'verify-tail', 'bash', '2 passed', undefined, false, 0,
+    );
+    attachVerificationReceipt(
+      truncated, 'NONOKA_VERIFY=focused pytest -q | tail -20', '/tmp', 30, false,
+    );
+    expect(truncated.verification?.status).toBe('unavailable');
+
+    const custom = normalizeExternalToolOutput(
+      '/tmp', 'verify-custom', 'bash', 'custom check', undefined, false, 0,
+    );
+    attachVerificationReceipt(
+      custom, 'NONOKA_VERIFY=focused python -c "print(1)"', '/tmp', 30, false, ['test'],
+    );
+    expect(custom.verification).toMatchObject({
+      status: 'unavailable', kind: 'custom',
+    });
+  });
+
+  it('marks zero-test and truncated verification as unavailable', () => {
+    const zero = normalizeExternalToolOutput(
+      '/tmp', 'verify-zero', 'bash', 'no tests ran in 0.01s', undefined, false, 0,
+    );
+    attachVerificationReceipt(zero, 'pytest -q', '/tmp', undefined, false);
+    expect(zero.verification?.status).toBe('unavailable');
+
+    const partial = normalizeExternalToolOutput(
+      '/tmp', 'verify-partial', 'bash', 'x'.repeat(PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES),
+      undefined, false, 0,
+    );
+    attachVerificationReceipt(partial, 'NONOKA_VERIFY=focused npm test', '/tmp', undefined, false);
+    expect(partial.verification?.status).toBe('unavailable');
   });
 
   it('conservatively attests soft-threshold output as partial without tool-name rules', () => {

@@ -50,23 +50,27 @@ async def test_handle_acknowledges_compatible_protocol_before_initialization(sen
   handler = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
   initialized = AsyncMock(side_effect=RuntimeError("stop"))
   with patch.object(handler, "_ensure_orchestrator", new=initialized):
-    await handler.handle(ChatRequest(
-      protocol=ProtocolContract(
-        version=BRIDGE_PROTOCOL_VERSION,
-        required_capabilities=["persistent_runtime_limits"],
-      ),
-      messages=[ChatMessage(role="user", content="hello")],
-    ))
+    await handler.handle(
+      ChatRequest(
+        protocol=ProtocolContract(
+          version=BRIDGE_PROTOCOL_VERSION,
+          required_capabilities=["persistent_runtime_limits"],
+        ),
+        messages=[ChatMessage(role="user", content="hello")],
+      )
+    )
   assert sent[0].type == "protocol_ack"
   assert "persistent_runtime_limits" in sent[0].capabilities
 
 
 async def test_handle_rejects_missing_required_capability(sent):
   handler = ChatRequestHandler(send=AsyncMock(side_effect=lambda msg: sent.append(msg)))
-  await handler.handle(ChatRequest(
-    protocol=ProtocolContract(version="1.0", required_capabilities=["not_supported"]),
-    messages=[ChatMessage(role="user", content="hello")],
-  ))
+  await handler.handle(
+    ChatRequest(
+      protocol=ProtocolContract(version="1.0", required_capabilities=["not_supported"]),
+      messages=[ChatMessage(role="user", content="hello")],
+    )
+  )
   error = next(message for message in sent if message.type == "error")
   assert error.code == "protocol_incompatible"
   assert error.details["missing_capabilities"] == ["not_supported"]
@@ -100,10 +104,12 @@ async def test_handle_title_uses_tool_free_title_path(handler, sent):
       orc.execute_title = MagicMock(return_value=async_empty())
       handler._orchestrator = orc
       handler._session_id = "title-session"
-      await handler.handle(ChatRequest(
-        purpose="title",
-        messages=[ChatMessage(role="user", content="Generate a title")],
-      ))
+      await handler.handle(
+        ChatRequest(
+          purpose="title",
+          messages=[ChatMessage(role="user", content="Generate a title")],
+        )
+      )
       orc.execute_title.assert_called_once_with(
         prompt="Generate a title",
         working_dir=handler._working_dir,
@@ -134,6 +140,9 @@ async def test_existing_orchestrator_receives_generation_overrides(handler):
     max_external_result_bytes=None,
     require_workspace_mutation=False,
     require_observed_effect=False,
+    require_focused_verification=False,
+    verification_enforcement="strict",
+    max_completion_corrections=1,
   )
 
 
@@ -151,13 +160,15 @@ async def test_handle_resume_approval(handler, sent):
           ChatMessage(role="user", content="hello"),
           ChatMessage(
             role="tool",
-            content=json.dumps([
-              {
-                "type": "tool-approval-response",
-                "toolCallId": "call_1",
-                "approved": True,
-              }
-            ]),
+            content=json.dumps(
+              [
+                {
+                  "type": "tool-approval-response",
+                  "toolCallId": "call_1",
+                  "approved": True,
+                }
+              ]
+            ),
           ),
         ],
       )
@@ -316,6 +327,84 @@ def test_extract_tool_results_preserves_typed_observation_receipt():
   assert ChatRequestHandler._extract_tool_results(msg) == {"call_1": receipt}
 
 
+def test_extract_tool_results_preserves_empty_output_receipt():
+  workspace = {
+    "root": "/testbed",
+    "before_digest": "same",
+    "after_digest": "same",
+    "created": [],
+    "modified": [],
+    "deleted": [],
+  }
+  receipt = {
+    "result": "",
+    "exit_code": 1,
+    "host": "opencode",
+    "completeness": "complete",
+    "workspace": workspace,
+  }
+  msg = ChatRequest(
+    messages=[
+      ChatMessage(
+        role="assistant",
+        content="",
+        tool_calls=[ToolCall(id="call_1", name="bash", arguments="{}")],
+      ),
+      ChatMessage(
+        role="tool",
+        content="",
+        tool_call_id="call_1",
+        result=receipt,
+      ),
+    ]
+  )
+
+  assert ChatRequestHandler._extract_tool_results(msg) == {"call_1": receipt}
+
+
+def test_extract_tool_results_keeps_empty_receipt_in_parallel_batch():
+  workspace = {
+    "root": "/testbed",
+    "before_digest": "same",
+    "after_digest": "same",
+  }
+  empty_receipt = {
+    "result": "",
+    "exit_code": 0,
+    "host": "opencode",
+    "completeness": "complete",
+    "workspace": workspace,
+  }
+  output_receipt = {
+    **empty_receipt,
+    "result": "status output",
+  }
+  msg = ChatRequest(
+    messages=[
+      ChatMessage(
+        role="assistant",
+        content="",
+        tool_calls=[
+          ToolCall(id="call_1", name="bash", arguments="{}"),
+          ToolCall(id="call_2", name="bash", arguments="{}"),
+        ],
+      ),
+      ChatMessage(role="tool", content="", tool_call_id="call_1", result=empty_receipt),
+      ChatMessage(
+        role="tool",
+        content="status output",
+        tool_call_id="call_2",
+        result=output_receipt,
+      ),
+    ]
+  )
+
+  assert ChatRequestHandler._extract_tool_results(msg) == {
+    "call_1": empty_receipt,
+    "call_2": output_receipt,
+  }
+
+
 async def async_empty() -> AsyncIterator[None]:
   if False:
     yield None
@@ -325,12 +414,14 @@ async def test_consume_stream_preserves_structured_runtime_termination(handler, 
   async def terminated_stream():
     if False:
       yield None
-    raise RuntimeTerminatedError(Termination(
-      reason=TerminalReason.EXECUTION_POLICY_VIOLATION,
-      message="protected input changed",
-      dimension="workspace_policy",
-      diagnostics={"paths": ["fixture.db"]},
-    ))
+    raise RuntimeTerminatedError(
+      Termination(
+        reason=TerminalReason.EXECUTION_POLICY_VIOLATION,
+        message="protected input changed",
+        dimension="workspace_policy",
+        diagnostics={"paths": ["fixture.db"]},
+      )
+    )
 
   await handler._consume_stream(terminated_stream())
 
@@ -408,6 +499,7 @@ async def test_sync_task_state_from_todowrite(tmp_path):
   )
 
   from nonoka.core.runner import StreamEvent
+
   event = StreamEvent(
     type="tool_call_start",
     data={
@@ -416,12 +508,14 @@ async def test_sync_task_state_from_todowrite(tmp_path):
           "id": "call_todo",
           "function": {
             "name": "todowrite",
-            "arguments": json.dumps({
-              "todos": [
-                {"id": "1", "content": "step 1", "status": "completed"},
-                {"id": "2", "content": "step 2", "status": "in_progress"},
-              ]
-            }),
+            "arguments": json.dumps(
+              {
+                "todos": [
+                  {"id": "1", "content": "step 1", "status": "completed"},
+                  {"id": "2", "content": "step 2", "status": "in_progress"},
+                ]
+              }
+            ),
           },
         }
       ]

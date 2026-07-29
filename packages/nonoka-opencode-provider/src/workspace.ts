@@ -17,7 +17,11 @@ import path from 'path';
 import { appendFileSync } from 'fs';
 import { appendRunEvidence } from './evidence.js';
 
-const EXCLUDED = new Set(['.git', '.nonoka', 'node_modules', '.venv', 'venv', '__pycache__']);
+const EXCLUDED = new Set([
+  '.git', '.nonoka', 'node_modules', '.venv', 'venv', '__pycache__',
+  '.pytest_cache', '.mypy_cache', '.ruff_cache', '.hypothesis', '.tox', '.nox',
+  '.coverage', 'coverage', 'htmlcov',
+]);
 
 const MUTATION_TOOLS = new Set([
   'write', 'write_file', 'edit', 'edit_file', 'apply_patch', 'delete_file',
@@ -62,6 +66,20 @@ function configuredProtectedPaths(cwd: string): string[] {
     if (!isAllowedExternalTarget(candidate, resolvedCwd)) continue;
     targets.add(path.resolve(candidate));
     if (targets.size >= MAX_EXTERNAL_TARGETS) break;
+  }
+  return [...targets];
+}
+
+function configuredProtectedWorkspacePaths(cwd: string): string[] {
+  const configured = process.env.NONOKA_PROTECTED_WORKSPACE_PATHS;
+  if (!configured) return [];
+  const root = path.resolve(cwd);
+  const targets = new Set<string>();
+  for (const candidate of configured.split(path.delimiter)) {
+    if (!candidate) continue;
+    const resolved = path.resolve(root, candidate);
+    if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) continue;
+    targets.add(resolved);
   }
   return [...targets];
 }
@@ -247,6 +265,7 @@ function walk(
   entries: string[],
   modes: Map<string, number>,
   protectedFiles: Set<string>,
+  protectedRoots: readonly string[],
 ): void {
   let directoryEntries;
   try {
@@ -262,7 +281,7 @@ function walk(
     const absolute = path.join(current, entry.name);
     const relative = path.relative(root, absolute);
     if (entry.isDirectory()) {
-      walk(root, absolute, entries, modes, protectedFiles);
+      walk(root, absolute, entries, modes, protectedFiles, protectedRoots);
     } else if (entry.isFile()) {
       let stat;
       try {
@@ -276,7 +295,10 @@ function walk(
       modes.set(relative, mode);
       try {
         const data = readFileSync(absolute);
-        if ((mode & 0o222) === 0) protectedFiles.add(relative);
+        if (
+          (mode & 0o222) === 0
+          || protectedRoots.some((target) => absolute === target || absolute.startsWith(`${target}${path.sep}`))
+        ) protectedFiles.add(relative);
         entries.push(`${relative}\0${createHash('sha256').update(data).digest('hex')}`);
       } catch {
         // Some sandbox runtimes project host-owned support files into the
@@ -294,12 +316,13 @@ function snapshot(
   cwd: string,
   externalTargets: string[] = [],
   protectedExternalTargets: string[] = [],
+  protectedWorkspacePaths: string[] = [],
 ): Snapshot {
   const root = path.resolve(cwd);
   const entries: string[] = [];
   const modes = new Map<string, number>();
   const protectedFiles = new Set<string>();
-  if (existsSync(root)) walk(root, root, entries, modes, protectedFiles);
+  if (existsSync(root)) walk(root, root, entries, modes, protectedFiles, protectedWorkspacePaths);
   entries.sort();
   const files = new Map<string, string>(entries.map((entry): [string, string] => {
     const separator = entry.indexOf('\0');
@@ -401,7 +424,7 @@ export function recordWorkspaceBefore(
       ...externalTargetsForAction(cwd, toolName, toolArguments),
       ...protectedTargets,
     ])];
-    const before = snapshot(cwd, targets, protectedTargets);
+    const before = snapshot(cwd, targets, protectedTargets, configuredProtectedWorkspacePaths(cwd));
     rmSync(backup, { recursive: true, force: true });
     preserveProtectedFiles(before, backup);
     writeFileSync(state, JSON.stringify(persisted(before)), 'utf-8');
@@ -435,10 +458,11 @@ export function receiptForWorkspaceResult(
     }
     const externalTargets = before.externalTargets.map((target) => target.path);
     const protectedExternalTargets = [...before.protectedExternalTargets];
-    const observed = snapshot(cwd, externalTargets, protectedExternalTargets);
+    const protectedWorkspacePaths = configuredProtectedWorkspacePaths(cwd);
+    const observed = snapshot(cwd, externalTargets, protectedExternalTargets, protectedWorkspacePaths);
     const policy = restoreProtectedFiles(before, observed, backup);
     const after = policy.restored.length > 0
-      ? snapshot(cwd, externalTargets, protectedExternalTargets)
+      ? snapshot(cwd, externalTargets, protectedExternalTargets, protectedWorkspacePaths)
       : observed;
     if (existsSync(state)) rmSync(state, { force: true });
     rmSync(backup, { recursive: true, force: true });

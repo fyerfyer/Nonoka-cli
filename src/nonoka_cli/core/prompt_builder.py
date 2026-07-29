@@ -47,7 +47,8 @@ declares `test_*` functions, invoke it through the appropriate test runner
 (for example `pytest`) unless it has a deliberate executable entrypoint. Do
 not treat an interpreter run with no collected tests or no test output as a
 passing check. After the final mutation, run one focused acceptance command
-and inspect the runner's reported result. Missing dependencies, skipped
+prefixed by `NONOKA_VERIFY=focused` and inspect the runner's reported result.
+Use `NONOKA_VERIFY=full` only for an intentionally broad suite. Missing dependencies, skipped
 collection, empty output, or an unavailable test runner leave verification
 unresolved; report that honestly rather than claiming success from static
 reasoning or an explanation alone.
@@ -76,23 +77,23 @@ class SystemPromptBuilder:
     allowed_tools: list[str] | None = None,
   ):
     """Args:
-      base: Base system prompt (config, host, or default).
-      model: Model identifier injected as an identity line.
-      cwd: Current working directory to inject path guidance.
-      host_tools: Host native tool names available to the model.
-      nonoka_tools: Local bridge capabilities executed directly by nonoka.
-      external_mcp_tools: Prefixed external MCP tool names.
-      external_skill_tools: Prefixed external skill tool names.
-      internal_mcp_tools: Prefixed internal MCP tool names.
-      internal_skill_tools: Prefixed internal skill tool names.
-      opencode_native_skill_enabled: If True, add a warning about the
-        conflicting OpenCode native ``skill:<name>`` syntax.
-      repo_map: Optional repo map string to inject.
-      git_summary: Optional git checkpoint status summary.
-      plugin_summary: Optional loaded plugin manifest summary.
-      execution_plan: Optional structured plan produced by the planner agent.
-      allowed_tools: Optional whitelist of tool names that do not require
-        explicit human approval.
+    base: Base system prompt (config, host, or default).
+    model: Model identifier injected as an identity line.
+    cwd: Current working directory to inject path guidance.
+    host_tools: Host native tool names available to the model.
+    nonoka_tools: Local bridge capabilities executed directly by nonoka.
+    external_mcp_tools: Prefixed external MCP tool names.
+    external_skill_tools: Prefixed external skill tool names.
+    internal_mcp_tools: Prefixed internal MCP tool names.
+    internal_skill_tools: Prefixed internal skill tool names.
+    opencode_native_skill_enabled: If True, add a warning about the
+      conflicting OpenCode native ``skill:<name>`` syntax.
+    repo_map: Optional repo map string to inject.
+    git_summary: Optional git checkpoint status summary.
+    plugin_summary: Optional loaded plugin manifest summary.
+    execution_plan: Optional structured plan produced by the planner agent.
+    allowed_tools: Optional whitelist of tool names that do not require
+      explicit human approval.
     """
     self._base = base
     self._model = model.strip()
@@ -273,8 +274,7 @@ class SystemPromptBuilder:
 
     if self._host_tools:
       lines.append(
-        "- Host native tools (OpenCode executes): "
-        + ", ".join(f"`{n}`" for n in self._host_tools)
+        "- Host native tools (OpenCode executes): " + ", ".join(f"`{n}`" for n in self._host_tools)
       )
     if self._nonoka_tools:
       lines.append(

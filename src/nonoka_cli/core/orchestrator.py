@@ -174,9 +174,7 @@ class Orchestrator:
 
     # Load project plugin manifests before building the Agent so that
     # allowed_tools / plugin summary can be taken into account.
-    manifest_loader = PluginManifestLoader(
-      extra_paths=list(self._config.plugins.manifests)
-    )
+    manifest_loader = PluginManifestLoader(extra_paths=list(self._config.plugins.manifests))
     self._plugin_manifests = manifest_loader.load(Path.cwd())
     allowed_tools = self._effective_allowed_tools()
 
@@ -205,10 +203,12 @@ class Orchestrator:
       checkpoint=SQLiteCheckpointStore(db_path=str(db_path)),
       hooks=self._build_hooks(),
       observability=ObservabilityPipeline(
-        SQLiteEventStore(os.getenv(
-          "NONOKA_EVENT_DB",
-          str(Path.home() / ".local" / "share" / "nonoka" / "events.db"),
-        ))
+        SQLiteEventStore(
+          os.getenv(
+            "NONOKA_EVENT_DB",
+            str(Path.home() / ".local" / "share" / "nonoka" / "events.db"),
+          )
+        )
       ),
       **self._runner_cache_options(),
     )
@@ -237,6 +237,7 @@ class Orchestrator:
     if not self._config or not self._config.cache.enabled:
       return {}
     from nonoka.core.cache import SQLiteResponseCache
+
     options: dict[str, Any] = {
       "response_cache": SQLiteResponseCache(self._config.cache.path),
       "cache_ttl_seconds": self._config.cache.ttl_seconds,
@@ -247,28 +248,34 @@ class Orchestrator:
         OpenAICompatibleEmbedder,
         SQLiteSemanticResponseCache,
       )
+
       workspace = Path.cwd()
       scope = self._semantic_cache_scope(workspace)
       if scope is None:
         logger.warning("semantic_cache_disabled_without_revision_scope")
         return options
-      options.update({
-        "semantic_cache": SQLiteSemanticResponseCache(cache.path),
-        "semantic_embedder": OpenAICompatibleEmbedder(
-          api_base=cache.embedding_api_base, model=cache.embedding_model,
-          api_key_env=cache.embedding_api_key_env, dimensions=cache.embedding_dimensions,
-        ),
-        "semantic_threshold": cache.semantic_threshold,
-        # The workspace may change during an OpenCode session.  Recompute the
-        # revision fingerprint per completion so semantic reuse never crosses
-        # a write made earlier in the same task.
-        "cache_namespace": lambda: self._semantic_cache_scope(workspace),
-      })
+      options.update(
+        {
+          "semantic_cache": SQLiteSemanticResponseCache(cache.path),
+          "semantic_embedder": OpenAICompatibleEmbedder(
+            api_base=cache.embedding_api_base,
+            model=cache.embedding_model,
+            api_key_env=cache.embedding_api_key_env,
+            dimensions=cache.embedding_dimensions,
+          ),
+          "semantic_threshold": cache.semantic_threshold,
+          # The workspace may change during an OpenCode session.  Recompute the
+          # revision fingerprint per completion so semantic reuse never crosses
+          # a write made earlier in the same task.
+          "cache_namespace": lambda: self._semantic_cache_scope(workspace),
+        }
+      )
     return options
 
   def _semantic_cache_scope(self, workspace: Path) -> str | None:
     """Return a content-sensitive scope or disable semantic reuse conservatively."""
     try:
+
       def git(*args: str) -> bytes:
         return subprocess.run(
           ["git", *args],
@@ -277,6 +284,7 @@ class Orchestrator:
           stdout=subprocess.PIPE,
           stderr=subprocess.DEVNULL,
         ).stdout
+
       head = git("rev-parse", "HEAD")
       diff = git("diff", "--no-ext-diff", "--binary", "HEAD", "--")
       untracked = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
@@ -320,9 +328,7 @@ class Orchestrator:
             deferred=True,
           )
 
-    output_policy = ToolOutputPolicy.from_config(
-      self._config.tool_output.model_dump()
-    )
+    output_policy = ToolOutputPolicy.from_config(self._config.tool_output.model_dump())
 
     async def on_llm_request(ctx, messages, tools):
       if self._config is None:
@@ -443,10 +449,12 @@ class Orchestrator:
       return self._agent_factory.skill_registry
     search_paths: list[Path] = []
     if cwd is not None:
-      search_paths.extend([
+      search_paths.extend(
+        [
           cwd / ".nonoka" / "skills",
           cwd / "skills",
-      ])
+        ]
+      )
     return SkillRegistry(
       enabled=list(self._config.skills),
       search_paths=search_paths,
@@ -481,7 +489,9 @@ class Orchestrator:
       plugin_manifests=self._plugin_manifests,
       safety_policy=SafetyPolicy(
         allowed_roots=[working_dir, *self._config.safety.allowed_roots],
-      ) if self._config.safety.enabled else None,
+      )
+      if self._config.safety.enabled
+      else None,
     )
 
   async def execute(
@@ -780,6 +790,9 @@ class Orchestrator:
     max_external_result_bytes: int | None = None,
     require_workspace_mutation: bool = False,
     require_observed_effect: bool = False,
+    require_focused_verification: bool = False,
+    verification_enforcement: str = "strict",
+    max_completion_corrections: int = 1,
   ) -> None:
     """Apply non-persistent per-run options and rebuild the active Agent."""
     self._ensure_initialized()
@@ -795,6 +808,9 @@ class Orchestrator:
       max_external_result_bytes=max_external_result_bytes,
       require_workspace_mutation=require_workspace_mutation,
       require_observed_effect=require_observed_effect,
+      require_focused_verification=require_focused_verification,
+      verification_enforcement=verification_enforcement,
+      max_completion_corrections=max_completion_corrections,
     )
     self._agent_factory.build()
 
@@ -814,9 +830,7 @@ class Orchestrator:
     self._config = new_config
 
     if self._tool_loader is not None:
-      self._tool_loader.search_paths = [
-        Path(p).expanduser() for p in new_config.tool_paths
-      ]
+      self._tool_loader.search_paths = [Path(p).expanduser() for p in new_config.tool_paths]
       self._tool_loader.reload()
     if self._agent_factory is not None:
       try:

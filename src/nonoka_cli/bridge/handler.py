@@ -244,36 +244,42 @@ class ChatRequestHandler:
     """Verify the provider contract before creating or resuming a session."""
     contract = msg.protocol
     if contract is None:
-      await self._send(ErrorEvent(
-        message="Provider did not declare a bridge protocol contract.",
-        code="protocol_contract_required",
-        retryable=False,
-        details={"supported_version": BRIDGE_PROTOCOL_VERSION},
-      ))
+      await self._send(
+        ErrorEvent(
+          message="Provider did not declare a bridge protocol contract.",
+          code="protocol_contract_required",
+          retryable=False,
+          details={"supported_version": BRIDGE_PROTOCOL_VERSION},
+        )
+      )
       return False
 
     requested_major = contract.version.split(".", 1)[0]
     supported_major = BRIDGE_PROTOCOL_VERSION.split(".", 1)[0]
     missing = sorted(set(contract.required_capabilities) - BRIDGE_CAPABILITIES)
     if requested_major != supported_major or missing:
-      await self._send(ErrorEvent(
-        message="Bridge protocol is incompatible with the provider request.",
-        code="protocol_incompatible",
-        retryable=False,
-        details={
-          "requested_version": contract.version,
-          "supported_version": BRIDGE_PROTOCOL_VERSION,
-          "missing_capabilities": missing,
-          "supported_capabilities": sorted(BRIDGE_CAPABILITIES),
-        },
-      ))
+      await self._send(
+        ErrorEvent(
+          message="Bridge protocol is incompatible with the provider request.",
+          code="protocol_incompatible",
+          retryable=False,
+          details={
+            "requested_version": contract.version,
+            "supported_version": BRIDGE_PROTOCOL_VERSION,
+            "missing_capabilities": missing,
+            "supported_capabilities": sorted(BRIDGE_CAPABILITIES),
+          },
+        )
+      )
       return False
 
-    await self._send(ProtocolAckEvent(
-      capabilities=sorted(BRIDGE_CAPABILITIES),
-      cli_version=_package_version("nonoka-cli"),
-      framework_version=_package_version("nonoka"),
-    ))
+    await self._send(
+      ProtocolAckEvent(
+        capabilities=sorted(BRIDGE_CAPABILITIES),
+        cli_version=_package_version("nonoka-cli"),
+        framework_version=_package_version("nonoka"),
+      )
+    )
     return True
 
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
@@ -290,6 +296,9 @@ class ChatRequestHandler:
           max_external_result_bytes=msg.max_external_result_bytes,
           require_workspace_mutation=msg.require_workspace_mutation,
           require_observed_effect=msg.require_observed_effect,
+          require_focused_verification=msg.require_focused_verification,
+          verification_enforcement=msg.verification_enforcement,
+          max_completion_corrections=msg.max_completion_corrections,
         )
       return
 
@@ -308,6 +317,9 @@ class ChatRequestHandler:
         max_external_result_bytes=msg.max_external_result_bytes,
         require_workspace_mutation=msg.require_workspace_mutation,
         require_observed_effect=msg.require_observed_effect,
+        require_focused_verification=msg.require_focused_verification,
+        verification_enforcement=msg.verification_enforcement,
+        max_completion_corrections=msg.max_completion_corrections,
       )
 
     self._task_state_service = TaskStateService(
@@ -328,11 +340,20 @@ class ChatRequestHandler:
     return any(
       value is not None
       for value in (
-        msg.max_turns, msg.temperature, msg.timeout_seconds,
-        msg.wall_timeout_seconds, msg.tool_budget, msg.max_context_bytes,
+        msg.max_turns,
+        msg.temperature,
+        msg.timeout_seconds,
+        msg.wall_timeout_seconds,
+        msg.tool_budget,
+        msg.max_context_bytes,
         msg.max_external_result_bytes,
       )
-    ) or msg.require_workspace_mutation or msg.require_observed_effect
+    ) or (
+      msg.require_workspace_mutation
+      or msg.require_observed_effect
+      or msg.require_focused_verification
+      or msg.max_completion_corrections != 1
+    )
 
   async def _apply_session(self, session_id: str | None) -> None:
     """Switch orchestrator session if the provider sent a different one."""
@@ -475,7 +496,7 @@ class ChatRequestHandler:
         break
     results: dict[str, Any] = {}
     for m in msg.messages:
-      if m.role != "tool" or not m.content or not m.tool_call_id:
+      if m.role != "tool" or not m.tool_call_id or (not m.content and m.result is None):
         continue
       # Skip approval-response payloads.
       try:
@@ -483,8 +504,7 @@ class ChatRequestHandler:
       except json.JSONDecodeError:
         parts = None
       if isinstance(parts, list) and any(
-        isinstance(part, dict) and part.get("type") == "tool-approval-response"
-        for part in parts
+        isinstance(part, dict) and part.get("type") == "tool-approval-response" for part in parts
       ):
         continue
       if pending_ids and m.tool_call_id not in pending_ids:
@@ -533,16 +553,20 @@ class ChatRequestHandler:
         reason=termination.get("reason"),
         diagnostics=termination.get("diagnostics"),
       )
-      await self._send(ErrorEvent(
-        message=exc.termination.message,
-        code=exc.termination.reason.value,
-        retryable=False,
-        details={"termination": termination},
-      ))
-      await self._send(FinishEvent(
-        finish_reason="error",
-        termination=termination,
-      ))
+      await self._send(
+        ErrorEvent(
+          message=exc.termination.message,
+          code=exc.termination.reason.value,
+          retryable=False,
+          details={"termination": termination},
+        )
+      )
+      await self._send(
+        FinishEvent(
+          finish_reason="error",
+          termination=termination,
+        )
+      )
     except Exception as exc:
       logger.error("stream_consumption_failed", error=str(exc))
       await self._send(ErrorEvent(message=f"Stream failed: {exc}"))
@@ -607,9 +631,7 @@ class ChatRequestHandler:
       summary["tool_name"] = data.get("tool_name")
     elif event.type == "final":
       summary["success"] = bool(data.get("success", False))
-      summary["requires_external_execution"] = bool(
-        data.get("requires_external_execution", False)
-      )
+      summary["requires_external_execution"] = bool(data.get("requires_external_execution", False))
       summary["requires_approval"] = bool(data.get("requires_approval", False))
     elif event.type == "error":
       summary["error"] = data.get("error")

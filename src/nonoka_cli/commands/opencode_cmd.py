@@ -13,7 +13,6 @@ from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.utils.errors import ConfigError
 
-
 _PROVIDER_PACKAGE = "nonoka-opencode-provider"
 
 
@@ -74,10 +73,10 @@ _DEFAULT_OPENCODE_CONFIG = {
       "options": {
         "serverCommand": ["bash", "-c", "nonoka-cli --server 2>/tmp/nonoka-server.log"],
         "cwd": ".",
+        "requireFocusedVerification": True,
+        "verificationEnforcement": "strict",
       },
-      "models": {
-        "default": {"name": "Nonoka Default"}
-      }
+      "models": {"default": {"name": "Nonoka Default"}},
     }
   },
   # Permission is regenerated from nonoka.yaml in cmd_init.
@@ -107,10 +106,9 @@ _DEFAULT_OPENCODE_CONFIG = {
   # skill__<skill>__<tool> and load_skill tools; leaving OpenCode's native
   # skill enabled would cause the model to receive conflicting instructions
   # (skill:<name> vs skill__<name>__<tool>).
-  "tools": {
-    "skill": False
-  },
+  "tools": {"skill": False},
 }
+
 
 def _install_provider_locally(cwd: Path, version: str | None = None) -> bool:
   """Try to install the OpenCode provider package into the project directory.
@@ -160,10 +158,11 @@ _OPENCODE_PROMPT_GUIDELINES = (
   "- You are running inside OpenCode. Use only the tools provided by OpenCode.\n"
   "- Tool names available in this environment include bash, read, write, edit, and todowrite.\n"
   "- For multi-step tasks, keep the OpenCode TODO panel up to date using the todowrite tool.\n"
-  "- Do not explore directories or read files unless the user explicitly requests it.\n"
+  "- Inspect the smallest relevant part of the repository needed to implement the request.\n"
   "- When writing or editing files, use absolute paths under the current working directory "
   "unless the user provides a different path.\n"
   "- Prefer reading a file before editing it when you need context.\n"
+  "- Prefix the final focused acceptance check with `NONOKA_VERIFY=focused`.\n"
 )
 
 
@@ -178,8 +177,7 @@ def _build_opencode_agent_prompt(config: CLIConfig) -> str:
   body = config.system_prompt.strip() or "You are a helpful coding assistant."
   permission = _build_opencode_permission(config)
   yaml_lines = "\n".join(
-    f"  {json.dumps(k)}: {v}" if k == "*" else f"  {k}: {v}"
-    for k, v in permission.items()
+    f"  {json.dumps(k)}: {v}" if k == "*" else f"  {k}: {v}" for k, v in permission.items()
   )
   hitl_note = (
     "- Tool calls are auto-approved because nonoka.yaml has cli.auto_approve enabled.\n"
@@ -234,9 +232,7 @@ def cmd_init(args: argparse.Namespace) -> int:
   # Inject/update the nonoka provider block.
   provider_block = dict(_DEFAULT_OPENCODE_CONFIG["provider"]["nonoka"])
   if config.model:
-    provider_block["models"] = {
-      "default": {"name": f"Nonoka {config.model}"}
-    }
+    provider_block["models"] = {"default": {"name": f"Nonoka {config.model}"}}
   if args.config:
     config_path = str(Path(args.config).expanduser().resolve())
   else:
@@ -297,7 +293,9 @@ def cmd_init(args: argparse.Namespace) -> int:
       print(f"  npm install --save-dev {_PROVIDER_PACKAGE}")
       print(f"  pnpm add -D {_PROVIDER_PACKAGE}")
   else:
-    print(f"\nFor global installs, ensure the provider is available: npm install -g {_PROVIDER_PACKAGE}")
+    print(
+      f"\nFor global installs, ensure the provider is available: npm install -g {_PROVIDER_PACKAGE}"
+    )
 
   print("Then run: opencode")
   return 0
@@ -332,7 +330,8 @@ def add_subparser(subparsers: Any) -> None:
   init_parser = opencode_subparsers.add_parser("init", help="Generate or merge opencode.json")
   _add_config_arg(init_parser)
   init_parser.add_argument(
-    "--yes", "-y",
+    "--yes",
+    "-y",
     action="store_true",
     help="Non-interactive mode (default; kept for script compatibility)",
   )

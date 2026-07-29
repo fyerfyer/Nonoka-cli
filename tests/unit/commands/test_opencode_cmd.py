@@ -37,6 +37,8 @@ def test_opencode_init_creates_file(tmp_path: Path):
   data = json.loads(opencode_path.read_text())
   assert data["model"] == "nonoka/default"
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
+  assert data["provider"]["nonoka"]["options"]["requireFocusedVerification"] is True
+  assert data["provider"]["nonoka"]["options"]["verificationEnforcement"] == "strict"
   assert "--config" in " ".join(data["provider"]["nonoka"]["options"]["serverCommand"])
 
 
@@ -80,6 +82,7 @@ def test_opencode_init_creates_agent_prompt(tmp_path: Path):
   assert '"*": ask' in content
   assert "bash: ask" in content
   assert "OpenCode-specific guidelines" in content
+  assert "NONOKA_VERIFY=focused" in content
 
 
 def test_opencode_init_uses_nonoka_system_prompt(tmp_path: Path):

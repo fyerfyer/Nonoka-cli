@@ -55,6 +55,11 @@ export function createNonokaStreamTransformer(
     allowedToolNames?: Set<string>;
     cwd?: string;
     requireProtocolAck?: boolean;
+    prepareToolArguments?: (
+      toolCallId: string,
+      toolName: string,
+      args: Record<string, unknown>,
+    ) => Record<string, unknown>;
   } = {},
 ): TransformStream<string, LanguageModelV3StreamPart> {
   let textBlockId: string | null = null;
@@ -159,13 +164,17 @@ export function createNonokaStreamTransformer(
           flushPendingText(controller);
           const toolName = event.tool_name ?? '';
           const toolCallId = event.tool_call_id ?? '';
+          const originalArgs = event.args && typeof event.args === 'object'
+            ? event.args as Record<string, unknown>
+            : {};
+          const preparedArgs = options.prepareToolArguments?.(
+            toolCallId, toolName, originalArgs,
+          ) ?? originalArgs;
           if (options.cwd) recordWorkspaceBefore(
             options.cwd,
             toolCallId,
             toolName,
-            event.args && typeof event.args === 'object'
-              ? event.args as Record<string, unknown>
-              : undefined,
+            originalArgs,
           );
 
           // Only forward tool calls for tools that OpenCode itself can execute.
@@ -189,7 +198,7 @@ export function createNonokaStreamTransformer(
             type: 'tool-call' as const,
             toolCallId,
             toolName,
-            input: JSON.stringify(event.args ?? {}),
+            input: JSON.stringify(preparedArgs),
             providerExecuted: false,
             dynamic: true,
             metadata: event.metadata,
@@ -243,6 +252,21 @@ export function createNonokaStreamTransformer(
         }
 
         case NONOKA_OUTBOUND_TYPES.finish: {
+          if (event.finish_reason !== NONOKA_FINISH_REASONS.tool_calls) {
+            const usage = event.runtime?.usage;
+            if (usage && typeof usage === 'object') {
+              const state = usage as Record<string, unknown>;
+              const focused = state.focused_verification_status;
+              const full = state.full_verification_status;
+              const modified = Number(state.effect_count ?? 0) > 0;
+              if (focused && focused !== 'not_run') {
+                pendingText += (
+                  `\n\n[Nonoka status: modified=${modified ? 'yes' : 'no'}; `
+                  + `focused_verification=${String(focused)}; full_suite=${String(full ?? 'not_run')}]`
+                );
+              }
+            }
+          }
           flushPendingText(controller);
           if (textBlockStarted && textBlockId !== null) {
             const endPart = { type: 'text-end' as const, id: textBlockId };

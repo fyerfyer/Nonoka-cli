@@ -12,13 +12,14 @@ export const NONOKA_MESSAGE_ROLES = {
 
 export type NonokaMessageRole = keyof typeof NONOKA_MESSAGE_ROLES;
 
-export const NONOKA_BRIDGE_PROTOCOL_VERSION = '1.0';
-export const NONOKA_PROVIDER_VERSION = '0.2.14';
+export const NONOKA_BRIDGE_PROTOCOL_VERSION = '1.1';
+export const NONOKA_PROVIDER_VERSION = '0.2.16';
 export const NONOKA_REQUIRED_CAPABILITIES = [
   'external_tool_receipts',
   'persistent_runtime_limits',
   'termination_reasons',
   'tool_approval_resume',
+  'typed_verification_receipts',
 ] as const;
 
 export interface NonokaProtocolContract {
@@ -46,6 +47,30 @@ export interface NonokaExternalToolReceipt {
   completeness: ObservationCompleteness;
   workspace?: Record<string, unknown>;
   effect?: Record<string, unknown>;
+  verification?: NonokaVerificationReceipt;
+}
+
+export type NonokaVerificationStatus = 'passed' | 'failed' | 'unavailable' | 'not_run';
+export type NonokaVerificationLevel = 'focused' | 'full';
+export type NonokaVerificationKind = 'test' | 'build' | 'lint' | 'typecheck' | 'custom';
+
+export interface NonokaVerificationReceipt {
+  status: NonokaVerificationStatus;
+  level: NonokaVerificationLevel;
+  kind: NonokaVerificationKind;
+  command: string;
+  cwd: string;
+  exit_code?: number;
+  timed_out: boolean;
+  timeout_seconds?: number;
+  truncated: boolean;
+  completeness: ObservationCompleteness;
+  collected_tests?: number;
+  executed_tests?: number;
+  deselected_tests?: number;
+  summary?: string;
+  failure_summary?: string;
+  artifact_ref?: string;
 }
 
 export interface NonokaChatMessage {
@@ -105,6 +130,9 @@ export interface NonokaChatRequest {
   max_external_result_bytes?: number;
   require_workspace_mutation?: boolean;
   require_observed_effect?: boolean;
+  require_focused_verification?: boolean;
+  verification_enforcement?: 'strict' | 'advisory';
+  max_completion_corrections?: number;
   request_id?: string;
 }
 

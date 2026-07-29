@@ -30,7 +30,18 @@ export type TaskEffectEvidence = {
   policy_violations?: string[];
 };
 
-export function appendRunEvidence(event: WorkspaceEffectEvidence | TaskEffectEvidence): void {
+export type VerificationEvidence = {
+  schema_version: 1;
+  kind: 'verification';
+  source: string;
+  tool_call_id: string;
+  tool_name: string;
+  receipt: Record<string, unknown>;
+};
+
+export function appendRunEvidence(
+  event: WorkspaceEffectEvidence | TaskEffectEvidence | VerificationEvidence,
+): void {
   const target = process.env.NONOKA_RUN_EVIDENCE_PATH;
   if (!target) return;
   try {

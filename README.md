@@ -277,6 +277,16 @@ human-readable diagnosis. It classifies infrastructure, bridge/provider,
 agent-loop, and verifier failures separately; use the same instance for an
 explicit Aider or native OpenCode comparison after a healthy bridge run fails.
 
+### Verified benchmark and regression results
+
+The current verification-contract implementation has passed the following checks against the local sibling `nonoka-agent` checkout:
+
+- `267` deterministic nonoka-cli unit and integration tests.
+- `61` OpenCode provider tests, followed by a successful TypeScript build.
+- Official SWE-bench Lite verification for eight distinct instances: `astropy__astropy-12907`, `django__django-10914`, `django__django-10924`, `django__django-11001`, `django__django-11099`, `pytest-dev__pytest-11143`, `pallets__flask-4045`, and `sympy__sympy-11400`.
+
+The pinned `swe-flash-selected10-v1` regression sample resolved 6 of 10 instances with `deepseek/deepseek-v4-flash`. Subsequent `deepseek/deepseek-v4-pro` runs independently resolved several Django and cross-project instances and, after the verification-contract remediation, resolved the previously failing `pallets__flask-4045` and `sympy__sympy-11400` instances. All reported results come from the official SWE-bench verifier rather than model-authored assertions. They are targeted engineering samples, not a claim of a full SWE-bench Lite score.
+
 Reference end-to-end validation with `deepseek/deepseek-v4-pro` against the
 pinned Terminal-Bench 2 revision (`69671fba`) has earned official Harbor reward
 `1` on three distinct tasks: `sanitize-git-repo`, `configure-git-webserver`, and

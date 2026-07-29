@@ -51,7 +51,18 @@ class TaskEffectEvidence(BaseModel):
   policy_violations: list[str] = Field(default_factory=list)
 
 
-RunEvidence = WorkspaceEffectEvidence | TaskEffectEvidence | TerminationEvidence
+class VerificationEvidence(BaseModel):
+  schema_version: Literal[1] = 1
+  kind: Literal["verification"] = "verification"
+  source: str
+  tool_call_id: str
+  tool_name: str = ""
+  receipt: dict[str, Any]
+
+
+RunEvidence = (
+  WorkspaceEffectEvidence | TaskEffectEvidence | VerificationEvidence | TerminationEvidence
+)
 
 
 def append_run_evidence(event: RunEvidence, path: Path | None = None) -> None:
@@ -81,6 +92,8 @@ def read_run_evidence(path: Path) -> Iterable[RunEvidence]:
         yield WorkspaceEffectEvidence.model_validate(value)
       elif kind == "task_effect":
         yield TaskEffectEvidence.model_validate(value)
+      elif kind == "verification":
+        yield VerificationEvidence.model_validate(value)
       elif kind == "termination":
         yield TerminationEvidence.model_validate(value)
     except (ValueError, TypeError):

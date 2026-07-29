@@ -4,6 +4,7 @@ import {
   type NonokaLanguageModelConfig,
   type NonokaLanguageModelSettings,
 } from './nonoka-language-model.js';
+import type { NonokaVerificationKind } from './protocol.js';
 
 export interface NonokaProviderSettings {
   /**
@@ -39,6 +40,23 @@ export interface NonokaProviderSettings {
   maxExternalResultBytes?: number;
   requireWorkspaceMutation?: boolean;
   requireObservedEffect?: boolean;
+  requireFocusedVerification?: boolean;
+  verificationEnforcement?: 'strict' | 'advisory';
+  maxCompletionCorrections?: number;
+  /** Verification categories accepted for completion by this profile. */
+  allowedVerificationKinds?: NonokaVerificationKind[];
+
+  /**
+   * Environment variables applied to OpenCode-hosted shell tool commands.
+   * This is separate from `env`, which configures only the Nonoka server.
+   */
+  hostShellEnv?: Record<string, string>;
+
+  /**
+   * Trusted shell initialization statements run before each hosted shell
+   * command, for example activating a benchmark-owned Conda environment.
+   */
+  hostShellInit?: string[];
 
   /**
    * Additional environment variables for the server process.
@@ -92,6 +110,12 @@ export function createNonoka(
     maxExternalResultBytes: settings.maxExternalResultBytes,
     requireWorkspaceMutation: settings.requireWorkspaceMutation,
     requireObservedEffect: settings.requireObservedEffect,
+    requireFocusedVerification: settings.requireFocusedVerification,
+    verificationEnforcement: settings.verificationEnforcement,
+    maxCompletionCorrections: settings.maxCompletionCorrections,
+    allowedVerificationKinds: settings.allowedVerificationKinds,
+    hostShellEnv: settings.hostShellEnv,
+    hostShellInit: settings.hostShellInit,
     env: settings.env,
   };
 

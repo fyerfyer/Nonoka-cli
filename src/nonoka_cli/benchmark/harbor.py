@@ -98,13 +98,31 @@ change promptly. Reserve a full-scale check for after the candidate change,
 and use a smaller representative check when the baseline is known to be
 expensive. A pre-change benchmark alone is not completion evidence.
 The benchmark harness is outside the task workspace. In particular, never
-create, copy, or modify files under `/tests`; those are verifier assets rather
-than solution files. A test is valid only when its runner reports collected
-and executed results. Directly running a Python source file that declares
-tests is not a passing verification unless that file intentionally provides
-an executable test entrypoint. If the runner is unavailable, collection is
-empty, or output is inconclusive, leave verification unresolved rather than
-claiming success.
+create, copy, or modify repository test files; those are benchmark-owned
+verifier assets and may intentionally describe behavior that the requested
+source change supersedes. Read them when useful, but implement the fix in
+production code. If a checked-in test asserts behavior contradicted by the
+task statement or explicit verifier feedback, treat that test as stale input,
+not as authority to preserve the old behavior. Once the exact production guard
+or implementation point is identified, make the requested edit before doing
+more broad archaeology. When the task refers to an error or behavior that already
+exists nearby, inspect that analogous implementation and align the exception
+type, message style, and edge cases. For generated text or code, compare the
+exact output rather than accepting a merely plausible result. A focused check
+must be a real test, build, lint, or typecheck command; a custom `python -c`
+assertion is diagnostic evidence only and is not accepted for completion. A
+test is valid only when its runner reports collected and executed results.
+Directly running a Python source file that declares tests is not a passing
+verification unless that file intentionally provides an executable test
+entrypoint. If the runner is unavailable, collection is empty, or output is
+inconclusive, leave verification unresolved rather than claiming success.
+Benchmark images contain pinned project environments. Do not install or
+upgrade dependencies to obtain a test runner. If a familiar runner such as
+pytest is unavailable, inspect the repository's documented or executable test
+entrypoints (for example `bin/test`, tox, nox, or a project script) and use the
+existing environment. Generated target-language code must use valid operators
+and syntax for that target; source-language constructor text is not a valid
+substitute merely because it appears in an intermediate pretty-print example.
 """
 
 
@@ -222,6 +240,8 @@ class OpenCodeHarborAgent(_HarborOpenCode):
             # typed host-observed effect instead of forcing every task to
             # manufacture a workspace file solely to satisfy the bridge.
             "requireObservedEffect": True,
+            "requireFocusedVerification": True,
+            "verificationEnforcement": "advisory",
           },
           "models": {"default": {"name": f"Nonoka {self.model_name or 'default'}"}},
         }

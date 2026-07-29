@@ -22,10 +22,14 @@ import {
   type NonokaChatRequest,
   type NonokaChatToolCall,
   type NonokaExternalToolReceipt,
+  type NonokaVerificationKind,
+  type NonokaVerificationLevel,
+  type NonokaVerificationReceipt,
 } from './protocol.js';
 import { createNonokaStreamTransformer } from './stream.js';
 import fs from 'fs';
 import { receiptForWorkspaceResult } from './workspace.js';
+import { appendRunEvidence } from './evidence.js';
 
 const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH;
 
@@ -88,6 +92,202 @@ function outputLimit(toolName: string): number {
     case 'delegated': return 24 * 1024;
     default: return 32 * 1024;
   }
+}
+
+const SHELL_TOOL_NAMES = new Set(['bash', 'execute_command', 'terminal']);
+const SHELL_ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export interface NonokaHostShellSettings {
+  env?: Record<string, string>;
+  init?: string[];
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+export function prepareHostShellCommand(
+  toolCallId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  settings: NonokaHostShellSettings = {},
+): { args: Record<string, unknown>; command?: string; marker?: string; timeoutSeconds?: number } {
+  if (!SHELL_TOOL_NAMES.has(toolName.toLowerCase()) || typeof args.command !== 'string') {
+    return { args };
+  }
+  const command = args.command;
+  const marker = `__NONOKA_EXIT_${createHash('sha256').update(toolCallId).digest('hex').slice(0, 16)}__`;
+  const initialization: string[] = [];
+  for (const [name, value] of Object.entries(settings.env ?? {})) {
+    if (!SHELL_ENVIRONMENT_NAME.test(name)) {
+      throw new Error(`Invalid host shell environment variable name: ${name}`);
+    }
+    initialization.push(`export ${name}=${shellQuote(value)}`);
+  }
+  initialization.push(...(settings.init ?? []).filter((statement) => statement.trim().length > 0));
+  const initializedCommand = [
+    ...initialization.flatMap((statement) => [
+      statement,
+      '__nonoka_init_rc=$?',
+      'if [ "$__nonoka_init_rc" -ne 0 ]; then exit "$__nonoka_init_rc"; fi',
+    ]),
+    command,
+  ].join('\n');
+  const wrapped = [
+    `bash -o pipefail -c ${shellQuote(initializedCommand)}`,
+    '__nonoka_rc=$?',
+    `printf '\n${marker}=%s\n' "$__nonoka_rc"`,
+    'exit "$__nonoka_rc"',
+  ].join('; ');
+  const timeoutValue = args.timeout ?? args.timeout_seconds ?? args.timeoutSeconds;
+  const timeoutSeconds = typeof timeoutValue === 'number' && Number.isFinite(timeoutValue)
+    ? timeoutValue
+    : undefined;
+  return { args: { ...args, command: wrapped }, command, marker, timeoutSeconds };
+}
+
+export function extractHostShellReceipt(
+  output: string,
+  marker: string | undefined,
+): { output: string; exitCode?: number } {
+  if (!marker) return { output };
+  const expression = new RegExp(`(?:\\r?\\n)?${marker}=(-?\\d+)(?:\\r?\\n|$)`);
+  const match = output.match(expression);
+  if (!match) return { output };
+  return {
+    output: output.replace(expression, '\n').replace(/\n{3,}/g, '\n\n').trimEnd(),
+    exitCode: Number(match[1]),
+  };
+}
+
+function verificationIntent(command: string): {
+  level: NonokaVerificationLevel;
+  kind: NonokaVerificationKind;
+} | undefined {
+  const explicit = command.match(/(?:^|[;&|]\s*)NONOKA_VERIFY=(focused|full)\b/);
+  const level = (explicit?.[1] ?? 'focused') as NonokaVerificationLevel;
+  const normalized = command.toLowerCase();
+  let kind: NonokaVerificationKind | undefined;
+  if (/\b(?:pytest|py\.test|python\s+-m\s+(?:pytest|unittest)|tox|nox|jest|vitest|rspec)\b/.test(normalized)
+    || /(?:^|[\s;&|])(?:python(?:\d+(?:\.\d+)?)?\s+)?(?:\.\/)?(?:bin\/)?test(?:\.py|\.sh)?(?:\s|$)/.test(normalized)
+    || /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b/.test(normalized)
+    || /\b(?:cargo|go)\s+test\b/.test(normalized)
+    || /\b(?:mvn|gradle|dotnet)\b[^\n;&|]*\btest\b/.test(normalized)) {
+    kind = 'test';
+  } else if (/\b(?:ruff|eslint|pylint|flake8|biome|golangci-lint)\b/.test(normalized)) {
+    kind = 'lint';
+  } else if (/\b(?:mypy|pyright|tsc|typecheck)\b/.test(normalized)) {
+    kind = 'typecheck';
+  } else if (/\b(?:build|cargo\s+check|go\s+vet)\b/.test(normalized)) {
+    kind = 'build';
+  } else if (explicit) {
+    kind = 'custom';
+  }
+  return kind ? { level, kind } : undefined;
+}
+
+function pytestTestCounts(output: string): {
+  collected?: number;
+  executed?: number;
+  deselected?: number;
+} {
+  const collection = output.match(/collected\s+(\d+)\s+items?(?:\s*\/\s*(\d+)\s+deselected)?(?:\s*\/\s*(\d+)\s+selected)?/i);
+  if (collection) {
+    const collected = Number(collection[1]);
+    const deselected = collection[2] === undefined ? undefined : Number(collection[2]);
+    const selected = collection[3] === undefined ? undefined : Number(collection[3]);
+    return {
+      collected,
+      deselected,
+      executed: selected ?? (deselected === undefined ? collected : collected - deselected),
+    };
+  }
+  const patterns = [
+    /(?:^|\s)(\d+)\s+passed\b/i,
+    /tests?:\s*(\d+)\s+passed/i,
+    /test suites?:\s*(\d+)\s+passed/i,
+    /running\s+(\d+)\s+tests?/i,
+  ];
+  for (const pattern of patterns) {
+    const match = output.match(pattern);
+    if (match) return { collected: Number(match[1]), executed: Number(match[1]) };
+  }
+  if (/no tests ran|collected 0 items|0 tests? passed/i.test(output)) return { collected: 0, executed: 0 };
+  return {};
+}
+
+function testSelectionProblem(command: string, counts: ReturnType<typeof pytestTestCounts>): string | undefined {
+  if (/(?:^|\s)--deselect(?:=|\s)/.test(command)) return '--deselect cannot support focused verification';
+  if (/\|\s*(?:tail|head)\b/.test(command)) return 'head/tail-truncated test output cannot support focused verification';
+  if (/(?:^|\s)(?:-k(?:\s|=)|--keyword(?:\s|=))/.test(command)) {
+    if (counts.deselected === undefined) return '-k requires collected and deselected test counts';
+    if ((counts.executed ?? 0) < 1 || counts.deselected > (counts.executed ?? 0)) {
+      return '-k deselected too much of the collected test set';
+    }
+  }
+  return undefined;
+}
+
+function verificationSummary(output: string): string | undefined {
+  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 ? lines.slice(-3).join(' | ').slice(0, 1000) : undefined;
+}
+
+export function attachVerificationReceipt(
+  receipt: NonokaExternalToolReceipt,
+  command: string | undefined,
+  cwd: string,
+  timeoutSeconds: number | undefined,
+  timedOut: boolean,
+  allowedKinds?: readonly NonokaVerificationKind[],
+): NonokaExternalToolReceipt {
+  if (!command) return receipt;
+  const intent = verificationIntent(command);
+  if (!intent) return receipt;
+  const output = String(receipt.result ?? '');
+  const testCounts = intent.kind === 'test' ? pytestTestCounts(output) : {};
+  const selectionProblem = intent.kind === 'test' ? testSelectionProblem(command, testCounts) : undefined;
+  let status: NonokaVerificationReceipt['status'];
+  if (
+    timedOut
+    || receipt.exit_code === undefined
+    || receipt.completeness !== 'complete'
+    || receipt.truncated
+  ) {
+    status = 'unavailable';
+  } else if (receipt.exit_code !== 0) {
+    status = 'failed';
+  } else if (intent.kind === 'test' && (!testCounts.executed || testCounts.executed < 1)) {
+    status = 'unavailable';
+  } else if (selectionProblem || (allowedKinds && !allowedKinds.includes(intent.kind))) {
+    status = 'unavailable';
+  } else {
+    status = 'passed';
+  }
+  const summary = verificationSummary(output);
+  const rejection = selectionProblem
+    ?? (allowedKinds && !allowedKinds.includes(intent.kind)
+      ? `${intent.kind} verification is not accepted by this profile`
+      : undefined);
+  receipt.verification = {
+    status,
+    level: intent.level,
+    kind: intent.kind,
+    command,
+    cwd,
+    exit_code: receipt.exit_code,
+    timed_out: timedOut,
+    timeout_seconds: timeoutSeconds,
+    truncated: receipt.truncated ?? false,
+    completeness: receipt.completeness,
+    collected_tests: testCounts.collected,
+    executed_tests: testCounts.executed,
+    deselected_tests: testCounts.deselected,
+    summary: status === 'passed' ? summary : undefined,
+    failure_summary: status !== 'passed' ? rejection ?? summary : undefined,
+    artifact_ref: receipt.artifact_ref,
+  };
+  return receipt;
 }
 
 /** Host tools may truncate individual records while returning a small overall
@@ -380,6 +580,12 @@ export interface NonokaLanguageModelConfig {
   maxExternalResultBytes?: number;
   requireWorkspaceMutation?: boolean;
   requireObservedEffect?: boolean;
+  requireFocusedVerification?: boolean;
+  verificationEnforcement?: 'strict' | 'advisory';
+  maxCompletionCorrections?: number;
+  allowedVerificationKinds?: NonokaVerificationKind[];
+  hostShellEnv?: Record<string, string>;
+  hostShellInit?: string[];
   env?: Record<string, string | undefined>;
 }
 
@@ -399,6 +605,11 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   private cachedChatTools:
     | { name: string; description: string; parameters: Record<string, unknown> }[]
     | undefined;
+  private readonly wrappedHostCommands = new Map<string, {
+    command: string;
+    marker: string;
+    timeoutSeconds?: number;
+  }>();
 
   constructor(
     modelId: string,
@@ -646,6 +857,9 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       max_external_result_bytes: this.config.maxExternalResultBytes,
       require_workspace_mutation: this.config.requireWorkspaceMutation,
       require_observed_effect: this.config.requireObservedEffect,
+      require_focused_verification: this.config.requireFocusedVerification,
+      verification_enforcement: this.config.verificationEnforcement,
+      max_completion_corrections: this.config.maxCompletionCorrections,
       request_id: generateRequestId(),
     };
   }
@@ -702,7 +916,10 @@ export class NonokaLanguageModel implements LanguageModelV3 {
             if (part.type === 'tool-result') {
               const outputText = extractToolOutputText(part.output);
               const toolName = (part as any).toolName ?? toolNamesByCallId.get(part.toolCallId) ?? '';
-              const exitCode = extractHostExitCode(part);
+              const wrappedCommand = this.wrappedHostCommands.get(part.toolCallId);
+              const extracted = extractHostShellReceipt(outputText, wrappedCommand?.marker);
+              const exitCode = extracted.exitCode ?? extractHostExitCode(part);
+              const timedOut = isTimedOutHostToolOutput(part.output, extracted.output);
               providerLog(
                 `tool result tool=${toolName} exitCode=${exitCode ?? 'unknown'} `
                 + `partKeys=${Object.keys(part as any).sort().join(',')} `
@@ -712,22 +929,50 @@ export class NonokaLanguageModel implements LanguageModelV3 {
                 this.config.cwd,
                 part.toolCallId,
                 toolName,
-                outputText,
+                extracted.output,
                 toolArgumentsByCallId.get(part.toolCallId),
                 isIncompleteHostToolOutput(part.output),
                 exitCode,
               );
+              attachVerificationReceipt(
+                receipt,
+                wrappedCommand?.command,
+                this.config.cwd,
+                wrappedCommand?.timeoutSeconds,
+                timedOut,
+                this.config.allowedVerificationKinds,
+              );
+              const workspaceReceipt = receiptForWorkspaceResult(
+                this.config.cwd,
+                part.toolCallId,
+                toolName,
+                receipt,
+                toolArgumentsByCallId.get(part.toolCallId),
+              ) as NonokaExternalToolReceipt;
+              if (
+                workspaceReceipt.verification
+                && Array.isArray(workspaceReceipt.workspace?.policy_violations)
+                && workspaceReceipt.workspace.policy_violations.length > 0
+              ) {
+                workspaceReceipt.verification.status = 'unavailable';
+                workspaceReceipt.verification.failure_summary = 'workspace policy violation invalidated verification';
+                delete workspaceReceipt.verification.summary;
+              }
+              if (receipt.verification) {
+                appendRunEvidence({
+                  schema_version: 1,
+                  kind: 'verification',
+                  source: 'nonoka-opencode-provider',
+                  tool_call_id: part.toolCallId,
+                  tool_name: toolName,
+                  receipt: workspaceReceipt.verification as unknown as Record<string, unknown>,
+                });
+              }
               messages.push({
                 role: NONOKA_MESSAGE_ROLES.tool,
                 content: String(receipt.result ?? ''),
                 tool_call_id: part.toolCallId,
-                result: receiptForWorkspaceResult(
-                  this.config.cwd,
-                  part.toolCallId,
-                  toolName,
-                  receipt,
-                  toolArgumentsByCallId.get(part.toolCallId),
-                ),
+                result: workspaceReceipt,
               });
             } else if (part.type === 'tool-approval-response') {
               // Encode the approval decision as a JSON part list inside a
@@ -908,6 +1153,20 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       allowedToolNames,
       cwd: this.config.cwd,
       requireProtocolAck: true,
+      prepareToolArguments: (toolCallId, toolName, args) => {
+        const prepared = prepareHostShellCommand(toolCallId, toolName, args, {
+          env: this.config.hostShellEnv,
+          init: this.config.hostShellInit,
+        });
+        if (prepared.command && prepared.marker) {
+          this.wrappedHostCommands.set(toolCallId, {
+            command: prepared.command,
+            marker: prepared.marker,
+            timeoutSeconds: prepared.timeoutSeconds,
+          });
+        }
+        return prepared.args;
+      },
     });
 
     const readable = Readable.toWeb(
@@ -1031,6 +1290,11 @@ function isIncompleteHostToolOutput(output: { type: string }): boolean {
   return output.type === 'execution-denied'
     || output.type === 'error-text'
     || output.type === 'error-json';
+}
+
+function isTimedOutHostToolOutput(output: { type: string }, text: string): boolean {
+  return /\b(?:timed out|timeout|time limit exceeded)\b/i.test(text)
+    || (output.type === 'error-text' && /\btime/i.test(text));
 }
 
 function extractHostExitCode(part: any): number | undefined {

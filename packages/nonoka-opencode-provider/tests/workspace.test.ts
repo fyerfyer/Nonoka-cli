@@ -179,6 +179,32 @@ describe('workspace receipts', () => {
     }
   });
 
+  it('restores benchmark-owned workspace tests configured by the adapter', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
+    const tests = path.join(cwd, 'tests');
+    const testFile = path.join(tests, 'test_feature.py');
+    const previous = process.env.NONOKA_PROTECTED_WORKSPACE_PATHS;
+    try {
+      fs.mkdirSync(tests);
+      fs.writeFileSync(testFile, 'assert actual == expected');
+      process.env.NONOKA_PROTECTED_WORKSPACE_PATHS = tests;
+      recordWorkspaceBefore(cwd, 'call-benchmark-test', 'bash', { command: `printf changed > ${testFile}` });
+      fs.writeFileSync(testFile, 'assert True');
+      const receipt: any = receiptForWorkspaceResult(
+        cwd, 'call-benchmark-test', 'bash', { result: 'changed', exit_code: 0 },
+        { command: `printf changed > ${testFile}` },
+      );
+
+      expect(fs.readFileSync(testFile, 'utf8')).toBe('assert actual == expected');
+      expect(receipt.workspace.policy_violations).toEqual(['tests/test_feature.py']);
+      expect(receipt.workspace.restored_paths).toEqual(['tests/test_feature.py']);
+    } finally {
+      if (previous === undefined) delete process.env.NONOKA_PROTECTED_WORKSPACE_PATHS;
+      else process.env.NONOKA_PROTECTED_WORKSPACE_PATHS = previous;
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('reports mutations to adapter-configured external harness paths', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
     const harness = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-harness-'));

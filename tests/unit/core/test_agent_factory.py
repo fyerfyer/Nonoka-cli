@@ -67,14 +67,18 @@ def test_create_external_tool_capability():
 
 def test_known_read_only_external_tools_do_not_require_workspace_attestation():
   cap = AgentFactory.create_external_tool_capability(
-    name="read", description="Read a file", parameters={"type": "object", "properties": {}},
+    name="read",
+    description="Read a file",
+    parameters={"type": "object", "properties": {}},
   )
   assert cap.execution.read_only is True
   assert cap.execution.parallel_safe is True
   assert cap.requires_workspace_attestation is False
 
   unknown = AgentFactory.create_external_tool_capability(
-    name="vendor_action", description="Run an unknown host action", parameters={"type": "object", "properties": {}},
+    name="vendor_action",
+    description="Run an unknown host action",
+    parameters={"type": "object", "properties": {}},
   )
   assert unknown.execution.read_only is False
   assert unknown.requires_workspace_attestation is True
@@ -143,7 +147,7 @@ async def test_build_with_external_tools_injects_cwd():
   assert "Treat an unambiguous task instruction as authorization" in agent.system_prompt
   assert "do not finish with an audit or plan" in agent.system_prompt
   assert "Before completion, verify every requested output" in agent.system_prompt
-  assert "After the requested change passes a focused check, stop" in agent.system_prompt
+  assert "NONOKA_VERIFY=focused" in agent.system_prompt
 
 
 @pytest.mark.asyncio
@@ -384,9 +388,6 @@ async def test_build_with_external_tools_accepts_external_skills():
 
 
 def test_is_opencode_native_skill_enabled(tmp_path: Path):
-  config = CLIConfig(model="gpt-4o")
-  factory = AgentFactory(config)
-
   # Missing cwd and missing file -> treated as safe (disabled / not OpenCode).
   assert AgentFactory._is_opencode_native_skill_enabled(None) is False
   assert AgentFactory._is_opencode_native_skill_enabled(tmp_path) is False
@@ -452,6 +453,7 @@ def test_generation_options_attach_persisted_runtime_and_completion_contract():
     max_context_bytes=262144,
     max_external_result_bytes=65536,
     require_workspace_mutation=True,
+    max_completion_corrections=3,
   )
   agent = factory.build()
   assert agent.runtime_limits.max_model_turns == 12
@@ -462,16 +464,18 @@ def test_generation_options_attach_persisted_runtime_and_completion_contract():
   assert agent.runtime_limits.max_external_result_bytes == 65536
   assert agent.completion_contract.require_workspace_mutation is True
   assert agent.completion_contract.require_complete_observations is True
-  assert agent.completion_contract.max_corrections == 1
-  assert agent.completion_contract.enforcement == "advisory"
+  assert agent.completion_contract.max_corrections == 3
+  assert agent.completion_contract.enforcement == "strict"
   assert [extension.name for extension in agent.extensions] == ["workspace_progress"]
 
 
 def test_factory_propagates_hard_token_and_cost_budgets():
-  config = CLIConfig.model_validate({
-    "model": "gpt-4o",
-    "budget": {"max_total_tokens": 4000, "max_cost_usd": 0.25, "fail_on_unknown_cost": True},
-  })
+  config = CLIConfig.model_validate(
+    {
+      "model": "gpt-4o",
+      "budget": {"max_total_tokens": 4000, "max_cost_usd": 0.25, "fail_on_unknown_cost": True},
+    }
+  )
   agent = AgentFactory(config).build()
 
   assert agent.runtime_limits.max_total_tokens == 4000
@@ -505,6 +509,20 @@ def test_generation_options_can_require_observed_effect_without_workspace_mutati
   assert agent.completion_contract.require_observed_effect is True
   assert agent.completion_contract.require_workspace_mutation is False
   assert [extension.name for extension in agent.extensions] == ["workspace_progress"]
+
+
+def test_generation_options_can_require_focused_verification_with_advisory_scoring():
+  factory = AgentFactory(CLIConfig(model="gpt-4o"))
+  factory.set_generation_options(
+    require_observed_effect=True,
+    require_focused_verification=True,
+    verification_enforcement="advisory",
+  )
+
+  agent = factory.build()
+
+  assert agent.completion_contract.require_focused_verification is True
+  assert agent.completion_contract.enforcement == "advisory"
 
 
 def test_title_agent_has_no_tools_or_completion_contract():

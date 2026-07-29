@@ -54,8 +54,8 @@ except ImportError:  # nonoka<=1.3.5; retain conservative metadata locally.
 else:
   _SUPPORTS_EXECUTION_METADATA = True
 
-from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.bridge.nonoka_tools import get_hosted_tools
+from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.namespaces import (
   PrefixedCapability,
   mcp_tool_name,
@@ -142,7 +142,8 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "or report the dependency as blocked.\n"
   "- Bound expensive commands and validate on a small representative case before a "
   "known-slow full baseline.\n"
-  "- After the requested change passes a focused check, stop and report the result. "
+  "- Run the final focused check as `NONOKA_VERIFY=focused <command>`. After it passes, "
+  "stop and report the result. "
   "Do not create optional verification artifacts or rerun equivalent checks without "
   "a concrete unmet requirement.\n"
   "- Keep responses concise but thorough.\n\n"
@@ -197,6 +198,9 @@ class AgentFactory:
     self._generation_max_external_result_bytes: int | None = None
     self._require_workspace_mutation = False
     self._require_observed_effect = False
+    self._require_focused_verification = False
+    self._verification_enforcement = "strict"
+    self._max_completion_corrections = 1
     self._generation_options_set = False
 
   @property
@@ -218,9 +222,7 @@ class AgentFactory:
     """Return the per-run override, including an explicit unlimited policy."""
     if self._generation_options_set:
       return self._generation_max_turns
-    configured = getattr(
-      self._config.agents.executor, "max_turns", None
-    )
+    configured = getattr(self._config.agents.executor, "max_turns", None)
     return configured if configured else 20
 
   def set_generation_options(
@@ -235,6 +237,9 @@ class AgentFactory:
     max_external_result_bytes: int | None = None,
     require_workspace_mutation: bool = False,
     require_observed_effect: bool = False,
+    require_focused_verification: bool = False,
+    verification_enforcement: str = "strict",
+    max_completion_corrections: int = 1,
   ) -> None:
     """Apply per-run generation limits used by the OpenCode bridge.
 
@@ -251,6 +256,9 @@ class AgentFactory:
     self._generation_max_external_result_bytes = max_external_result_bytes
     self._require_workspace_mutation = require_workspace_mutation
     self._require_observed_effect = require_observed_effect
+    self._require_focused_verification = require_focused_verification
+    self._verification_enforcement = verification_enforcement
+    self._max_completion_corrections = max_completion_corrections
     self._generation_options_set = True
 
   def _apply_generation_options(self, builder: AgentBuilder) -> AgentBuilder:
@@ -282,25 +290,26 @@ class AgentFactory:
         fail_on_unknown_cost=self._config.budget.fail_on_unknown_cost,
       )
     if (
-      (self._require_workspace_mutation or self._require_observed_effect)
-      and CompletionContract is not None
-    ):
+      self._require_workspace_mutation
+      or self._require_observed_effect
+      or self._require_focused_verification
+    ) and CompletionContract is not None:
       updates["completion_contract"] = CompletionContract(
         require_workspace_mutation=self._require_workspace_mutation,
         require_observed_effect=self._require_observed_effect,
+        require_focused_verification=self._require_focused_verification,
         require_complete_observations=True,
-        max_corrections=1,
+        max_corrections=self._max_completion_corrections,
         # The Harbor verifier is authoritative for a concrete workspace. Give
         # the model one evidence-focused correction, then preserve the state
         # for scoring instead of converting an imperfect self-review into an
         # unscorable host error.
-        enforcement="advisory",
+        enforcement=self._verification_enforcement,
       )
       if WorkspaceProgressExtension is not None:
         extensions = list(getattr(agent, "extensions", []))
         if not any(
-          getattr(extension, "name", None) == "workspace_progress"
-          for extension in extensions
+          getattr(extension, "name", None) == "workspace_progress" for extension in extensions
         ):
           extensions.append(WorkspaceProgressExtension(max_exploration_turns=3))
         updates["extensions"] = extensions
@@ -511,7 +520,8 @@ class AgentFactory:
     external_mcp_registry: ExternalMCPRegistry | None = None
     external_mcp_tool_names: list[str] = []
     if external_mcp_servers:
-      external_mcp_registry = ExternalMCPRegistry([
+      external_mcp_registry = ExternalMCPRegistry(
+        [
           ExternalMCPServer(
             name=s.name,
             description=s.description,
@@ -525,14 +535,16 @@ class AgentFactory:
             ],
           )
           for s in external_mcp_servers
-      ])
+        ]
+      )
       external_mcp_tool_names = [cap.name for cap in external_mcp_registry.get_tools()]
 
     # 3. External host-managed skills.
     external_skill_registry: ExternalSkillRegistry | None = None
     external_skill_tool_names: list[str] = []
     if external_skills:
-      external_skill_registry = ExternalSkillRegistry([
+      external_skill_registry = ExternalSkillRegistry(
+        [
           ExternalSkill(
             name=s.name,
             description=s.description,
@@ -548,7 +560,8 @@ class AgentFactory:
             activation_prompt=s.activation_prompt,
           )
           for s in external_skills
-      ])
+        ]
+      )
       external_skill_tool_names = [cap.name for cap in external_skill_registry.get_tools()]
 
     # 4. Nonoka-managed bridge tools run locally and are deliberately
@@ -658,10 +671,12 @@ class AgentFactory:
     search_paths: list[Path] = []
     if cwd is not None:
       cwd_path = Path(cwd).expanduser().resolve()
-      search_paths.extend([
+      search_paths.extend(
+        [
           cwd_path / ".nonoka" / "skills",
           cwd_path / "skills",
-      ])
+        ]
+      )
 
     return SkillRegistry(
       enabled=list(self._config.skills),

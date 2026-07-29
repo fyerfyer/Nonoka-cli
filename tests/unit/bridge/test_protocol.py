@@ -63,15 +63,30 @@ def test_parse_chat_request_with_tools():
 
 
 def test_parse_structured_external_tool_receipt():
-  msg = parse_inbound_line(json.dumps({
-    "type": "chat", "cwd": "/tmp",
-    "messages": [{
-      "role": "tool", "content": "done", "tool_call_id": "call-1",
-      "result": {"result": "done", "host": "opencode", "workspace": {
-        "root": "/tmp", "before_digest": "a", "after_digest": "b",
-      }},
-    }],
-  }))
+  msg = parse_inbound_line(
+    json.dumps(
+      {
+        "type": "chat",
+        "cwd": "/tmp",
+        "messages": [
+          {
+            "role": "tool",
+            "content": "done",
+            "tool_call_id": "call-1",
+            "result": {
+              "result": "done",
+              "host": "opencode",
+              "workspace": {
+                "root": "/tmp",
+                "before_digest": "a",
+                "after_digest": "b",
+              },
+            },
+          }
+        ],
+      }
+    )
+  )
   assert isinstance(msg, ChatRequest)
   assert msg.messages[0].result["workspace"]["after_digest"] == "b"
 
@@ -135,4 +150,4 @@ def test_encode_protocol_ack():
   )
   data = json.loads(encode_outbound_message(msg))
   assert data["type"] == "protocol_ack"
-  assert data["version"] == "1.0"
+  assert data["version"] == "1.1"

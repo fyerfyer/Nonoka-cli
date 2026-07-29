@@ -11,15 +11,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-BRIDGE_PROTOCOL_VERSION = "1.0"
+BRIDGE_PROTOCOL_VERSION = "1.1"
 """CLI/provider NDJSON contract version; major changes break compatibility."""
 
-BRIDGE_CAPABILITIES = frozenset({
-  "external_tool_receipts",
-  "persistent_runtime_limits",
-  "termination_reasons",
-  "tool_approval_resume",
-})
+BRIDGE_CAPABILITIES = frozenset(
+  {
+    "external_tool_receipts",
+    "persistent_runtime_limits",
+    "termination_reasons",
+    "tool_approval_resume",
+    "typed_verification_receipts",
+  }
+)
 
 
 class ProtocolContract(BaseModel):
@@ -28,6 +31,7 @@ class ProtocolContract(BaseModel):
   version: str
   required_capabilities: list[str] = Field(default_factory=list)
   provider_version: str | None = None
+
 
 # --------------------------------------------------------------------------- #
 # Inbound messages: OpenCode provider -> nonoka-cli
@@ -117,6 +121,9 @@ class ChatRequest(BaseModel):
   max_external_result_bytes: int | None = Field(default=None, ge=1)
   require_workspace_mutation: bool = False
   require_observed_effect: bool = False
+  require_focused_verification: bool = False
+  verification_enforcement: Literal["strict", "advisory"] = "strict"
+  max_completion_corrections: int = Field(default=1, ge=0)
   request_id: str | None = None
 
 

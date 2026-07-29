@@ -472,6 +472,8 @@ def _write_opencode_profile(
           "configPath": str(config_path),
           "model": args.model,
           "temperature": args.temperature,
+          "requireFocusedVerification": True,
+          "verificationEnforcement": "advisory",
         },
         "models": {"default": {"name": f"Nonoka {args.model}"}},
       }
