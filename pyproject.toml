@@ -47,6 +47,12 @@ repo-map = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/nonoka_cli"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/nonoka_cli",
+  "/tests",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
