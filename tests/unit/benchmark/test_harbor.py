@@ -54,6 +54,7 @@ def test_adapter_profile_pins_task_local_provider_and_bridge_wheels(tmp_path: Pa
     "nonoka_cli",
     "--server",
   ]
+  assert options["env"] == {"NONOKA_DISABLE_PROJECT_AGENTS": "1"}
   assert options["model"] == "deepseek-chat"
   assert options["temperature"] == 0.2
   assert options["maxTurns"] == 12

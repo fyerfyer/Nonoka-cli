@@ -29,11 +29,16 @@ from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.context import CLIContext
 from nonoka_cli.core.git_service import GitService, build_git_service
 from nonoka_cli.core.mcp_service import MCPService
-from nonoka_cli.core.planning_service import PlanningService, build_planning_service
 from nonoka_cli.core.plugin_manifest import (
+  LoadedPluginManifest,
   PluginManifestLoader,
   format_manifest_summary,
   merge_manifests,
+)
+from nonoka_cli.core.project_agents import (
+  compile_project_agents,
+  effective_agent_definitions,
+  effective_dynamic_agent_definition,
 )
 from nonoka_cli.core.repo_map_service import RepoMapService, build_repo_map_service
 from nonoka_cli.core.runner_service import RunnerService
@@ -102,8 +107,9 @@ class Orchestrator:
     self._mcp_service: MCPService | None = None
     self._git_service: GitService | None = None
     self._repo_map_service: RepoMapService | None = None
-    self._planning_service: PlanningService | None = None
     self._plugin_manifests: list[Any] = []
+    self._loaded_plugin_manifests: list[LoadedPluginManifest] = []
+    self._project_agent_tools: list[Capability] = []
     self._initialized = False
 
   @property
@@ -167,22 +173,38 @@ class Orchestrator:
       working_dir=Path.cwd(),
       config=self._config,
     )
-    self._planning_service = build_planning_service(
-      working_dir=Path.cwd(),
-      config=self._config,
-    )
-
     # Load project plugin manifests before building the Agent so that
     # allowed_tools / plugin summary can be taken into account.
     manifest_loader = PluginManifestLoader(extra_paths=list(self._config.plugins.manifests))
-    self._plugin_manifests = manifest_loader.load(Path.cwd())
+    self._loaded_plugin_manifests = manifest_loader.load_with_sources(Path.cwd())
+    self._plugin_manifests = [loaded.manifest for loaded in self._loaded_plugin_manifests]
     allowed_tools = self._effective_allowed_tools()
+    if os.getenv("NONOKA_DISABLE_PROJECT_AGENTS", "").strip().lower() in {"1", "true", "yes"}:
+      logger.info("project_agents_disabled_by_environment")
+      self._project_agent_tools = []
+    else:
+      compilation = compile_project_agents(
+        effective_agent_definitions(self._loaded_plugin_manifests),
+        ToolOutputPolicy.from_config(self._config.tool_output.model_dump()),
+        effective_dynamic_agent_definition(self._loaded_plugin_manifests),
+      )
+      for diagnostic in compilation.diagnostics:
+        log = logger.warning if diagnostic.level == "warning" else logger.error
+        log(
+          "project_agent_configuration_diagnostic",
+          level=diagnostic.level,
+          role=diagnostic.role,
+          source=str(diagnostic.source) if diagnostic.source else None,
+          message=diagnostic.message,
+        )
+      self._project_agent_tools = compilation.tools
 
     self._agent_factory = AgentFactory(
       self._config,
       mcp_manager=self._mcp_manager,
       tool_loader=self._tool_loader,
       allowed_tools=allowed_tools,
+      project_agent_tools=self._project_agent_tools,
     )
 
     # Build optional context blocks for the system prompt.
@@ -424,7 +446,10 @@ class Orchestrator:
     if not self._plugin_manifests:
       return None
     merged = merge_manifests(self._plugin_manifests)
-    return format_manifest_summary(merged)
+    return format_manifest_summary(
+      merged,
+      agent_tool_names=[tool.name for tool in self._project_agent_tools],
+    )
 
   def _effective_allowed_tools(self) -> list[str]:
     """Return the merged allowed-tools list from all loaded plugin manifests."""
@@ -508,25 +533,6 @@ class Orchestrator:
     if agent is None:
       raise OrchestratorError("No Agent available. Build failed during initialization.")
 
-    # Optional two-stage Planner/Executor workflow: when a planner model is
-    # configured, generate a plan first and rebuild the executor Agent with the
-    # plan injected into its system prompt.
-    logger.info(
-      "execute_planning_check",
-      planning_service_exists=self._planning_service is not None,
-      planning_enabled=self._planning_service.enabled if self._planning_service else False,
-      planner_model=self._planning_service.planner_model if self._planning_service else None,
-    )
-    if self._planning_service is not None and self._planning_service.enabled:
-      try:
-        plan = await self._planning_service.plan(prompt)
-        logger.info("execute_plan_result", plan_preview=plan[:200] if plan else None)
-        if plan and not plan.startswith(("Error", "Planning is disabled")):
-          logger.info("execution_plan_generated", plan_length=len(plan))
-          agent = self._agent_factory.build(execution_plan=plan)
-      except Exception as exc:
-        logger.warning("execution_plan_generation_failed", error=str(exc))
-
     logger.info(
       "executing_prompt",
       prompt_length=len(prompt),
@@ -602,24 +608,6 @@ class Orchestrator:
     git_summary = await self._git_status_summary_for_dir(cwd)
     plugin_summary = self._build_plugin_summary()
 
-    # Optional two-stage planning for host-managed (OpenCode) mode.
-    execution_plan: str | None = None
-    logger.info(
-      "external_tools_planning_check",
-      planning_service_exists=self._planning_service is not None,
-      planning_enabled=self._planning_service.enabled if self._planning_service else False,
-      planner_model=self._planning_service.planner_model if self._planning_service else None,
-    )
-    if self._planning_service is not None and self._planning_service.enabled:
-      try:
-        plan = await self._planning_service.plan(prompt)
-        logger.info("external_tools_plan_result", plan_preview=plan[:200] if plan else None)
-        if plan and not plan.startswith(("Error", "Planning is disabled")):
-          logger.info("external_execution_plan_generated", plan_length=len(plan))
-          execution_plan = plan
-      except Exception as exc:
-        logger.warning("external_execution_plan_generation_failed", error=str(exc))
-
     agent = self._agent_factory.build_with_external_tools(
       tools,
       cwd=cwd,
@@ -629,7 +617,6 @@ class Orchestrator:
       repo_map=repo_map_block,
       git_summary=git_summary,
       plugin_summary=plugin_summary,
-      execution_plan=execution_plan,
     )
 
     logger.info(

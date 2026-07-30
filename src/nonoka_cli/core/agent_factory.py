@@ -143,6 +143,8 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "- Bound expensive commands and validate on a small representative case before a "
   "known-slow full baseline.\n"
   "- Run the final focused check as `NONOKA_VERIFY=focused <command>`. After it passes, "
+  "complete TODO/progress bookkeeping before that final check because tools are disabled "
+  "as soon as the check passes. "
   "stop and report the result. "
   "Do not create optional verification artifacts or rerun equivalent checks without "
   "a concrete unmet requirement.\n"
@@ -168,6 +170,7 @@ class AgentFactory:
     tool_loader: ToolLoader | None = None,
     skill_registry: SkillRegistry | None = None,
     allowed_tools: list[str] | None = None,
+    project_agent_tools: list[Capability] | None = None,
   ):
     """Args:
     config: Validated CLI configuration.
@@ -184,6 +187,7 @@ class AgentFactory:
     self._tool_loader = tool_loader
     self._skill_registry = skill_registry
     self._allowed_tools = set(allowed_tools or [])
+    self._project_agent_tools = list(project_agent_tools or [])
     self._agent: Agent | None = None
     self._repo_map: str | None = None
     self._git_summary: str | None = None
@@ -224,6 +228,22 @@ class AgentFactory:
       return self._generation_max_turns
     configured = getattr(self._config.agents.executor, "max_turns", None)
     return configured if configured else 20
+
+  def _register_project_agents(
+    self,
+    builder: AgentBuilder,
+    occupied_names: set[str],
+  ) -> AgentBuilder:
+    """Register project AgentTools after rejecting namespace collisions."""
+    collisions = sorted(
+      tool.name for tool in self._project_agent_tools if tool.name in occupied_names
+    )
+    if collisions:
+      raise AgentBuildError("Project agent tool name collision(s): " + ", ".join(collisions))
+    for tool in self._project_agent_tools:
+      builder = builder.tool(tool)
+      occupied_names.add(tool.name)
+    return builder
 
   def set_generation_options(
     self,
@@ -272,11 +292,23 @@ class AgentFactory:
   def _finalize_agent(self, agent: Agent) -> Agent:
     """Attach bridge generation and persisted runtime policy to the Agent."""
     updates: dict[str, Any] = {}
+    requires_completion_evidence = bool(
+      self._require_workspace_mutation
+      or self._require_observed_effect
+      or self._require_focused_verification
+    )
+    runtime_max_turns = self._generation_max_turns
+    if runtime_max_turns is not None and requires_completion_evidence:
+      # ``maxTurns`` is the work budget. A successful tool call on the last
+      # work turn still needs one model call to report the result. The
+      # workspace-progress extension makes that reserved turn tool-free as
+      # soon as the completion contract is satisfied.
+      runtime_max_turns += 1
     if self._generation_temperature is not None:
       updates["temperature"] = self._generation_temperature
     if RuntimeLimits is not None:
       updates["runtime_limits"] = RuntimeLimits(
-        max_model_turns=self._generation_max_turns,
+        max_model_turns=runtime_max_turns,
         max_tool_calls=self._generation_tool_budget,
         wall_timeout_seconds=self._generation_wall_timeout_seconds,
         model_timeout_seconds=self._generation_timeout_seconds,
@@ -289,11 +321,7 @@ class AgentFactory:
         max_cost_usd=self._config.budget.max_cost_usd,
         fail_on_unknown_cost=self._config.budget.fail_on_unknown_cost,
       )
-    if (
-      self._require_workspace_mutation
-      or self._require_observed_effect
-      or self._require_focused_verification
-    ) and CompletionContract is not None:
+    if requires_completion_evidence and CompletionContract is not None:
       updates["completion_contract"] = CompletionContract(
         require_workspace_mutation=self._require_workspace_mutation,
         require_observed_effect=self._require_observed_effect,
@@ -378,12 +406,14 @@ class AgentFactory:
       .system_prompt(system_prompt)
       .max_turns(self._executor_max_turns())
     )
+    occupied_names: set[str] = set()
 
     # Local / built-in tools via ToolRegistry so runtime reloads are reflected
     # without rebuilding the Agent.
     if self._tool_loader is not None:
       registry = self._tool_loader.load_all()
       builder = builder.tool_registry(registry)
+      occupied_names.update(tool.name for tool in registry.get_all())
       logger.debug("agent_factory_local_tools", count=len(registry))
 
     # Lazy-load skill registry: only names/descriptions are injected eagerly;
@@ -391,6 +421,8 @@ class AgentFactory:
     skill_registry = self._skill_registry_for_build()
     if skill_registry is not None:
       builder = builder.skill_manager(skill_registry).tool(load_skill)
+      occupied_names.add(load_skill.name)
+      occupied_names.update(tool.name for tool in skill_registry.get_tools())
       logger.debug(
         "agent_factory_skills",
         enabled=self._config.skills,
@@ -402,8 +434,10 @@ class AgentFactory:
       if mcp_tools:
         for _, capability in mcp_tools:
           builder = builder.tool(capability)
+          occupied_names.add(capability.name)
         logger.debug("agent_factory_mcp_tools", count=len(mcp_tools))
 
+    builder = self._register_project_agents(builder, occupied_names)
     self._agent = self._finalize_agent(self._apply_generation_options(builder).build())
     return self._agent
 
@@ -446,6 +480,7 @@ class AgentFactory:
       plugin_summary=plugin_summary,
       execution_plan=execution_plan,
       allowed_tools=list(self._allowed_tools),
+      project_agent_tools=[tool.name for tool in self._project_agent_tools],
     ).build()
 
   def build_with_external_tools(
@@ -600,6 +635,7 @@ class AgentFactory:
       external_skill_tools=external_skill_tool_names,
       internal_mcp_tools=mcp_tool_names,
       internal_skill_tools=skill_tool_names,
+      project_agent_tools=[tool.name for tool in self._project_agent_tools],
       opencode_native_skill_enabled=opencode_native_skill_enabled,
       repo_map=self._repo_map,
       git_summary=self._git_summary,
@@ -627,6 +663,16 @@ class AgentFactory:
       .system_prompt(system_prompt)
       .max_turns(self._executor_max_turns())
     )
+
+    occupied_names = set(
+      host_tool_names
+      + hosted_tool_names
+      + external_mcp_tool_names
+      + external_skill_tool_names
+      + mcp_tool_names
+      + skill_tool_names
+    )
+    builder = self._register_project_agents(builder, occupied_names)
 
     # Register bridge-local nonoka tools. They execute in this process, while
     # host_caps below still use the external receipt/resume boundary.
@@ -769,6 +815,8 @@ class AgentFactory:
         skill = skill_registry.get_skill(info.name)
         if skill is not None:
           tools.extend(skill.tools)
+
+    tools.extend(self._project_agent_tools)
 
     return tools
 

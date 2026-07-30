@@ -48,6 +48,8 @@ declares `test_*` functions, invoke it through the appropriate test runner
 not treat an interpreter run with no collected tests or no test output as a
 passing check. After the final mutation, run one focused acceptance command
 prefixed by `NONOKA_VERIFY=focused` and inspect the runner's reported result.
+Complete TODO/progress bookkeeping before that final focused command. Once it
+passes, the next turn is final-response-only and no tools are available.
 Use `NONOKA_VERIFY=full` only for an intentionally broad suite. Missing dependencies, skipped
 collection, empty output, or an unavailable test runner leave verification
 unresolved; report that honestly rather than claiming success from static
@@ -69,6 +71,7 @@ class SystemPromptBuilder:
     external_skill_tools: list[str] | None = None,
     internal_mcp_tools: list[str] | None = None,
     internal_skill_tools: list[str] | None = None,
+    project_agent_tools: list[str] | None = None,
     opencode_native_skill_enabled: bool = False,
     repo_map: str | None = None,
     git_summary: str | None = None,
@@ -86,6 +89,7 @@ class SystemPromptBuilder:
     external_skill_tools: Prefixed external skill tool names.
     internal_mcp_tools: Prefixed internal MCP tool names.
     internal_skill_tools: Prefixed internal skill tool names.
+    project_agent_tools: Manifest-defined advisory agent tools.
     opencode_native_skill_enabled: If True, add a warning about the
       conflicting OpenCode native ``skill:<name>`` syntax.
     repo_map: Optional repo map string to inject.
@@ -104,6 +108,7 @@ class SystemPromptBuilder:
     self._external_skill_tools = external_skill_tools or []
     self._internal_mcp_tools = internal_mcp_tools or []
     self._internal_skill_tools = internal_skill_tools or []
+    self._project_agent_tools = project_agent_tools or []
     self._opencode_native_skill_enabled = opencode_native_skill_enabled
     self._repo_map = repo_map
     self._git_summary = git_summary
@@ -130,10 +135,6 @@ class SystemPromptBuilder:
     namespaces_block = self._build_namespaces_block()
     if namespaces_block:
       parts.append(namespaces_block)
-
-    planner_block = self._build_planner_block()
-    if planner_block:
-      parts.append(planner_block)
 
     execution_plan_block = self._build_execution_plan_block()
     if execution_plan_block:
@@ -208,15 +209,6 @@ class SystemPromptBuilder:
       return ""
     return _OPENCODE_TODO_WORKFLOW_BLOCK
 
-  def _build_planner_block(self) -> str:
-    """Return guidance for the planner/executor workflow.
-
-    The built-in ``plan_task`` tool was removed from nonoka-agent in 1.3.4; the
-    planner block is currently suppressed until nonoka-cli provides its own
-    LLM-based planner implementation.
-    """
-    return ""
-
   def _build_execution_plan_block(self) -> str:
     """Return the concrete execution plan produced by the planner agent."""
     if not self._execution_plan:
@@ -262,6 +254,7 @@ class SystemPromptBuilder:
       or self._external_skill_tools
       or self._internal_mcp_tools
       or self._internal_skill_tools
+      or self._project_agent_tools
     )
     if not has_any:
       return ""
@@ -306,6 +299,15 @@ class SystemPromptBuilder:
       lines.append(
         "- Internal skill tools (nonoka executes, call as ``skill__<skill>__<tool>``): "
         + ", ".join(f"`{n}`" for n in self._internal_skill_tools)
+      )
+    if self._project_agent_tools:
+      lines.append(
+        "- Project advisory agents (nonoka executes locally, tool-free child sessions): "
+        + ", ".join(f"`{n}`" for n in self._project_agent_tools)
+      )
+      lines.append(
+        "Delegate only bounded analysis or review. Include all required evidence in "
+        "the `task` and optional `context`; the child cannot read or modify the workspace."
       )
 
     if self._external_mcp_tools or self._internal_mcp_tools:

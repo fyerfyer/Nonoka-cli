@@ -62,6 +62,10 @@ verdaccio-storage/
 # Private planning documents
 DESIGN.md
 REFACTOR.md
+/SWE_BENCH_FOLLOW_UP.md
+/TODO.md
+/nonoka.yaml
+
 # Runtime nonoka project artifacts
 .nonoka/repo_map.jsonl
 .nonoka/tasks/

@@ -33,6 +33,29 @@ const MAX_HASH_BYTES = 64 * 1024;
 const EXCLUDED_EXTERNAL_ROOTS = ['/dev', '/proc', '/sys'];
 const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH;
 
+function isInternalRuntimeArtifact(root: string, absolute: string): boolean {
+  const resolved = path.resolve(absolute);
+  const traceDir = process.env.NONOKA_TRACE_DIR;
+  if (traceDir) {
+    const target = path.resolve(traceDir);
+    if (
+      target.startsWith(`${root}${path.sep}`)
+      && (resolved === target || resolved.startsWith(`${target}${path.sep}`))
+    ) return true;
+  }
+  for (const configured of [
+    process.env.NONOKA_EVENT_DB,
+    process.env.NONOKA_RUN_EVIDENCE_PATH,
+    process.env.NONOKA_PROVIDER_LOG_PATH,
+  ]) {
+    if (!configured) continue;
+    const target = path.resolve(configured);
+    if (!target.startsWith(`${root}${path.sep}`)) continue;
+    if (resolved === target || resolved.startsWith(`${target}-`)) return true;
+  }
+  return false;
+}
+
 function workspaceLog(message: string): void {
   if (!PROVIDER_LOG_PATH) return;
   try {
@@ -279,6 +302,7 @@ function walk(
   for (const entry of directoryEntries) {
     if (EXCLUDED.has(entry.name)) continue;
     const absolute = path.join(current, entry.name);
+    if (isInternalRuntimeArtifact(root, absolute)) continue;
     const relative = path.relative(root, absolute);
     if (entry.isDirectory()) {
       walk(root, absolute, entries, modes, protectedFiles, protectedRoots);

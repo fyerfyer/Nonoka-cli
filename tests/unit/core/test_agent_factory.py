@@ -12,6 +12,13 @@ from nonoka.core.errors import ExternalToolExecutionRequiredError
 
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.agent_factory import AgentFactory
+from nonoka_cli.core.plugin_manifest import AgentEntry
+from nonoka_cli.core.project_agents import (
+  ProjectAgentDefinition,
+  compile_project_agents,
+)
+from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
+from nonoka_cli.utils.errors import AgentBuildError
 
 
 @pytest.fixture
@@ -456,7 +463,8 @@ def test_generation_options_attach_persisted_runtime_and_completion_contract():
     max_completion_corrections=3,
   )
   agent = factory.build()
-  assert agent.runtime_limits.max_model_turns == 12
+  # Twelve work turns plus one tool-free final response turn.
+  assert agent.runtime_limits.max_model_turns == 13
   assert agent.runtime_limits.max_tool_calls == 40
   assert agent.runtime_limits.model_timeout_seconds == 30
   assert agent.runtime_limits.wall_timeout_seconds == 600
@@ -498,6 +506,50 @@ def test_generation_options_can_explicitly_disable_cumulative_budgets():
   assert agent.runtime_limits.max_model_turns is None
   assert agent.runtime_limits.max_tool_calls is None
   assert agent.runtime_limits.wall_timeout_seconds == 3600
+
+
+def _project_agent_tools():
+  definition = ProjectAgentDefinition(
+    entry=AgentEntry(
+      name="planner",
+      description="Plan a bounded change.",
+      model="child-model",
+      system_prompt="Return a concise plan.",
+      max_turns=2,
+    ),
+    source=Path("/workspace/.nonoka/plugin.json"),
+  )
+  return compile_project_agents([definition], ToolOutputPolicy()).tools
+
+
+def test_project_agents_are_registered_in_both_build_modes():
+  factory = AgentFactory(
+    CLIConfig(model="parent-model"),
+    project_agent_tools=_project_agent_tools(),
+  )
+
+  standalone = factory.build()
+  external = factory.build_with_external_tools([])
+
+  assert any(tool.name == "agent__planner" for tool in standalone.tools)
+  assert any(tool.name == "agent__planner" for tool in external.tools)
+  assert "`agent__planner`" in standalone.system_prompt
+  assert "`agent__planner`" in external.system_prompt
+
+
+def test_project_agent_collision_with_host_tool_is_rejected():
+  factory = AgentFactory(
+    CLIConfig(model="parent-model"),
+    project_agent_tools=_project_agent_tools(),
+  )
+  host_tool = factory.create_external_tool_capability(
+    name="agent__planner",
+    description="collision",
+    parameters={"type": "object", "properties": {}},
+  )
+
+  with pytest.raises(AgentBuildError, match="collision"):
+    factory.build_with_external_tools([host_tool])
 
 
 def test_generation_options_can_require_observed_effect_without_workspace_mutation():

@@ -45,6 +45,7 @@ def test_swe_profile_requires_strict_project_verification():
   assert options["verificationEnforcement"] == "strict"
   assert options["maxCompletionCorrections"] == 3
   assert options["allowedVerificationKinds"] == ["test", "build", "lint", "typecheck"]
+  assert options["env"] == {"NONOKA_DISABLE_PROJECT_AGENTS": "1"}
 
 
 def test_protected_test_paths_include_instance_declared_tests():

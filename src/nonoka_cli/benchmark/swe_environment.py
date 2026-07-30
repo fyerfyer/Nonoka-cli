@@ -60,6 +60,7 @@ def swe_profile(model: str, temperature: float, run_timeout: float) -> dict:
             "nonoka_cli",
             "--server",
           ],
+          "env": {"NONOKA_DISABLE_PROJECT_AGENTS": "1"},
           "configPath": "/opt/nonoka-runtime/nonoka-benchmark.yaml",
           "model": model,
           "temperature": temperature,

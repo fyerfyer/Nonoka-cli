@@ -279,10 +279,12 @@ explicit Aider or native OpenCode comparison after a healthy bridge run fails.
 
 ### Verified benchmark and regression results
 
-The current verification-contract implementation has passed the following checks against the local sibling `nonoka-agent` checkout:
+The current verification-contract and bounded multi-agent implementation has passed the following checks against the local sibling `nonoka-agent` checkout:
 
-- `267` deterministic nonoka-cli unit and integration tests.
-- `61` OpenCode provider tests, followed by a successful TypeScript build.
+- `543` deterministic nonoka-agent tests passed (`45` opt-in live tests were deselected).
+- `280` nonoka-cli unit, integration, and bridge tests passed.
+- `62` OpenCode provider tests passed, followed by a successful TypeScript build.
+- A clean OpenCode TUI multi-agent run used `agent__spawn` for both planning and review, recovered two intentionally partial file observations with bounded follow-up reads, completed a real workspace change, and passed all `16` focused acceptance tests. Its final response turn exposed no tools and made no host tool calls.
 - Official SWE-bench Lite verification for eight distinct instances: `astropy__astropy-12907`, `django__django-10914`, `django__django-10924`, `django__django-11001`, `django__django-11099`, `pytest-dev__pytest-11143`, `pallets__flask-4045`, and `sympy__sympy-11400`.
 
 The pinned `swe-flash-selected10-v1` regression sample resolved 6 of 10 instances with `deepseek/deepseek-v4-flash`. Subsequent `deepseek/deepseek-v4-pro` runs independently resolved several Django and cross-project instances and, after the verification-contract remediation, resolved the previously failing `pallets__flask-4045` and `sympy__sympy-11400` instances. All reported results come from the official SWE-bench verifier rather than model-authored assertions. They are targeted engineering samples, not a claim of a full SWE-bench Lite score.
@@ -570,55 +572,58 @@ query the index on demand.
 
 ## Sub-agent workflow
 
-`nonoka-cli` can optionally expose two sub-agent tools that the main agent can
-call for complex tasks:
+Projects may declare bounded advisory roles in `.nonoka/plugin.json`. Each valid role becomes a local tool named `agent__<role>`; the main Agent decides whether to delegate to it.
 
-- `plan_task` — delegates planning to a dedicated **planner** agent and returns a
-  numbered, file-level execution plan.
-- `review_changes` — delegates final review to a dedicated **reviewer** agent and
-  returns a structured review with issues, suggestions, and an approval flag.
-
-Both are disabled by default. Enable them by setting their model in `nonoka.yaml`:
-
-```yaml
-model: deepseek/deepseek-v4-pro
-max_turns: 20
-
-agents:
-  planner:
-    model: deepseek/deepseek-v4-pro
-    system_prompt: "You are a planning agent..."
-  reviewer:
-    model: deepseek/deepseek-v4-pro
-    system_prompt: "You are a senior code reviewer..."
+```json
+{
+  "schema_version": "1.0",
+  "name": "project-agents",
+  "agents": [
+    {
+      "name": "planner",
+      "description": "Produce a concise implementation plan.",
+      "model": "deepseek/deepseek-v4-pro",
+      "system_prompt": "Return a numbered plan, risks, and focused checks.",
+      "max_turns": 2,
+      "max_invocations": 1,
+      "allowed_tools": []
+    },
+    {
+      "name": "reviewer",
+      "description": "Review a proposed change for blocking defects.",
+      "model": "deepseek/deepseek-v4-pro",
+      "system_prompt": "Return blocking issues, missing requirements, and an approval decision.",
+      "output_contract": "review",
+      "max_turns": 3,
+      "max_invocations": 2,
+      "allowed_tools": []
+    }
+  ],
+  "dynamic_agent": {
+    "enabled": true,
+    "model": "deepseek/deepseek-v4-pro",
+    "base_system_prompt": "You are a temporary advisory sub-agent. Return concise, actionable findings to the parent.",
+    "max_turns": 2,
+    "max_invocations": 2,
+    "max_instruction_chars": 2000,
+    "max_context_chars": 16000
+  }
+}
 ```
 
-`max_turns` at the top level controls the main executor agent. The
-`planner`/`reviewer` roles each have their own `max_turns` inside
-`agents.<role>`.
+The tool input is `{"task": "...", "context": "..."}`. Child Agents use isolated memory, one-level delegation, bounded turns, and no tools. They cannot read or modify the workspace, so the parent must include all relevant evidence in `context`; their output is advisory and cannot replace editing or verification.
 
-When enabled, these tools are injected into the main agent's tool list
-alongside OpenCode's native tools. The main agent decides when to call them;
-the planner/reviewer run inside their own short-lived `nonoka` agent invocation
-and return their results as tool output.
+When `dynamic_agent.enabled` is true, the main Agent also receives `agent__spawn`. It may choose a bounded `role`, `instructions`, `task`, and `context`, but the project policy fixes the model, base prompt, turn budget, invocation budget, and input sizes. Dynamically created children are still tool-free and cannot create further agents. The tool deliberately accepts no `model`, `tools`, permission, or budget arguments.
 
-`review_changes` accepts an optional `files` argument. When the main agent
-passes file paths, the reviewer reads those files and prepends their contents
-to the review context automatically:
+After the configured mutation and verification evidence is satisfied, Nonoka uses a tool-free finalization turn. This prevents optional cleanup or repeated checks from consuming the remaining turn budget after a task is already done. For evidence-gated runs, `maxTurns` therefore counts work turns and the runtime reserves one additional model call solely to produce the final response.
 
-```yaml
-# In the conversation the model can call:
-# review_changes({
-#   "task": "Review the changes against the goal: add logging",
-#   "context": "<diff or summary>",
-#   "files": ["src/main.py", "src/utils.py"]
-# })
+Validate the effective role configuration with:
+
+```bash
+nonoka-cli plugin validate --manifest .nonoka/plugin.json
 ```
 
-> **Note:** `plan_task` and `review_changes` used to live in `nonoka-agent`. They
-> have been moved to `nonoka-cli` so that sub-agent configuration (model, system
-> prompt, max turns) is controlled by the CLI config and can use different
-> models from the main agent.
+Set `NONOKA_DISABLE_PROJECT_AGENTS=1` to disable both static project roles and dynamic spawning. Benchmark profiles set this automatically so existing single-Agent scores remain comparable.
 
 ## Plugin manifest
 
@@ -626,13 +631,12 @@ Projects can declare their own Nonoka plugins via `.nonoka/plugin.json`:
 
 ```json
 {
+  "schema_version": "1.0",
   "name": "my-plugin",
-  "skills": ["code-review"],
-  "agents": {
-    "planner": { "system_prompt": "..." }
-  },
-  "mcpServers": {},
-  "allowedTools": ["read", "edit", "bash"]
+  "skills": [{"name": "code-review"}],
+  "agents": [],
+  "mcp_servers": {},
+  "allowed_tools": ["read", "edit", "bash"]
 }
 ```
 
@@ -720,7 +724,7 @@ src/nonoka_cli/
 ├── config/          # YAML config loading and Pydantic models
 ├── core/            # Orchestrator, RunnerService, SessionService, ToolService,
 │                    # MCPService, AgentFactory, prompt/context/task-state/output pruning,
-│                    # git safety net, repo map, planning, and plugin manifest
+│                    # git safety net, repo map, project agents, and plugin manifest
 │                    #   agent_factory.py              # Build nonoka Agent from CLI config
 │                    #   prompt_builder.py             # System prompt assembly for OpenCode mode
 │                    #   context_trimmer.py            # Turn-based context window trimming
@@ -728,9 +732,8 @@ src/nonoka_cli/
 │                    #   tool_output_policy.py         # Tool output pruning / spill policy
 │                    #   git_service.py                # Git checkpoint / rollback helpers
 │                    #   repo_map_service.py           # Symbol index generation and search
-│                    #   planning_service.py           # Planner sub-agent (AgentTool)
-│                    #   review_service.py             # Reviewer sub-agent (AgentTool)
 │                    #   plugin_manifest.py            # .nonoka/plugin.json loader
+│                    #   project_agents.py             # Compile bounded manifest roles
 │                    #   plugin_manifest_converter.py  # OpenCode skill/permission conversion
 ├── mcp/             # MCP server lifecycle manager (thin wrapper around nonoka-agent)
 ├── sessions/        # Session metadata persistence

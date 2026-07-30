@@ -71,6 +71,7 @@ def _suggest_fix(error_type: str, location: str) -> str:
 def _substitute_env_vars(value: Any) -> Any:
   """Recursively substitute ``${VAR}`` and ``${VAR:-default}`` in strings."""
   if isinstance(value, str):
+
     def replacer(match: re.Match[str]) -> str:
       var_name = match.group("name")
       default = match.group("default")
@@ -78,10 +79,9 @@ def _substitute_env_vars(value: Any) -> Any:
       if result is None:
         if default is not None:
           return default
-        raise ConfigError(
-          f"Environment variable '{var_name}' is not set and no default provided"
-        )
+        raise ConfigError(f"Environment variable '{var_name}' is not set and no default provided")
       return result
+
     return _ENV_PATTERN.sub(replacer, value)
   if isinstance(value, dict):
     return {k: _substitute_env_vars(v) for k, v in value.items()}
@@ -129,9 +129,7 @@ class ConfigLoader:
     if fallback.exists():
       return fallback
 
-    raise ConfigNotFoundError(
-      f"No config file found. Searched: {cls.DEFAULT_PATH}, {fallback}"
-    )
+    raise ConfigNotFoundError(f"No config file found. Searched: {cls.DEFAULT_PATH}, {fallback}")
 
   @classmethod
   def _load_yaml(cls, path: Path) -> dict[str, Any]:
@@ -181,6 +179,13 @@ class ConfigLoader:
       raise ConfigError("PyYAML is required. Install: pip install pyyaml") from exc
 
     data = cls._load_yaml(config_path)
+    agents_data = data.get("agents")
+    if isinstance(agents_data, dict) and "planner" in agents_data:
+      logger.warning(
+        "deprecated_agents_planner_ignored",
+        path=str(config_path),
+        replacement=".nonoka/plugin.json agents[]",
+      )
 
     # Merge optional side-car MCP servers file.
     mcp_data = cls._load_yaml(cls.MCP_SERVERS_PATH)
@@ -201,9 +206,7 @@ class ConfigLoader:
       config = CLIConfig.model_validate(data)
     except ValidationError as exc:
       formatted = _format_pydantic_errors(exc)
-      raise ConfigError(
-        f"Config validation failed for {config_path}:\n{formatted}"
-      ) from exc
+      raise ConfigError(f"Config validation failed for {config_path}:\n{formatted}") from exc
     except Exception as exc:
       raise ConfigError(f"Config validation failed: {exc}") from exc
 

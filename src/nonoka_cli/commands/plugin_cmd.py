@@ -8,13 +8,18 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-import yaml
 
 from nonoka_cli.core.plugin_manifest import PluginManifestLoader
 from nonoka_cli.core.plugin_manifest_converter import (
   convert_to_opencode,
   write_opencode_files,
 )
+from nonoka_cli.core.project_agents import (
+  compile_project_agents,
+  effective_agent_definitions,
+  effective_dynamic_agent_definition,
+)
+from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.utils.errors import ConfigError
 
 logger = structlog.get_logger("nonoka_cli.commands.plugin")
@@ -58,15 +63,49 @@ def run_convert(args: argparse.Namespace) -> int:
   return 0
 
 
+def run_validate(args: argparse.Namespace) -> int:
+  """Validate manifest-defined project agents and show effective tool names."""
+  manifest_path = Path(args.manifest).expanduser().resolve()
+  loaded = PluginManifestLoader().load_path(manifest_path)
+  if loaded is None:
+    raise ConfigError(f"Failed to load plugin manifest at {manifest_path}")
+
+  compilation = compile_project_agents(
+    effective_agent_definitions([loaded]),
+    ToolOutputPolicy(),
+    effective_dynamic_agent_definition([loaded]),
+  )
+  for diagnostic in compilation.diagnostics:
+    location = f" ({diagnostic.source})" if diagnostic.source else ""
+    role = f" [{diagnostic.role}]" if diagnostic.role else ""
+    print(f"{diagnostic.level.upper()}{role}: {diagnostic.message}{location}")
+  for tool in compilation.tools:
+    if tool.name == "agent__spawn":
+      print(
+        f"OK [dynamic]: {tool.name} model={tool.config.model} "
+        f"max_turns={tool.config.max_turns} "
+        f"max_invocations={tool.config.max_invocations}"
+      )
+    else:
+      print(
+        f"OK [{tool.metadata['role']}]: {tool.name} "
+        f"model={tool.agent.model} max_turns={tool.agent.max_turns} "
+        f"max_invocations={tool.max_invocations}"
+      )
+  if compilation.errors:
+    return 1
+  if not compilation.tools:
+    print("OK: manifest defines no project agents.")
+  return 0
+
+
 def add_subparser(subparsers: Any) -> None:
   """Register the ``plugin`` subcommand and its children."""
   plugin_parser = subparsers.add_parser(
     "plugin",
     help="Manage .nonoka/plugin.json manifests",
   )
-  plugin_subparsers = plugin_parser.add_subparsers(
-    dest="plugin_command", required=True
-  )
+  plugin_subparsers = plugin_parser.add_subparsers(dest="plugin_command", required=True)
 
   convert_parser = plugin_subparsers.add_parser(
     "convert",
@@ -84,3 +123,14 @@ def add_subparser(subparsers: Any) -> None:
     help="Directory to write OpenCode artifacts into (default: current directory)",
   )
   convert_parser.set_defaults(func=run_convert)
+
+  validate_parser = plugin_subparsers.add_parser(
+    "validate",
+    help="Validate manifest-defined project agents",
+  )
+  validate_parser.add_argument(
+    "--manifest",
+    default=".nonoka/plugin.json",
+    help="Path to plugin.json (default: .nonoka/plugin.json)",
+  )
+  validate_parser.set_defaults(func=run_validate)

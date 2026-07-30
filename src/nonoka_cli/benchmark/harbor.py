@@ -229,6 +229,7 @@ class OpenCodeHarborAgent(_HarborOpenCode):
           "name": "Nonoka Terminal-Bench bridge",
           "options": {
             "serverCommand": [_PYTHON, "-Es", "-m", "nonoka_cli", "--server"],
+            "env": {"NONOKA_DISABLE_PROJECT_AGENTS": "1"},
             "configPath": _CONFIG_PATH,
             "model": self.model_name or "deepseek/deepseek-v4-pro",
             "temperature": self._temperature,

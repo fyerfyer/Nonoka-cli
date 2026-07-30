@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class CLIBehaviorConfig(BaseModel):
   """CLI behavior configuration."""
+
   theme: str = "dark"
   auto_approve: bool = False
   editor: str = "${EDITOR:-nano}"
@@ -19,12 +20,14 @@ class CLIBehaviorConfig(BaseModel):
 
 class HITLConfigModel(BaseModel):
   """HITL (Human-in-the-Loop) configuration."""
+
   policy: str = "interactive"
   dangerous_tools: list[str] = Field(default_factory=list)
 
 
 class SafetyConfig(BaseModel):
   """Runtime command and filesystem restrictions."""
+
   enabled: bool = True
   allowed_roots: list[Path] = Field(default_factory=list)
   # Preserve the legacy no-section behaviour. `config init` writes the new
@@ -43,7 +46,9 @@ class SafetyConfig(BaseModel):
 
 class CacheConfig(BaseModel):
   enabled: bool = True
-  path: Path = Field(default_factory=lambda: Path.home() / ".cache" / "nonoka" / "llm-cache.sqlite3")
+  path: Path = Field(
+    default_factory=lambda: Path.home() / ".cache" / "nonoka" / "llm-cache.sqlite3"
+  )
   ttl_seconds: int = Field(default=604800, ge=1)
   semantic_enabled: bool = False
   embedding_model: str | None = None
@@ -61,6 +66,7 @@ class BudgetConfig(BaseModel):
 
 class MCPServerConfigModel(BaseModel):
   """Single MCP server configuration."""
+
   transport: str
   command: str
   args: list[str] = Field(default_factory=list)
@@ -68,6 +74,7 @@ class MCPServerConfigModel(BaseModel):
 
 class ContextConfig(BaseModel):
   """In-context memory management configuration."""
+
   enabled: bool = True
   max_turns: int = 8
   max_tokens: int | None = None
@@ -75,6 +82,7 @@ class ContextConfig(BaseModel):
 
 class ToolOutputRuleConfig(BaseModel):
   """Per-tool output pruning rule configuration."""
+
   max_tokens: int = 4000
   max_lines: int | None = 200
   strategy: str = "tail_only"
@@ -83,6 +91,7 @@ class ToolOutputRuleConfig(BaseModel):
 
 class ToolOutputConfig(BaseModel):
   """Tool output pruning / spill configuration."""
+
   enabled: bool = True
   rules: dict[str, ToolOutputRuleConfig] = Field(default_factory=dict)
   default_rule: ToolOutputRuleConfig = Field(default_factory=ToolOutputRuleConfig)
@@ -90,12 +99,14 @@ class ToolOutputConfig(BaseModel):
 
 class TaskStateConfig(BaseModel):
   """Externalized task-state file configuration."""
+
   enabled: bool = True
   tasks_dir: str = ".nonoka/tasks"
 
 
 class GitConfig(BaseModel):
   """Git checkpoint / rollback configuration."""
+
   enabled: bool = True
   auto_checkpoint: bool = True
   rollback_on_error: bool = True
@@ -105,6 +116,7 @@ class GitConfig(BaseModel):
 
 class RepoMapConfig(BaseModel):
   """Repo map / symbol indexing configuration."""
+
   enabled: bool = True
   max_tokens: int = 2048
   languages: list[str] = Field(default_factory=list)
@@ -147,20 +159,22 @@ class RepoMapConfig(BaseModel):
 
 
 class AgentRoleConfig(BaseModel):
-  """Configuration for a single agent role (planner / executor)."""
+  """Compatibility configuration for the main executor role."""
+
   model: str = ""
   max_turns: int = 5
   system_prompt: str = ""
 
 
 class AgentsConfig(BaseModel):
-  """Multi-agent role configuration."""
-  planner: AgentRoleConfig = Field(default_factory=AgentRoleConfig)
+  """Compatibility configuration for the main executor budget."""
+
   executor: AgentRoleConfig = Field(default_factory=AgentRoleConfig)
 
 
 class PluginConfig(BaseModel):
   """Plugin manifest discovery configuration."""
+
   enabled: bool = True
   manifests: list[Path] = Field(default_factory=list)
 
@@ -177,6 +191,7 @@ class CLIConfig(BaseModel):
 
   Matches the expected structure of ~/.config/nonoka/config.yaml.
   """
+
   model: str = "gpt-4o"
   system_prompt: str = ""
   api_key: str = ""

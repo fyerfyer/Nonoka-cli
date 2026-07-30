@@ -10,6 +10,37 @@ import {
 } from '../src/workspace';
 
 describe('workspace receipts', () => {
+  it('excludes nonoka runtime artifacts from task workspace effects', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
+    const traceDir = path.join(cwd, 'traces');
+    const eventDb = path.join(cwd, 'events.db');
+    const previousTrace = process.env.NONOKA_TRACE_DIR;
+    const previousEventDb = process.env.NONOKA_EVENT_DB;
+    process.env.NONOKA_TRACE_DIR = traceDir;
+    process.env.NONOKA_EVENT_DB = eventDb;
+    try {
+      fs.mkdirSync(traceDir);
+      fs.writeFileSync(eventDb, 'before');
+      fs.writeFileSync(path.join(traceDir, 'trace.ndjson'), 'before');
+      recordWorkspaceBefore(cwd, 'call-runtime', 'todowrite');
+      fs.writeFileSync(eventDb, 'after');
+      fs.writeFileSync(`${eventDb}-journal`, 'journal');
+      fs.writeFileSync(path.join(traceDir, 'trace.ndjson'), 'after');
+      const receipt: any = receiptForWorkspaceResult(
+        cwd, 'call-runtime', 'todowrite', { result: 'updated' },
+      );
+      expect(receipt.workspace.created).toEqual([]);
+      expect(receipt.workspace.modified).toEqual([]);
+      expect(receipt.effect.changed).toBe(false);
+    } finally {
+      if (previousTrace === undefined) delete process.env.NONOKA_TRACE_DIR;
+      else process.env.NONOKA_TRACE_DIR = previousTrace;
+      if (previousEventDb === undefined) delete process.env.NONOKA_EVENT_DB;
+      else process.env.NONOKA_EVENT_DB = previousEventDb;
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('records a credential-free workspace attestation for a write tool', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nonoka-workspace-'));
     try {

@@ -9,14 +9,14 @@ between ecosystems.
 from __future__ import annotations
 
 import json
-import structlog
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import structlog
 from pydantic import BaseModel, Field, field_validator
 
 from nonoka_cli.config.models import MCPServerConfigModel
-from nonoka_cli.utils.errors import ConfigError
 
 logger = structlog.get_logger("nonoka_cli.core")
 
@@ -42,8 +42,33 @@ class AgentEntry(BaseModel):
   description: str = ""
   model: str = ""
   system_prompt: str = ""
-  max_turns: int = 5
+  max_turns: int = 3
+  max_invocations: int = 2
   allowed_tools: list[str] = Field(default_factory=list)
+  output_contract: Literal["text", "review"] = "text"
+
+
+class DynamicAgentEntry(BaseModel):
+  """Policy for the bounded dynamic advisory-agent tool.
+
+  The caller may describe a role and task, but cannot select a model, grant
+  tools, or change execution budgets.  Those authority-bearing choices remain
+  project configuration.
+  """
+
+  enabled: bool = False
+  model: str = ""
+  base_system_prompt: str = (
+    "You are a temporary advisory sub-agent. Work only from the supplied task "
+    "and context. Return a concise, actionable answer to the parent agent."
+  )
+  description: str = "Create a temporary, tool-free advisory sub-agent."
+  max_turns: int = 2
+  max_invocations: int = 2
+  max_role_chars: int = 80
+  max_instruction_chars: int = 2000
+  max_task_chars: int = 8000
+  max_context_chars: int = 16000
 
 
 class CommandEntry(BaseModel):
@@ -74,6 +99,7 @@ class PluginManifest(BaseModel):
   description: str = ""
   skills: list[SkillEntry] = Field(default_factory=list)
   agents: list[AgentEntry] = Field(default_factory=list)
+  dynamic_agent: DynamicAgentEntry | None = None
   mcp_servers: dict[str, MCPServerConfigModel] = Field(default_factory=dict)
   commands: list[CommandEntry] = Field(default_factory=list)
   hooks: list[HookEntry] = Field(default_factory=list)
@@ -97,25 +123,52 @@ class PluginManifestLoader:
 
   def discover(self, working_dir: Path) -> list[Path]:
     """Return all existing manifest paths for *working_dir*."""
-    candidates = [
-      working_dir / p for p in DEFAULT_MANIFEST_PATHS
-    ] + [working_dir / p for p in self._extra_paths]
-    return [p for p in candidates if p.exists() and p.is_file()]
+    candidates = [working_dir / p for p in DEFAULT_MANIFEST_PATHS] + [
+      working_dir / p for p in self._extra_paths
+    ]
+    discovered: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+      resolved = path.resolve()
+      if resolved not in seen and resolved.exists() and resolved.is_file():
+        seen.add(resolved)
+        discovered.append(resolved)
+    return discovered
 
   def load(self, working_dir: Path) -> list[PluginManifest]:
     """Load all manifests discovered in *working_dir*."""
-    manifests: list[PluginManifest] = []
+    return [loaded.manifest for loaded in self.load_with_sources(working_dir)]
+
+  def load_path(self, path: Path) -> LoadedPluginManifest | None:
+    """Load one exact manifest path, retaining its resolved source."""
+    resolved = path.expanduser().resolve()
+    try:
+      data = json.loads(resolved.read_text(encoding="utf-8"))
+      manifest = PluginManifest.model_validate(data)
+      logger.info("plugin_manifest_loaded", path=str(resolved), name=manifest.name)
+      return LoadedPluginManifest(path=resolved, manifest=manifest)
+    except json.JSONDecodeError as exc:
+      logger.warning("plugin_manifest_invalid_json", path=str(resolved), error=str(exc))
+    except Exception as exc:
+      logger.warning("plugin_manifest_load_failed", path=str(resolved), error=str(exc))
+    return None
+
+  def load_with_sources(self, working_dir: Path) -> list[LoadedPluginManifest]:
+    """Load manifests together with their resolved source paths."""
+    manifests: list[LoadedPluginManifest] = []
     for path in self.discover(working_dir):
-      try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        manifest = PluginManifest.model_validate(data)
-        manifests.append(manifest)
-        logger.info("plugin_manifest_loaded", path=str(path), name=manifest.name)
-      except json.JSONDecodeError as exc:
-        logger.warning("plugin_manifest_invalid_json", path=str(path), error=str(exc))
-      except Exception as exc:
-        logger.warning("plugin_manifest_load_failed", path=str(path), error=str(exc))
+      loaded = self.load_path(path)
+      if loaded is not None:
+        manifests.append(loaded)
     return manifests
+
+
+@dataclass(frozen=True)
+class LoadedPluginManifest:
+  """A validated manifest paired with the file that declared it."""
+
+  path: Path
+  manifest: PluginManifest
 
 
 def merge_manifests(manifests: list[PluginManifest]) -> PluginManifest:
@@ -142,11 +195,16 @@ def merge_manifests(manifests: list[PluginManifest]) -> PluginManifest:
         merged.agents.append(agent)
 
     merged.mcp_servers.update(manifest.mcp_servers)
+    if manifest.dynamic_agent is not None:
+      merged.dynamic_agent = manifest.dynamic_agent
 
   return merged
 
 
-def format_manifest_summary(manifest: PluginManifest) -> str:
+def format_manifest_summary(
+  manifest: PluginManifest,
+  agent_tool_names: list[str] | None = None,
+) -> str:
   """Return a system-prompt friendly summary of a merged plugin manifest."""
   lines: list[str] = ["## Project Plugins"]
 
@@ -160,10 +218,17 @@ def format_manifest_summary(manifest: PluginManifest) -> str:
     for skill in manifest.skills:
       lines.append(f"  - {skill.name}: {skill.description or 'no description'}")
 
-  if manifest.agents:
+  if agent_tool_names is None and manifest.agents:
     lines.append("\nAgents:")
     for agent in manifest.agents:
       lines.append(f"  - {agent.name}: {agent.description or 'no description'}")
+  elif agent_tool_names:
+    lines.append("\nProject advisory agent tools:")
+    for name in agent_tool_names:
+      lines.append(f"  - {name}")
+
+  if manifest.dynamic_agent and manifest.dynamic_agent.enabled:
+    lines.append("\nDynamic advisory agent: enabled as agent__spawn")
 
   if manifest.mcp_servers:
     lines.append("\nMCP servers:")
