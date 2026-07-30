@@ -1,5 +1,7 @@
 # nonoka-cli
 
+English | [简体中文](README.zh-CN.md)
+
 OpenCode backend for the [Nonoka](https://pypi.org/project/nonoka/) Agent framework.
 
 `nonoka-cli` runs as a stdio NDJSON bridge server (`nonoka-cli --server`) that
