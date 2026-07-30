@@ -394,6 +394,40 @@ async def test_build_with_external_tools_accepts_external_skills():
   assert "`skill__code-review__review_file`" in prompt
 
 
+@pytest.mark.asyncio
+async def test_build_with_external_tools_combines_internal_and_external_skills(tmp_path):
+  from nonoka_cli.bridge.protocol import ExternalSkillDefinition
+
+  skill_dir = tmp_path / ".agents" / "skills" / "internal-review"
+  skill_dir.mkdir(parents=True)
+  (skill_dir / "SKILL.md").write_text(
+    "---\nname: internal-review\ndescription: Internal review.\n---\nReview internal code.\n"
+  )
+  config = CLIConfig(model="gpt-4o", skills=["internal-review"])
+  factory = AgentFactory(
+    config,
+    skill_registry=SkillRegistry(enabled=["internal-review"], search_paths=[skill_dir.parent]),
+  )
+
+  agent = factory.build_with_external_tools(
+    [],
+    external_skills=[
+      ExternalSkillDefinition(
+        name="host-review",
+        description="Host review.",
+        tools=[],
+        activation_prompt="Review host code.",
+      )
+    ],
+  )
+
+  assert "`internal-review`: Internal review." in agent.system_prompt
+  assert "`host-review`: Host review." in agent.system_prompt
+  manager = agent.metadata["_skill_manager"]
+  assert manager.get_skill("internal-review") is not None
+  assert manager.get_skill("host-review") is not None
+
+
 def test_is_opencode_native_skill_enabled(tmp_path: Path):
   # Missing cwd and missing file -> treated as safe (disabled / not OpenCode).
   assert AgentFactory._is_opencode_native_skill_enabled(None) is False

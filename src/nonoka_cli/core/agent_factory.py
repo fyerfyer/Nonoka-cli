@@ -11,6 +11,7 @@ import structlog
 from nonoka import (
   Agent,
   AgentBuilder,
+  CompositeSkillRegistry,
   ExternalCapability,
   ExternalMCPRegistry,
   ExternalMCPServer,
@@ -679,13 +680,15 @@ class AgentFactory:
     for cap in hosted_tools:
       builder = builder.tool(cap)
 
-    # Register lazy-load internal skills with prefixed tool names.
+    # Register one composite manager so host-managed skills do not overwrite
+    # configured filesystem skills in AgentBuilder metadata.
+    skill_registries: list[SkillRegistry] = []
     if skill_registry is not None:
-      builder = builder.skill_manager(_PrefixedSkillRegistry(skill_registry)).tool(load_skill)
-
-    # Register external skills (also lazy-loaded).
+      skill_registries.append(_PrefixedSkillRegistry(skill_registry))
     if external_skill_registry is not None:
-      builder = builder.external_skill_registry(external_skill_registry).tool(load_skill)
+      skill_registries.append(external_skill_registry)
+    if skill_registries:
+      builder = builder.skill_manager(CompositeSkillRegistry(skill_registries)).tool(load_skill)
 
     # Register external MCP registry.
     if external_mcp_registry is not None:

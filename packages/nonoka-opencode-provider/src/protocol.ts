@@ -87,18 +87,30 @@ export interface ExternalToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+export interface ExternalMCPToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
 export interface ExternalMCPServerDefinition {
   name: string;
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
+  description?: string;
+  tools: ExternalMCPToolDefinition[];
+}
+
+export interface ExternalSkillToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
 }
 
 export interface ExternalSkillDefinition {
   name: string;
-  package: string;
-  version?: string;
-  config?: Record<string, unknown>;
+  description?: string;
+  tools: ExternalSkillToolDefinition[];
+  system_prompt?: string;
+  activation_prompt?: string;
 }
 
 export const NONOKA_INBOUND_TYPES = {

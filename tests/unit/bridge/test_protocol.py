@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -100,6 +101,26 @@ def test_external_tool_definition_roundtrip():
   data = json.loads(tool.model_dump_json())
   assert data["name"] == "write_file"
   assert data["parameters"]["properties"]["path"]["type"] == "string"
+
+
+def test_shared_external_capability_contract_fixture_parses():
+  fixture = json.loads(
+    (Path(__file__).parents[2] / "fixtures" / "bridge_external_capabilities.json").read_text()
+  )
+  msg = parse_inbound_line(
+    json.dumps(
+      {
+        "type": "chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "cwd": "/tmp",
+        **fixture,
+      }
+    )
+  )
+
+  assert isinstance(msg, ChatRequest)
+  assert msg.external_mcp_servers[0].tools[0].name == "recall"
+  assert msg.external_skills[0].activation_prompt == "Keep the list consistent."
 
 
 def test_parse_unknown_type():

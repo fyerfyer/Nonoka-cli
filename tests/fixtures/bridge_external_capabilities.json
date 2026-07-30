@@ -1,0 +1,30 @@
+{
+  "external_mcp_servers": [
+    {
+      "name": "memory",
+      "description": "Host-managed memory server",
+      "tools": [
+        {
+          "name": "recall",
+          "description": "Recall a memory",
+          "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+        }
+      ]
+    }
+  ],
+  "external_skills": [
+    {
+      "name": "todo",
+      "description": "Manage a todo list",
+      "tools": [
+        {
+          "name": "add",
+          "description": "Add a todo",
+          "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}
+        }
+      ],
+      "system_prompt": "You manage todos.",
+      "activation_prompt": "Keep the list consistent."
+    }
+  ]
+}

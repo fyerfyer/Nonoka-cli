@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import fixture from "../../../tests/fixtures/bridge_external_capabilities.json";
 import {
   encodeChatRequest,
   encodeCancelMessage,
@@ -104,18 +105,8 @@ describe("parseOutboundLine", () => {
   });
 
   it("encodes external mcp servers and skills", () => {
-    const mcp: ExternalMCPServerDefinition = {
-      name: "memory",
-      command: "npx",
-      args: ["-y", "@modelcontextprotocol/server-memory"],
-      env: { MEMORY_PATH: "/tmp/memory.json" },
-    };
-    const skill: ExternalSkillDefinition = {
-      name: "todo",
-      package: "nonoka-skill-todo",
-      version: "1.0.0",
-      config: { strict: true },
-    };
+    const mcp = fixture.external_mcp_servers[0] as ExternalMCPServerDefinition;
+    const skill = fixture.external_skills[0] as ExternalSkillDefinition;
     const req: NonokaChatRequest = {
       type: "chat",
       messages: [{ role: "user", content: "hi" }],

@@ -483,11 +483,11 @@ skills:
   - nextjs-best-practices
 ```
 
+每个 skill 应放在项目的 `.agents/skills/<name>/SKILL.md`，或作为用户级 skill 放在 `~/.agents/skills/<name>/SKILL.md`。项目定义优先；旧的扁平 `skills/<name>.md` 文件仍会被识别。
+
 - **MCP 工具**由 nonoka-cli 在本地执行，并带有 `mcp__<server>__<tool>`
   命名空间前缀，因此不会与 OpenCode 原生工具冲突。
-- **Skills** 使用 nonoka-agent 的懒加载 `SkillRegistry`。系统提示词中只注入
-  名称和描述；完整指南通过 `load_skill` 工具按需加载。在外部工具模式下，
-  skill 工具带有 `skill__<skill>__<tool>` 前缀。
+- **Skills** 使用 nonoka-agent 的懒加载 `SkillRegistry`。发现阶段只读取名称和描述，不导入 skill 工具；已启用 skill 的工具会在构建运行时目录时解析，而完整指南、skill 根目录和随附资源路径通过 `load_skill` 按需加载，并免受常规上下文压缩。在外部工具模式下，skill 工具带有 `skill__<skill>__<tool>` 前缀。
 
 MCP 工具和 skill 工具在独立模式下均保持可用，且不加任何前缀。
 
@@ -505,9 +505,7 @@ tools:
 When loaded, use the say_hello tool to greet the user by name.
 ```
 
-`greet_tool:say_hello` 通过 Python 的常规导入机制解析，因此该模块必须能从
-项目工作目录（或 `PYTHONPATH` 上的某个目录）导入。把工具模块放在 skill 文件
-旁边，或者如果你使用嵌套布局，就把 skill 源目录加入 `PYTHONPATH`。
+`greet_tool:say_hello` 通过 Python 的常规导入机制解析，因此该模块必须能从项目工作目录（或 `PYTHONPATH` 上的某个目录）导入。对于随 skill 分发的工具文件，请使用相对于 `SKILL.md` 的路径，例如 `file: scripts/greet_tool.py:say_hello`。
 
 ### 避开 OpenCode 的原生 `skill` 工具
 

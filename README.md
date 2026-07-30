@@ -503,13 +503,12 @@ skills:
   - nextjs-best-practices
 ```
 
+Store each skill at `.agents/skills/<name>/SKILL.md` in the project or at `~/.agents/skills/<name>/SKILL.md` for user-wide use. Project definitions take precedence. Legacy flat `skills/<name>.md` files are still recognized.
+
 - **MCP tools** are executed locally by nonoka-cli and are exposed with a
   `mcp__<server>__<tool>` namespace prefix so they do not collide with OpenCode
   native tools.
-- **Skills** use nonoka-agent's lazy `SkillRegistry`. Only names and
-  descriptions are injected into the system prompt; full guidance is loaded
-  on-demand via the `load_skill` tool. Skill tools are prefixed with
-  `skill__<skill>__<tool>` in external-tools mode.
+- **Skills** use nonoka-agent's lazy `SkillRegistry`. Discovery reads names and descriptions without importing skill tools; enabled skill tools are resolved when the runtime catalog is built, while full guidance, its root directory, and bundled resource paths are loaded on-demand via `load_skill` and protected from normal context compaction. Skill tools are prefixed with `skill__<skill>__<tool>` in external-tools mode.
 
 Both MCP tools and skill tools remain available in standalone mode without any
 prefixing.
@@ -528,10 +527,7 @@ tools:
 When loaded, use the say_hello tool to greet the user by name.
 ```
 
-`greet_tool:say_hello` is resolved by Python's normal import machinery, so the
-module must be importable from the project working directory (or from a directory
-on `PYTHONPATH`). Place the tool module next to your skill file or add the skill
-source directory to `PYTHONPATH` if you use a nested layout.
+`greet_tool:say_hello` is resolved by Python's normal import machinery, so the module must be importable from the project working directory (or from a directory on `PYTHONPATH`). For a tool file bundled with the skill, use a path relative to `SKILL.md`, for example `file: scripts/greet_tool.py:say_hello`.
 
 ### Avoiding OpenCode's native `skill` tool
 

@@ -39,7 +39,7 @@ def test_opencode_init_creates_file(tmp_path: Path):
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
   assert data["provider"]["nonoka"]["options"]["requireFocusedVerification"] is True
   assert data["provider"]["nonoka"]["options"]["verificationEnforcement"] == "strict"
-  assert "--config" in " ".join(data["provider"]["nonoka"]["options"]["serverCommand"])
+  assert data["provider"]["nonoka"]["options"]["serverCommand"] == ["nonoka-cli", "--server"]
 
 
 def test_opencode_init_merges_existing(tmp_path: Path):
@@ -61,7 +61,7 @@ def test_opencode_init_merges_existing(tmp_path: Path):
   assert data["model"] == "other/model"
   assert data["custom"] is True
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
-  assert "--config" in " ".join(data["provider"]["nonoka"]["options"]["serverCommand"])
+  assert data["provider"]["nonoka"]["options"]["serverCommand"] == ["nonoka-cli", "--server"]
 
 
 def test_opencode_init_creates_agent_prompt(tmp_path: Path):
@@ -163,3 +163,38 @@ def test_opencode_init_disables_native_skill_tool(tmp_path: Path):
 
   data = json.loads((tmp_path / "opencode.json").read_text())
   assert data.get("tools", {}).get("skill") is False
+
+
+def test_opencode_init_keeps_native_skill_disabled_when_existing_tools_present(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
+  target = tmp_path / "opencode.json"
+  target.write_text(json.dumps({"tools": {"bash": False}}))
+
+  assert (
+    cmd_init(
+      argparse.Namespace(
+        config=str(config_path),
+        cwd=str(tmp_path),
+        global_=False,
+      )
+    )
+    == 0
+  )
+
+  data = json.loads(target.read_text())
+  assert data["tools"] == {"bash": False, "skill": False}
+
+
+def test_opencode_init_refreshes_managed_agent_prompt(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek-chat", system_prompt="First prompt"), config_path)
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
+
+  ConfigLoader.save(CLIConfig(model="deepseek-chat", system_prompt="Second prompt"), config_path)
+  assert cmd_init(args) == 0
+
+  content = (tmp_path / ".opencode" / "agents" / "build.md").read_text()
+  assert "Second prompt" in content
+  assert "First prompt" not in content

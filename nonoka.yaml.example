@@ -30,7 +30,8 @@ model: "deepseek-chat"
 # tool_paths:
 #   - ~/.config/nonoka/tools/
 
-# Enabled skills 
+# Enabled skills discovered from .agents/skills/<name>/SKILL.md (project)
+# or ~/.agents/skills/<name>/SKILL.md (user). Project definitions win.
 # skills:
 #   - code-review
 
