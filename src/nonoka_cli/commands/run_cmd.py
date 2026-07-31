@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -10,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from nonoka_cli.commands.opencode_cmd import cmd_init
+from nonoka_cli.commands.doctor_cmd import (
+    _provider_version_from_project,
+    check_opencode_config,
+    check_provider,
+)
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.safety import SrtSandbox
 
@@ -46,6 +53,95 @@ def _ensure_opencode_config(args: argparse.Namespace, cwd: Path) -> int:
     return cmd_init(init_args)
 
 
+def _referenced_config_path(cwd: Path) -> Path | None:
+    """Return the config path selected by the project's provider block."""
+    try:
+        data = json.loads((cwd / "opencode.json").read_text(encoding="utf-8"))
+        value = data["provider"]["nonoka"]["options"]["configPath"]
+        path = Path(value).expanduser()
+        return path.resolve() if path.is_absolute() else (cwd / path).resolve()
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _run_preflight(args: argparse.Namespace, cwd: Path) -> tuple[Path, Any] | None:
+    """Validate the executable OpenCode/Nonoka project contract."""
+    config_result = check_opencode_config(cwd)
+    provider_result = check_provider(cwd, require_project=True)
+    failures = [result for result in (config_result, provider_result) if result.status == "error"]
+    for result in failures:
+        print(f"Error: {result.message}", file=sys.stderr)
+        if result.remedy:
+            print(f"  Try: {result.remedy}", file=sys.stderr)
+    if failures:
+        print(f"  Diagnose: nonoka-cli doctor --cwd {cwd}", file=sys.stderr)
+        return None
+
+    referenced = _referenced_config_path(cwd)
+    if referenced is None:
+        print("Error: OpenCode config does not identify the active Nonoka config.", file=sys.stderr)
+        return None
+
+    explicit = getattr(args, "config", None)
+    if explicit is not None:
+        try:
+            requested = ConfigLoader.find_config_file(explicit, search_dir=cwd)
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        if requested != referenced:
+            print("Error: --config does not match the config recorded in opencode.json.", file=sys.stderr)
+            print(f"  Requested: {requested}", file=sys.stderr)
+            print(f"  OpenCode:  {referenced}", file=sys.stderr)
+            print(f"  Try: nonoka-cli opencode init --cwd {cwd} --config {requested}", file=sys.stderr)
+            return None
+
+    try:
+        config = ConfigLoader.load(referenced)
+    except Exception as exc:
+        print(f"Error: failed to load {referenced}: {exc}", file=sys.stderr)
+        return None
+    return referenced, config
+
+
+def _repo_state(cwd: Path) -> str:
+    """Return a bounded, human-readable Git state for the readiness banner."""
+    if not (cwd / ".git").exists():
+        return "not a Git repository"
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            return "unknown"
+        count = len([line for line in result.stdout.splitlines() if line.strip()])
+        return "clean" if count == 0 else f"dirty, {count} changed paths"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
+def _print_readiness(cwd: Path, config_path: Path, config: Any) -> None:
+    provider_version = _provider_version_from_project(cwd) or "unknown"
+    capability_parts = [
+        f"{len(config.mcp_servers)} MCP",
+        f"{len(config.skills)} skills",
+        f"{len(config.tool_paths)} custom tool paths",
+    ]
+    print("Nonoka readiness", file=sys.stderr)
+    print(f"  Project       {cwd}", file=sys.stderr)
+    print(f"  Config        {config_path}", file=sys.stderr)
+    print(f"  Model         {config.model} via nonoka/default", file=sys.stderr)
+    print(f"  Provider      {provider_version} ready", file=sys.stderr)
+    print(f"  Capabilities  {' · '.join(capability_parts)}", file=sys.stderr)
+    print(f"  Repo          {_repo_state(cwd)}", file=sys.stderr)
+    repo_map_state = "enabled; backend resolves at runtime" if config.repo_map.enabled else "disabled"
+    print(f"  Repo map      {repo_map_state}", file=sys.stderr)
+
+
 def launch_tui(args: argparse.Namespace) -> int:
     """Launch the OpenCode TUI in the requested directory.
 
@@ -54,14 +150,30 @@ def launch_tui(args: argparse.Namespace) -> int:
     """
     cwd = Path(getattr(args, "cwd", ".")).expanduser().resolve()
 
+    if not cwd.exists():
+        print(f"Error: working directory does not exist: {cwd}", file=sys.stderr)
+        return 1
+    if not cwd.is_dir():
+        print(f"Error: working directory is not a directory: {cwd}", file=sys.stderr)
+        return 1
+
     if not _has_opencode():
         print("Error: opencode is not installed.", file=sys.stderr)
         print("Install it with: npm install -g opencode", file=sys.stderr)
         return 1
 
+    print("Preparing Nonoka: resolving project configuration...", file=sys.stderr)
     ret = _ensure_opencode_config(args, cwd)
     if ret != 0:
         return ret
+
+    print("Preparing Nonoka: checking provider and bridge command...", file=sys.stderr)
+    preflight = _run_preflight(args, cwd)
+    if preflight is None:
+        return 1
+    config_path, config = preflight
+    _print_readiness(cwd, config_path, config)
+    print("Preparing Nonoka: ready; starting OpenCode...", file=sys.stderr)
 
     message = getattr(args, "message", None)
     if message:
@@ -71,12 +183,8 @@ def launch_tui(args: argparse.Namespace) -> int:
 
     # OpenCode-native bash/edit/write are descendants of this process, so the
     # only reliable boundary is wrapping the entire TUI process tree.
-    try:
-        config = ConfigLoader.load(getattr(args, "config", None))
-    except Exception:
-        config = None
     settings = None
-    if config and config.safety.enabled and config.safety.sandbox in {"auto", "srt"}:
+    if config.safety.enabled and config.safety.sandbox in {"auto", "srt"}:
         srt = SrtSandbox(config.safety.allowed_domains)
         executable = srt.executable()
         if not executable:
@@ -88,7 +196,12 @@ def launch_tui(args: argparse.Namespace) -> int:
             cmd = [executable, "--settings", str(settings), *cmd]
 
     try:
-        result = subprocess.run(cmd, cwd=cwd)
+        launch_env = os.environ.copy()
+        # OpenCode also exposes an environment-level updater guard.  Set it
+        # for the whole TUI process tree so a launch cannot race an upgrade,
+        # even if OpenCode reads update policy before the project config.
+        launch_env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+        result = subprocess.run(cmd, cwd=cwd, env=launch_env)
         return result.returncode
     except KeyboardInterrupt:
         return 130

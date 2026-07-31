@@ -606,17 +606,32 @@ class AgentFactory:
     hosted_tools = get_hosted_tools()
     hosted_tool_names = [cap.name for cap in hosted_tools]
 
-    # 5. Internal skills (configured in nonoka.yaml).
+    # 5. User-defined tools from ``tool_paths`` also execute in the bridge.
+    # Do not include nonoka-cli's built-ins here: OpenCode already supplies
+    # its native file/shell tools, and registering both would create ambiguous
+    # capabilities.  The prefix keeps arbitrary user names from shadowing a
+    # host, MCP, skill, or project-agent tool.
+    local_tools: list[Capability] = []
+    local_tool_names: list[str] = []
+    if self._tool_loader is not None:
+      local_registry = ToolLoader(
+        self._tool_loader.list_tool_paths(),
+        include_builtins=False,
+      ).load_all()
+      local_tools = local_registry.get_all()
+      local_tool_names = [f"custom__{cap.name}" for cap in local_tools]
+
+    # 6. Internal skills (configured in nonoka.yaml).
     skill_registry = self._skill_registry_for_build(cwd)
 
-    # 6. Internal MCP tools are prefixed with the server name to avoid collisions.
+    # 7. Internal MCP tools are prefixed with the server name to avoid collisions.
     mcp_tools: list[tuple[str, Capability]] = []
     mcp_tool_names: list[str] = []
     if self._mcp_manager is not None:
       mcp_tools = self._mcp_manager.get_tools()
       mcp_tool_names = [mcp_tool_name(server, cap.name) for server, cap in mcp_tools]
 
-    # 7. Internal skill tools are prefixed with the skill name.
+    # 8. Internal skill tools are prefixed with the skill name.
     skill_tool_names: list[str] = []
     if skill_registry is not None:
       for info in skill_registry.enabled:
@@ -631,7 +646,7 @@ class AgentFactory:
       model=self._config.model,
       cwd=cwd,
       host_tools=host_tool_names,
-      nonoka_tools=hosted_tool_names,
+      nonoka_tools=hosted_tool_names + local_tool_names,
       external_mcp_tools=external_mcp_tool_names,
       external_skill_tools=external_skill_tool_names,
       internal_mcp_tools=mcp_tool_names,
@@ -650,6 +665,7 @@ class AgentFactory:
       model=self._config.model,
       host_tool_count=len(host_tool_names),
       nonoka_tool_count=len(hosted_tool_names),
+      custom_tool_count=len(local_tool_names),
       external_mcp_tool_count=len(external_mcp_tool_names),
       external_skill_tool_count=len(external_skill_tool_names),
       internal_mcp_tool_count=len(mcp_tool_names),
@@ -668,6 +684,7 @@ class AgentFactory:
     occupied_names = set(
       host_tool_names
       + hosted_tool_names
+      + local_tool_names
       + external_mcp_tool_names
       + external_skill_tool_names
       + mcp_tool_names
@@ -679,6 +696,9 @@ class AgentFactory:
     # host_caps below still use the external receipt/resume boundary.
     for cap in hosted_tools:
       builder = builder.tool(cap)
+
+    for cap in local_tools:
+      builder = builder.tool(PrefixedCapability(cap, "custom__"))
 
     # Register one composite manager so host-managed skills do not overwrite
     # configured filesystem skills in AgentBuilder metadata.

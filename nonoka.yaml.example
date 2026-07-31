@@ -26,7 +26,8 @@ model: "deepseek-chat"
 #       - "@modelcontextprotocol/server-filesystem"
 #       - "~"
 
-# Local tool scan paths
+# Local tool scan paths. In OpenCode mode these are exposed as
+# custom__<tool-name>; standalone mode keeps the original tool name.
 # tool_paths:
 #   - ~/.config/nonoka/tools/
 

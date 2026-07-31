@@ -20,6 +20,18 @@ def _skip_provider_install(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(opencode_cmd, "_install_provider_locally", lambda *_args: True)
 
 
+def test_provider_version_matches_monorepo_package():
+  package_path = (
+    Path(__file__).resolve().parents[3]
+    / "packages"
+    / "nonoka-opencode-provider"
+    / "package.json"
+  )
+  expected = json.loads(package_path.read_text(encoding="utf-8"))["version"]
+  assert opencode_cmd._resolve_provider_version() == expected
+  assert opencode_cmd._PROVIDER_VERSION == expected
+
+
 def test_opencode_init_creates_file(tmp_path: Path):
   config_path = tmp_path / "nonoka.yaml"
   ConfigLoader.save(CLIConfig(model="openai/gpt-4o"), config_path)
@@ -57,8 +69,8 @@ def test_opencode_init_merges_existing(tmp_path: Path):
   assert cmd_init(args) == 0
 
   data = json.loads(existing.read_text())
-  # Existing top-level model should be preserved.
-  assert data["model"] == "other/model"
+  # init selects the Nonoka execution path instead of silently bypassing it.
+  assert data["model"] == "nonoka/default"
   assert data["custom"] is True
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
   assert data["provider"]["nonoka"]["options"]["serverCommand"] == ["nonoka-cli", "--server"]
@@ -163,6 +175,8 @@ def test_opencode_init_disables_native_skill_tool(tmp_path: Path):
 
   data = json.loads((tmp_path / "opencode.json").read_text())
   assert data.get("tools", {}).get("skill") is False
+  assert data["permission"]["skill"] == "deny"
+  assert data["agent"]["build"]["permission"]["skill"] == "deny"
 
 
 def test_opencode_init_keeps_native_skill_disabled_when_existing_tools_present(tmp_path: Path):
@@ -198,3 +212,40 @@ def test_opencode_init_refreshes_managed_agent_prompt(tmp_path: Path):
   content = (tmp_path / ".opencode" / "agents" / "build.md").read_text()
   assert "Second prompt" in content
   assert "First prompt" not in content
+
+
+def test_opencode_init_prefers_project_config_without_explicit_flag(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+  global_path = tmp_path / "global.yaml"
+  project_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="global-model"), global_path)
+  ConfigLoader.save(CLIConfig(model="project-model"), project_path)
+  monkeypatch.setattr(ConfigLoader, "DEFAULT_PATH", global_path)
+
+  assert cmd_init(argparse.Namespace(config=None, cwd=str(tmp_path), global_=False)) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  options = data["provider"]["nonoka"]["options"]
+  assert options["configPath"] == str(project_path)
+  assert data["provider"]["nonoka"]["models"]["default"]["name"] == "Nonoka project-model"
+
+
+def test_opencode_init_rejects_missing_working_directory(tmp_path: Path):
+  missing = tmp_path / "does-not-exist"
+  result = cmd_init(argparse.Namespace(config=None, cwd=str(missing), global_=False))
+  assert result == 1
+  assert not missing.exists()
+
+
+def test_opencode_init_does_not_write_config_when_provider_install_fails(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+  ConfigLoader.save(CLIConfig(model="deepseek-chat"), tmp_path / "nonoka.yaml")
+  monkeypatch.setattr(opencode_cmd, "_install_provider_locally", lambda *_args: False)
+
+  result = cmd_init(argparse.Namespace(config=None, cwd=str(tmp_path), global_=False))
+
+  assert result == 1
+  assert not (tmp_path / "opencode.json").exists()
+  assert not (tmp_path / ".opencode").exists()

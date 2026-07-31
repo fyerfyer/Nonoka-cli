@@ -45,3 +45,24 @@ def test_logs_can_report_operational_signals_from_bridge_trace(tmp_path, capsys)
   assert payload["traces"] == 1
   assert payload["p50"]["time_to_first_output_seconds"] == 2
   assert payload["individual"][0]["output_timing_source"] == "bridge_stream_event"
+
+
+def test_trace_limit_bounds_number_of_analyzed_runs(tmp_path, monkeypatch, capsys):
+  trace = tmp_path / "trace.ndjson"
+  trace.write_text("{}\n")
+  monkeypatch.setattr(
+    logs_cmd,
+    "load_traces",
+    lambda _path: [
+      {"request_id": f"req-{index}", "turns": [], "tool_calls": []}
+      for index in range(151)
+    ],
+  )
+  args = type(
+    "Args", (), {"trace": [str(trace)], "limit": 20, "json": True}
+  )()
+
+  assert logs_cmd.run_logs(args) == 0
+
+  payload = json.loads(capsys.readouterr().out)
+  assert payload["traces"] == 20

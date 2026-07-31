@@ -26,7 +26,10 @@ class TraceSignals(BaseModel):
   partial_observations_without_completion: int = 0
   terminal_reason: str = "unknown"
   wall_time_seconds: float | None = None
-  total_tokens: int = 0
+  # ``None`` means the model backend did not report token usage.  Keeping
+  # unknown distinct from zero prevents logs/scorecards from claiming a
+  # zero-token run when a provider omits streaming usage metadata.
+  total_tokens: int | None = None
   estimated_cost_usd: float | None = None
   tool_calls: int = 0
 
@@ -149,8 +152,11 @@ def _verification_quality_after(
   if last_mutation is None:
     return "not_observed"
   verifications = trace.get("verifications") or []
-  if any((_timestamp(item.get("at")) or last_mutation) >= last_mutation for item in verifications):
-    return "ambiguous"
+  saw_typed_verification = any(
+    (_timestamp(item.get("at")) or last_mutation) >= last_mutation
+    for item in verifications
+    if isinstance(item, dict)
+  )
   saw_ambiguous_command = False
   for tool in tools:
     arguments = tool.get("arguments")
@@ -162,7 +168,7 @@ def _verification_quality_after(
         return "runner"
       if any(word in command.lower() for word in _VERIFIER_WORDS):
         saw_ambiguous_command = True
-  return "ambiguous" if saw_ambiguous_command else "not_observed"
+  return "ambiguous" if saw_ambiguous_command or saw_typed_verification else "not_observed"
 
 
 def _is_test_runner(command: str) -> bool:
@@ -171,8 +177,8 @@ def _is_test_runner(command: str) -> bool:
 
   return bool(
     re.search(
-      r"(?:^|[;&|]\s*)(?:"
-      r"pytest(?:-[\w.-]+)?|"
+      r"(?:^|[;&|]\s*)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+\s+)*(?:"
+      r"(?:[^\s;&|]*/)?pytest(?:-[\w.-]+)?|"
       r"(?:python|python\d+(?:\.\d+)?|pypy\d*)\s+(?:-[A-Za-z]+\s+)*-m\s+pytest|"
       r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|"
       r"(?:npx\s+)?(?:jest|vitest)\b|"
@@ -231,18 +237,24 @@ def _unresolved_partial_observations(tools: list[dict[str, Any]]) -> int:
   return unresolved
 
 
-def _total_tokens(turns: list[dict[str, Any]]) -> int:
+def _total_tokens(turns: list[dict[str, Any]]) -> int | None:
   total = 0
+  observed = False
   for turn in turns:
     response = turn.get("response")
     usage = response.get("usage", {}) if isinstance(response, dict) else {}
     if isinstance(usage, dict):
       if usage.get("total_tokens") is not None:
+        observed = True
         total += int(usage["total_tokens"])
       else:
-        total += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-        total += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-  return total
+        input_value = usage.get("prompt_tokens", usage.get("input_tokens"))
+        output_value = usage.get("completion_tokens", usage.get("output_tokens"))
+        if input_value is not None or output_value is not None:
+          observed = True
+          total += int(input_value or 0)
+          total += int(output_value or 0)
+  return total if observed else None
 
 
 def _estimated_cost(turns: list[dict[str, Any]]) -> float | None:
@@ -258,6 +270,17 @@ def _estimated_cost(turns: list[dict[str, Any]]) -> float | None:
 
 def _bridge_execution_traces(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
   """Convert bridge trace records into the common execution-trace shape."""
+  visible_event_types = {"content_delta", "tool_call_start", "approval_request"}
+  session_first_output: dict[str, dict[str, Any]] = {}
+  for record in records:
+    session_id = record.get("session_id")
+    if (
+      session_id
+      and record.get("event") == "stream_event"
+      and record.get("event_type") in visible_event_types
+    ):
+      session_first_output.setdefault(str(session_id), record)
+
   grouped: dict[str, list[dict[str, Any]]] = {}
   for record in records:
     request_id = str(record.get("request_id") or "unknown")
@@ -269,7 +292,11 @@ def _bridge_execution_traces(records: list[dict[str, Any]]) -> list[dict[str, An
     request = next((item for item in items if item.get("event") == "request_entry"), items[0])
     stream = [item for item in items if item.get("event") == "stream_event"]
     first_output = next(
-      (item for item in stream if item.get("event_type") == "content_delta"),
+      (
+        item
+        for item in stream
+        if item.get("event_type") in visible_event_types
+      ),
       None,
     )
     tool_calls: list[dict[str, Any]] = []
@@ -289,26 +316,33 @@ def _bridge_execution_traces(records: list[dict[str, Any]]) -> list[dict[str, An
       None,
     )
     terminal_data = terminal.get("data", {}) if terminal else {}
-    complete_trace = next(
+    complete_record = next(
       (
-        item.get("trace")
+        item
         for item in reversed(items)
         if item.get("event") == "execution_trace" and isinstance(item.get("trace"), dict)
       ),
       None,
     )
-    if complete_trace is not None:
+    complete_trace = complete_record.get("trace") if complete_record is not None else None
+    if isinstance(complete_trace, dict):
       trace = dict(complete_trace)
       trace["request_id"] = request_id
       trace["output_timing_source"] = "bridge_stream_event"
       if not trace.get("started_at"):
         trace["started_at"] = request.get("ts")
-      if first_output:
+      session_id = str(
+        complete_record.get("session_id")
+        or request.get("session_id")
+        or ""
+      )
+      effective_first_output = session_first_output.get(session_id) or first_output
+      if effective_first_output:
         turns = list(trace.get("turns") or [])
         if turns:
-          turns[0] = {**turns[0], "responded_at": first_output.get("ts")}
+          turns[0] = {**turns[0], "responded_at": effective_first_output.get("ts")}
         else:
-          turns = [{"responded_at": first_output.get("ts"), "response": {}}]
+          turns = [{"responded_at": effective_first_output.get("ts"), "response": {}}]
         trace["turns"] = turns
       if terminal:
         termination = trace.get("termination")

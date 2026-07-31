@@ -486,8 +486,9 @@ the provider spawns `nonoka-cli --server` automatically.
 
 ## MCP and Skill support
 
-nonoka-cli can merge MCP tools and lazy-loaded skills alongside OpenCode's
-native tools. Configure them in `~/.config/nonoka/config.yaml`:
+nonoka-cli can merge custom Python tools, MCP tools, and lazy-loaded skills
+alongside OpenCode's native tools. Configure them in
+`~/.config/nonoka/config.yaml`:
 
 ```yaml
 model: deepseek/deepseek-v4-pro
@@ -497,6 +498,9 @@ mcp_servers:
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+
+tool_paths:
+  - /home/user/.config/nonoka/tools
 
 skills:
   - code-review
@@ -508,6 +512,10 @@ Store each skill at `.agents/skills/<name>/SKILL.md` in the project or at `~/.ag
 - **MCP tools** are executed locally by nonoka-cli and are exposed with a
   `mcp__<server>__<tool>` namespace prefix so they do not collide with OpenCode
   native tools.
+- **Custom Python tools** discovered from `tool_paths` are executed locally by
+  nonoka-cli and exposed as `custom__<tool>` in OpenCode mode. Built-in CLI
+  file/shell tools are omitted there because OpenCode already supplies native
+  equivalents. Standalone mode keeps the original unprefixed tool names.
 - **Skills** use nonoka-agent's lazy `SkillRegistry`. Discovery reads names and descriptions without importing skill tools; enabled skill tools are resolved when the runtime catalog is built, while full guidance, its root directory, and bundled resource paths are loaded on-demand via `load_skill` and protected from normal context compaction. Skill tools are prefixed with `skill__<skill>__<tool>` in external-tools mode.
 
 Both MCP tools and skill tools remain available in standalone mode without any

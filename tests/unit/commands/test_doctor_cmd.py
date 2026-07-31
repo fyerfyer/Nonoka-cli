@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +23,27 @@ from nonoka_cli.commands.doctor_cmd import (
 )
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
+
+
+def _opencode_config(config_path: Path) -> dict:
+  return {
+    "model": "nonoka/default",
+    "provider": {
+      "nonoka": {
+        "npm": "nonoka-opencode-provider",
+        "options": {
+          "configPath": str(config_path),
+          "serverCommand": [sys.executable, "-m", "nonoka_cli", "--server"],
+        },
+      }
+    },
+  }
+
+
+def _project_provider(root: Path, version: str = "0.2.16") -> None:
+  package = root / "node_modules" / "nonoka-opencode-provider"
+  package.mkdir(parents=True)
+  (package / "package.json").write_text(json.dumps({"version": version}))
 
 
 class TestApiKeyEnvForModel:
@@ -108,6 +130,27 @@ class TestCheckOpencode:
 
 
 class TestCheckProvider:
+  def test_project_provider_takes_precedence_over_stale_global(self, tmp_path, monkeypatch):
+    package_dir = tmp_path / "node_modules" / "nonoka-opencode-provider"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+      json.dumps({"name": "nonoka-opencode-provider", "version": "0.2.16"}),
+      encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    stale_global = json.dumps({
+      "dependencies": {
+        "nonoka-opencode-provider": {"version": "0.2.12"}
+      }
+    })
+    with mock.patch(
+      "nonoka_cli.commands.doctor_cmd._run",
+      return_value=mock.MagicMock(returncode=0, stdout=stale_global),
+    ):
+      result = check_provider()
+    assert result.status == "ok"
+    assert "0.2.16" in result.message
+
   def test_npm_global_provider(self):
     npm_output = json.dumps({
       "dependencies": {
@@ -173,10 +216,9 @@ class TestBenchmarkPrerequisites:
     config_dir = tmp_path / ".config" / "opencode"
     config_dir.mkdir(parents=True)
     config_path = config_dir / "opencode.json"
-    config_path.write_text(json.dumps({
-      "model": "nonoka/default",
-      "provider": {"nonoka": {"npm": "nonoka-opencode-provider"}}
-    }))
+    nonoka_path = tmp_path / "nonoka.yaml"
+    ConfigLoader.save(CLIConfig(model="deepseek-chat"), nonoka_path)
+    config_path.write_text(json.dumps(_opencode_config(nonoka_path)))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Ensure cwd doesn't also have an opencode.json
     monkeypatch.chdir(tmp_path)
@@ -196,9 +238,8 @@ class TestRunDoctor:
     config_path = tmp_path / "config.yaml"
     ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
     opencode_path = tmp_path / "opencode.json"
-    opencode_path.write_text(json.dumps({
-      "provider": {"nonoka": {"npm": "nonoka-opencode-provider"}}
-    }))
+    opencode_path.write_text(json.dumps(_opencode_config(config_path)))
+    _project_provider(tmp_path)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret")
     monkeypatch.chdir(tmp_path)
 
@@ -223,9 +264,8 @@ class TestRunDoctor:
     config_path = tmp_path / "config.yaml"
     ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
     opencode_path = tmp_path / "opencode.json"
-    opencode_path.write_text(json.dumps({
-      "provider": {"nonoka": {"npm": "nonoka-opencode-provider"}}
-    }))
+    opencode_path.write_text(json.dumps(_opencode_config(config_path)))
+    _project_provider(tmp_path, "0.2.0")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
 

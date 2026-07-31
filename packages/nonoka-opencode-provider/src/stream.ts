@@ -252,10 +252,20 @@ export function createNonokaStreamTransformer(
         }
 
         case NONOKA_OUTBOUND_TYPES.finish: {
+          const runtimeUsage = event.runtime?.usage;
+          const usageState = runtimeUsage && typeof runtimeUsage === 'object'
+            ? runtimeUsage as Record<string, unknown>
+            : undefined;
+          const inputTokens = Number(usageState?.input_tokens);
+          const outputTokens = Number(usageState?.output_tokens);
+          const hasTokenUsage = (
+            Number.isFinite(inputTokens) && inputTokens > 0
+          ) || (
+            Number.isFinite(outputTokens) && outputTokens > 0
+          );
           if (event.finish_reason !== NONOKA_FINISH_REASONS.tool_calls) {
-            const usage = event.runtime?.usage;
-            if (usage && typeof usage === 'object') {
-              const state = usage as Record<string, unknown>;
+            if (usageState) {
+              const state = usageState;
               const focused = state.focused_verification_status;
               const full = state.full_verification_status;
               const modified = Number(state.effect_count ?? 0) > 0;
@@ -284,8 +294,17 @@ export function createNonokaStreamTransformer(
               raw: event.finish_reason,
             },
             usage: {
-              inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-              outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+              inputTokens: {
+                total: hasTokenUsage ? inputTokens : undefined,
+                noCache: hasTokenUsage ? inputTokens : undefined,
+                cacheRead: undefined,
+                cacheWrite: undefined,
+              },
+              outputTokens: {
+                total: hasTokenUsage ? outputTokens : undefined,
+                text: hasTokenUsage ? outputTokens : undefined,
+                reasoning: undefined,
+              },
             },
           };
           logStreamPart(part);

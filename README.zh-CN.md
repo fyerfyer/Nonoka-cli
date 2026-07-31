@@ -158,6 +158,31 @@ uv run uvicorn nonoka.server.app:create_app --factory --host 0.0.0.0 --port 8000
 PostgreSQL 持久化事件；本地开发保持使用 SQLite。该服务以非 root 用户运行、
 文件系统只读、丢弃 Linux capabilities，并且不挂载宿主机的 Docker socket。
 
+## 自定义 Tool、MCP 与 Skill
+
+`nonoka-cli` 可以在 OpenCode 原生工具之外加载本地 Python Tool、MCP server
+和按需加载的 Skill：
+
+```yaml
+tool_paths:
+  - ~/.config/nonoka/tools
+
+mcp_servers:
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+
+skills:
+  - code-review
+```
+
+OpenCode 模式中，自定义 Tool、MCP Tool 和 Skill Tool 分别使用
+`custom__<tool>`、`mcp__<server>__<tool>` 和
+`skill__<skill>__<tool>` 命名空间；Skill 的完整说明通过 `load_skill`
+按需载入。这样可避免与 OpenCode 原生工具重名。standalone 模式仍保留自定义
+Tool 原本的名称。
+
 ## Agent 评估
 
 `nonoka-cli eval` 是框架内置 benchmark 引擎的一个轻量前端。其计分内置数据集

@@ -103,33 +103,48 @@ class ConfigLoader:
   MCP_SERVERS_PATH = Path.home() / ".config" / "nonoka" / "mcp_servers.yaml"
 
   @classmethod
-  def fallback_path(cls) -> Path:
-    """Return the runtime fallback config path (./nonoka.yaml)."""
-    return Path.cwd() / "nonoka.yaml"
+  def fallback_path(cls, search_dir: Path | str | None = None) -> Path:
+    """Return the project config path for ``search_dir``.
+
+    Commands that accept ``--cwd`` must not accidentally resolve a config
+    relative to the shell's directory.  Keeping the search root explicit also
+    lets OpenCode, ``run``, and ``doctor`` share one resolution rule.
+    """
+    root = Path(search_dir) if search_dir is not None else Path.cwd()
+    return root.expanduser().resolve() / "nonoka.yaml"
 
   @classmethod
   def find_config_file(
     cls,
     explicit_path: Path | str | None = None,
+    *,
+    search_dir: Path | str | None = None,
   ) -> Path:
     """Search for a configuration file in priority order.
 
-    Priority: explicit_path > ~/.config/nonoka/config.yaml > ./nonoka.yaml
+    Priority: explicit_path > <search_dir>/nonoka.yaml > user config.
+
+    Project configuration intentionally wins over the user default.  This is
+    the same locality rule OpenCode applies to ``opencode.json`` and prevents
+    a project from displaying one config while the bridge executes another.
     """
     if explicit_path is not None:
-      path = Path(explicit_path)
-      if path.exists():
+      path = Path(explicit_path).expanduser().resolve()
+      if path.is_file():
         return path
+      if path.exists():
+        raise ConfigNotFoundError(f"Explicit config path is not a file: {path}")
       raise ConfigNotFoundError(f"Explicit config file not found: {path}")
 
-    if cls.DEFAULT_PATH.exists():
-      return cls.DEFAULT_PATH
-
-    fallback = cls.fallback_path()
-    if fallback.exists():
+    fallback = cls.fallback_path(search_dir)
+    if fallback.is_file():
       return fallback
 
-    raise ConfigNotFoundError(f"No config file found. Searched: {cls.DEFAULT_PATH}, {fallback}")
+    default_path = cls.DEFAULT_PATH.expanduser().resolve()
+    if default_path.is_file():
+      return default_path
+
+    raise ConfigNotFoundError(f"No config file found. Searched: {fallback}, {default_path}")
 
   @classmethod
   def _load_yaml(cls, path: Path) -> dict[str, Any]:
@@ -157,6 +172,8 @@ class ConfigLoader:
   def load(
     cls,
     path: Path | str | None = None,
+    *,
+    search_dir: Path | str | None = None,
   ) -> CLIConfig:
     """Load configuration from a YAML file.
 
@@ -170,7 +187,7 @@ class ConfigLoader:
       ConfigNotFoundError: If no config file is found.
       ConfigError: If parsing or validation fails.
     """
-    config_path = cls.find_config_file(path)
+    config_path = cls.find_config_file(path, search_dir=search_dir)
     logger.info("loading_config", path=str(config_path))
 
     try:

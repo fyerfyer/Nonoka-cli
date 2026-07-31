@@ -21,11 +21,13 @@ def _event_db() -> Path:
 def run_logs(args: argparse.Namespace) -> int:
   trace_paths = getattr(args, "trace", None) or []
   if trace_paths:
-    traces = [
+    all_traces = [
       trace
       for path in trace_paths
       for trace in load_traces(Path(path).expanduser())
     ]
+    limit = max(0, int(getattr(args, "limit", 100)))
+    traces = all_traces[-limit:] if limit else []
     print(summarize_traces(traces).model_dump_json(indent=2))
     return 0
 

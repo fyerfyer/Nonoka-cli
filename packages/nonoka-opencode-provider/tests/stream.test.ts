@@ -76,6 +76,32 @@ describe("createNonokaStreamTransformer", () => {
     expect((finish as any).finishReason.unified).toBe("stop");
   });
 
+  it("forwards reported runtime token usage", async () => {
+    const transformer = createNonokaStreamTransformer();
+    const input = createInputStream([
+      '{"type":"finish","finish_reason":"stop","runtime":{"usage":{"input_tokens":12,"output_tokens":7}}}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const finish = parts[parts.length - 1] as any;
+
+    expect(finish.usage.inputTokens.total).toBe(12);
+    expect(finish.usage.outputTokens.total).toBe(7);
+  });
+
+  it("keeps token usage unknown when the model backend omits it", async () => {
+    const transformer = createNonokaStreamTransformer();
+    const input = createInputStream([
+      '{"type":"finish","finish_reason":"stop","runtime":{"usage":{"input_tokens":0,"output_tokens":0}}}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const finish = parts[parts.length - 1] as any;
+
+    expect(finish.usage.inputTokens.total).toBeUndefined();
+    expect(finish.usage.outputTokens.total).toBeUndefined();
+  });
+
   it("emits error part", async () => {
     const transformer = createNonokaStreamTransformer();
     const input = createInputStream([

@@ -1123,6 +1123,22 @@ export class NonokaLanguageModel implements LanguageModelV3 {
   ): ReadableStream<LanguageModelV3StreamPart> {
     let cleanupDone = false;
     let lifecycleController: TransformStreamDefaultController<LanguageModelV3StreamPart> | undefined;
+    const stderrLogPath = getServerStderrLogPath(this.config.cwd);
+    let stderrTail = '';
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      stderrTail = `${stderrTail}${String(chunk)}`.slice(-4000);
+    });
+    const providerFailure = (cause: string) => new Error([
+      'Nonoka provider failed to initialize.',
+      `Cause: ${cause}`,
+      `Config: ${this.config.configPath ?? '<auto-detect>'}`,
+      `Server: ${this.config.serverCommand.join(' ')}`,
+      `Provider: nonoka-opencode-provider@${NONOKA_PROVIDER_VERSION}`,
+      `Provider log: ${PROVIDER_LOG_PATH ?? '<set NONOKA_PROVIDER_LOG_PATH to persist>'}`,
+      `Nonoka server log: ${stderrLogPath}`,
+      `Try: nonoka-cli doctor --cwd ${this.config.cwd}${this.config.configPath ? ` --config ${this.config.configPath}` : ''}`,
+      stderrTail.trim() ? `Server stderr: ${stderrTail.trim()}` : '',
+    ].filter(Boolean).join('\n'));
 
     const cleanup = () => {
       if (cleanupDone) return;
@@ -1188,13 +1204,14 @@ export class NonokaLanguageModel implements LanguageModelV3 {
 
     child.once('error', (err) => {
       providerLog(`child process error: ${err}`);
-      lifecycleController?.error(err);
+      lifecycleController?.error(providerFailure(err.message));
       cleanup();
     });
 
     child.on('exit', (code) => {
       if (code && code !== 0) {
         providerLog(`child exited with code ${code}`);
+        lifecycleController?.error(providerFailure(`server exited with code ${code}`));
       }
       cleanup();
     });

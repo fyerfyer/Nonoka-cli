@@ -124,7 +124,11 @@ describe('NonokaLanguageModel', () => {
 
     child.emit('error', new Error('spawn failed'));
 
-    await expect(reader.read()).rejects.toThrow('spawn failed');
+    await expect(reader.read()).rejects.toThrow('Nonoka provider failed to initialize');
+    const child2 = new FakeChild();
+    const reader2 = model['createOutputStream'](child2 as any, false).getReader();
+    child2.emit('error', new Error('spawn failed'));
+    await expect(reader2.read()).rejects.toThrow('nonoka-opencode-provider@0.2.16');
   });
 
   it('detects title generation and merges consecutive user messages', () => {

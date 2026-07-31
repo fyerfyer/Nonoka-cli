@@ -74,3 +74,18 @@ def test_load_config_merges_mcp_sidecar(tmp_path, monkeypatch):
   config = ConfigLoader.load(main_config)
   assert "test-server" in config.mcp_servers
   assert config.mcp_servers["test-server"].command == "npx"
+
+
+def test_project_config_precedes_user_default(tmp_path, monkeypatch):
+  project = tmp_path / "project"
+  project.mkdir()
+  project_config = project / "nonoka.yaml"
+  project_config.write_text("model: project-model\n")
+  global_config = tmp_path / "config.yaml"
+  global_config.write_text("model: global-model\n")
+  monkeypatch.setattr(ConfigLoader, "DEFAULT_PATH", global_config)
+
+  resolved = ConfigLoader.find_config_file(search_dir=project)
+
+  assert resolved == project_config
+  assert ConfigLoader.load(search_dir=project).model == "project-model"

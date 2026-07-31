@@ -18,6 +18,7 @@ from nonoka_cli.core.project_agents import (
   compile_project_agents,
 )
 from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
+from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import AgentBuildError
 
 
@@ -117,6 +118,32 @@ async def test_build_with_external_tools(factory):
   assert "OpenCode" in agent.system_prompt
   assert "todowrite" not in agent.system_prompt
   assert "execute_command" not in agent.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_build_with_external_tools_exposes_only_configured_custom_tools(tmp_path):
+  tool_dir = tmp_path / "tools"
+  tool_dir.mkdir()
+  (tool_dir / "fixture_tools.py").write_text(
+    "from nonoka import tool\n"
+    "\n"
+    "@tool\n"
+    "def summarize_fixture(path: str) -> dict:\n"
+    "  return {'path': path}\n",
+    encoding="utf-8",
+  )
+  factory = AgentFactory(
+    CLIConfig(model="gpt-4o", tool_paths=[tool_dir]),
+    tool_loader=ToolLoader([tool_dir]),
+  )
+
+  agent = factory.build_with_external_tools([], cwd=tmp_path)
+
+  tool_names = {tool.name for tool in agent.tools}
+  assert "custom__summarize_fixture" in tool_names
+  assert "summarize_fixture" not in tool_names
+  assert "read_file" not in tool_names
+  assert "`custom__summarize_fixture`" in agent.system_prompt
 
 
 @pytest.mark.asyncio

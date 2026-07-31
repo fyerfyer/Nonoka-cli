@@ -7,6 +7,7 @@ import asyncio
 import importlib.metadata
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -170,9 +171,44 @@ def _provider_version_from_opencode_dir() -> str | None:
     return None
 
 
-def check_provider() -> CheckResult:
+def _provider_version_from_project(cwd: Path | str | None = None) -> str | None:
+  """Read the provider OpenCode will resolve from the selected project."""
+  root = Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
+  candidate = root / "node_modules" / "nonoka-opencode-provider" / "package.json"
+  if not candidate.exists():
+    return None
+  try:
+    data = json.loads(candidate.read_text(encoding="utf-8"))
+    return data.get("version")
+  except Exception:
+    return None
+
+
+def check_provider(
+  cwd: Path | str | None = None,
+  *,
+  require_project: bool = False,
+) -> CheckResult:
   """Check whether the OpenCode provider is installed."""
-  version = _provider_version_from_npm_global() or _provider_version_from_opencode_dir()
+  # OpenCode 1.18+ resolves project-local providers first, so doctor must use
+  # the same precedence. A stale global package must not make a healthy local
+  # installation appear incompatible.
+  project_version = _provider_version_from_project(cwd)
+  fallback_version = None
+  if project_version is None:
+    fallback_version = _provider_version_from_npm_global() or _provider_version_from_opencode_dir()
+  if require_project and project_version is None:
+    detail = (
+      f"; global/cache version {fallback_version} exists but is not project-local"
+      if fallback_version else ""
+    )
+    return CheckResult(
+      "error",
+      f"project provider nonoka-opencode-provider is missing{detail}",
+      "Run `nonoka-cli opencode init --cwd <project>` to install the compatible provider.",
+    )
+
+  version = project_version or fallback_version
   if version:
     if not _version_at_least(version, _MIN_PROVIDER_VERSION):
       return CheckResult(
@@ -278,11 +314,14 @@ def check_sandbox(config: CLIConfig | None = None) -> CheckResult:
   return CheckResult(result.status, result.message, result.remedy)
 
 
-def check_config(config_path: str | None) -> tuple[CheckResult, CLIConfig | None]:
+def check_config(
+  config_path: str | None,
+  cwd: Path | str | None = None,
+) -> tuple[CheckResult, CLIConfig | None]:
   """Check whether a nonoka config file exists and is valid."""
   try:
-    cfg = ConfigLoader.load(config_path)
-    path = config_path or ConfigLoader.find_config_file(config_path)
+    path = ConfigLoader.find_config_file(config_path, search_dir=cwd)
+    cfg = ConfigLoader.load(path)
     return CheckResult("ok", f"config {path}"), cfg
   except ConfigError as exc:
     return (
@@ -325,9 +364,10 @@ def check_api_key(config: CLIConfig | None) -> CheckResult:
   )
 
 
-def _find_opencode_config() -> Path | None:
+def _find_opencode_config(cwd: Path | str | None = None) -> Path | None:
   """Find an OpenCode config file in priority order."""
-  local = Path.cwd() / "opencode.json"
+  root = Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
+  local = root / "opencode.json"
   if local.exists():
     return local
   global_ = Path.home() / ".config" / "opencode" / "opencode.json"
@@ -336,9 +376,9 @@ def _find_opencode_config() -> Path | None:
   return None
 
 
-def check_opencode_config() -> CheckResult:
-  """Check whether an OpenCode config references the nonoka provider."""
-  path = _find_opencode_config()
+def check_opencode_config(cwd: Path | str | None = None) -> CheckResult:
+  """Validate the OpenCode fields required to start the Nonoka bridge."""
+  path = _find_opencode_config(cwd)
   if not path:
     return CheckResult(
       "error",
@@ -356,13 +396,80 @@ def check_opencode_config() -> CheckResult:
     )
 
   provider = data.get("provider", {})
-  if "nonoka" in provider:
-    return CheckResult("ok", f"OpenCode provider config in {path}")
+  nonoka_provider = provider.get("nonoka") if isinstance(provider, dict) else None
+  if not isinstance(nonoka_provider, dict):
+    return CheckResult(
+      "error",
+      f"OpenCode config {path} does not include a valid nonoka provider",
+      "Run `nonoka-cli opencode init` to add the nonoka provider block.",
+    )
+
+  model = data.get("model")
+  if not isinstance(model, str) or not model.startswith("nonoka/"):
+    return CheckResult(
+      "error",
+      f"OpenCode config {path} selects {model!r}, not a nonoka/* model",
+      "Run `nonoka-cli opencode init` or set `model` to `nonoka/default`.",
+    )
+
+  options = nonoka_provider.get("options")
+  if not isinstance(options, dict):
+    return CheckResult(
+      "error",
+      f"OpenCode config {path} has no nonoka provider options",
+      "Regenerate it with `nonoka-cli opencode init`.",
+    )
+
+  config_value = options.get("configPath")
+  if not isinstance(config_value, str) or not config_value.strip():
+    return CheckResult(
+      "error",
+      f"OpenCode config {path} has no nonoka configPath",
+      "Regenerate it with `nonoka-cli opencode init`.",
+    )
+  config_path = Path(config_value).expanduser()
+  if not config_path.is_absolute():
+    config_path = (path.parent / config_path).resolve()
+  if not config_path.is_file():
+    return CheckResult(
+      "error",
+      f"Nonoka config referenced by OpenCode does not exist: {config_path}",
+      f"Run `nonoka-cli opencode init --cwd {path.parent}` with the correct --config.",
+    )
+  try:
+    ConfigLoader.load(config_path)
+  except ConfigError as exc:
+    return CheckResult(
+      "error",
+      f"Nonoka config referenced by OpenCode is invalid: {exc}",
+      "Fix the YAML, then rerun `nonoka-cli opencode init`.",
+    )
+
+  command_value = options.get("serverCommand")
+  if isinstance(command_value, str):
+    command = shlex.split(command_value)
+  elif isinstance(command_value, list) and all(isinstance(item, str) for item in command_value):
+    command = command_value
+  else:
+    command = []
+  executable = command[0] if command else ""
+  executable_path = Path(executable).expanduser() if executable else None
+  is_explicit_path = bool(executable_path and (executable_path.is_absolute() or executable_path.parent != Path(".")))
+  executable_ready = (
+    executable_path.is_file() and os.access(executable_path, os.X_OK)
+    if is_explicit_path and executable_path is not None
+    else bool(executable and shutil.which(executable))
+  )
+  if not executable_ready:
+    return CheckResult(
+      "error",
+      f"Nonoka server command is not executable: {executable or '<missing>'}",
+      "Install nonoka-cli in the active environment or regenerate opencode.json.",
+    )
 
   return CheckResult(
-    "error",
-    f"OpenCode config {path} does not include the nonoka provider",
-    "Run `nonoka-cli opencode init` to add the nonoka provider block.",
+    "ok",
+    f"OpenCode provider config in {path}; config {config_path}; server {executable}",
   )
 
 
@@ -418,14 +525,28 @@ def check_llm(config: CLIConfig | None) -> CheckResult:
 def run_doctor(args: argparse.Namespace) -> int:
   """Run all diagnostic checks and print a report."""
   results: list[CheckResult] = []
+  raw_cwd = getattr(args, "cwd", None)
+  if not isinstance(raw_cwd, (str, Path)):
+    raw_cwd = "."
+  cwd = Path(raw_cwd).expanduser().resolve()
+  if not cwd.exists():
+    print(f"✗ working directory does not exist: {cwd}")
+    return 1
+  if not cwd.is_dir():
+    print(f"✗ working directory is not a directory: {cwd}")
+    return 1
+
+  results.append(CheckResult("ok", f"project {cwd}"))
 
   results.append(check_nonoka_cli_version())
   results.append(check_framework_version())
   results.append(check_python_version())
   results.append(check_opencode())
-  results.append(check_provider())
+  opencode_path = _find_opencode_config(cwd)
+  project_config = opencode_path == cwd / "opencode.json"
+  results.append(check_provider(cwd, require_project=project_config))
 
-  config_result, config = check_config(args.config)
+  config_result, config = check_config(args.config, cwd)
   results.append(config_result)
   results.append(check_release_contract())
   results.append(check_tool_trust_boundary(config))
@@ -434,7 +555,7 @@ def run_doctor(args: argparse.Namespace) -> int:
   if getattr(args, "check_llm", False) is True:
     results.append(check_llm(config))
 
-  results.append(check_opencode_config())
+  results.append(check_opencode_config(cwd))
   if getattr(args, "check_benchmarks", False) is True:
     results.append(check_harbor())
     results.append(check_swe_bench())
@@ -473,6 +594,11 @@ def add_subparser(subparsers: Any) -> None:
     help="Diagnose the nonoka + OpenCode installation",
   )
   _add_config_arg(parser)
+  parser.add_argument(
+    "--cwd",
+    default=".",
+    help="Project directory to diagnose (default: current directory)",
+  )
   parser.add_argument(
     "--check-llm",
     action="store_true",

@@ -27,6 +27,11 @@ OPENCODE_VERSION=""
 CLI_VERSION=""
 PROVIDER_VERSION=""
 
+# uv's 30-second default is brittle for the framework's larger wheels on
+# slower or proxied networks. Respect an explicit user value while giving the
+# installer a more practical default.
+export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-120}"
+
 NONOKA_CONFIG_DIR="${HOME}/.config/nonoka"
 NONOKA_CONFIG_PATH="${NONOKA_CONFIG_DIR}/config.yaml"
 OPENCODE_CONFIG_DIR="${HOME}/.config/opencode"
