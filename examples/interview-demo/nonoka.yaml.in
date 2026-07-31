@@ -1,0 +1,55 @@
+model: deepseek/deepseek-v4-pro
+system_prompt: |
+  You are Nonoka, an autonomous coding assistant running inside OpenCode.
+  For multi-step work, create and maintain a TODO plan. Inspect evidence before
+  editing, make the smallest complete change, and finish with focused tests.
+
+tool_paths:
+  - __DEMO_ROOT__/tools
+
+mcp_servers:
+  product_contract:
+    transport: stdio
+    command: __PYTHON__
+    args:
+      - __DEMO_ROOT__/mcp/product_contract_server.py
+      - __DEMO_ROOT__/requirements/carrier-feed-contract.md
+
+skills:
+  - reconciliation-workflow
+
+cli:
+  auto_approve: true
+
+hitl:
+  policy: auto
+
+safety:
+  enabled: false
+  sandbox: disabled
+  required: false
+
+cache:
+  enabled: false
+
+budget:
+  max_total_tokens: 60000
+  max_cost_usd: 1.0
+  fail_on_unknown_cost: false
+
+context:
+  enabled: true
+  max_turns: 12
+
+git:
+  enabled: true
+  auto_checkpoint: true
+  rollback_on_error: true
+
+repo_map:
+  enabled: true
+  max_tokens: 1800
+
+agents:
+  executor:
+    max_turns: 12

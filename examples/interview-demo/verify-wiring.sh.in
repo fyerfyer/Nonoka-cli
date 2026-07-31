@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEMO_ROOT="__DEMO_ROOT__"
+export PATH="$DEMO_ROOT/.venv/bin:$PATH"
+export NONOKA_EVENT_DB="$DEMO_ROOT/events.db"
+cd "$DEMO_ROOT/project"
+
+"$DEMO_ROOT/.venv/bin/python" "$DEMO_ROOT/verify_wiring.py" \
+  "$DEMO_ROOT/nonoka.yaml" "$DEMO_ROOT/project"

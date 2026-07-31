@@ -1,0 +1,6 @@
+{"event_id":"evt-102","package_id":"pkg-7","status":"IN_TRANSIT","occurred_at":"2026-07-30T10:30:00+08:00"}
+{"event_id":"evt-101","package_id":"pkg-7","status":"CREATED","occurred_at":"2026-07-30T02:00:00Z"}
+{"event_id":"evt-102","package_id":"pkg-7","status":"DELIVERED","occurred_at":"2026-07-30T03:00:00Z"}
+{"event_id":"evt-201","package_id":"pkg-9","status":"CREATED","occurred_at":"2026-07-30T09:00:00+08:00"}
+not-json
+{"event_id":"evt-103","package_id":"pkg-7","status":"DELIVERED","occurred_at":"2026-07-30T04:00:00Z"}
