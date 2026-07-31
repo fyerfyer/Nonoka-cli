@@ -1708,7 +1708,7 @@ wheels = [
 
 [[package]]
 name = "nonoka"
-version = "1.3.7"
+version = "1.3.8"
 source = { editable = "../nonoka-agent" }
 dependencies = [
     { name = "anyio" },
@@ -1767,7 +1767,7 @@ dev = [
 
 [[package]]
 name = "nonoka-cli"
-version = "0.2.10"
+version = "0.2.11"
 source = { editable = "." }
 dependencies = [
     { name = "nonoka" },

@@ -103,11 +103,11 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.10
+✓ nonoka-cli 0.2.11
 ✓ Python 3.11
 ✓ opencode 1.18.2
-✓ provider nonoka-opencode-provider@0.2.16
-✓ nonoka framework 1.3.7
+✓ provider nonoka-opencode-provider@0.2.17
+✓ nonoka framework 1.3.8
 ✓ config ~/.config/nonoka/config.yaml
 ✓ API key DEEPSEEK_API_KEY set
 ✓ OpenCode provider config in /home/user/.config/opencode/opencode.json

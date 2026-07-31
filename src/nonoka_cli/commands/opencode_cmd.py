@@ -32,7 +32,7 @@ def _resolve_provider_version() -> str | None:
 # Keep published CLI installs on a protocol-compatible provider even though
 # their wheel does not contain the monorepo's package.json. This fallback must
 # be bumped together with the provider package during a coordinated release.
-_PROVIDER_VERSION = _resolve_provider_version() or "0.2.16"
+_PROVIDER_VERSION = _resolve_provider_version() or "0.2.17"
 
 # Tool categories that nonoka-cli needs OpenCode to auto-approve when
 # ``cli.auto_approve`` is enabled. These are OpenCode's native permission
