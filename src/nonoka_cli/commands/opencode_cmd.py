@@ -30,10 +30,42 @@ def _resolve_provider_version() -> str | None:
   return None
 
 
+def _model_cost_from_litellm(model: str) -> dict[str, float] | None:
+  """Return OpenCode per-token prices from LiteLLM's maintained cost map.
+
+  OpenCode can then calculate the TUI's spent amount from the exact token
+  usage returned by the model. If LiteLLM has no reliable entry we leave the
+  field out instead of claiming the model is free.
+  """
+  try:
+    import litellm
+
+    # ``model_cost`` is useful for native names such as ``gpt-4o``, while
+    # ``get_model_info`` also understands the provider/model identifiers that
+    # Nonoka accepts (for example ``openai/gpt-4o``).
+    details = litellm.model_cost.get(model)
+    if not isinstance(details, dict):
+      details = dict(litellm.get_model_info(model))
+    input_cost = details.get("input_cost_per_token")
+    output_cost = details.get("output_cost_per_token")
+    if not isinstance(input_cost, (int, float)) or not isinstance(output_cost, (int, float)):
+      return None
+    cost: dict[str, float] = {"input": float(input_cost), "output": float(output_cost)}
+    cache_read = details.get("cache_read_input_token_cost")
+    cache_write = details.get("cache_creation_input_token_cost")
+    if isinstance(cache_read, (int, float)):
+      cost["cache_read"] = float(cache_read)
+    if isinstance(cache_write, (int, float)):
+      cost["cache_write"] = float(cache_write)
+    return cost
+  except Exception:
+    return None
+
+
 # Keep published CLI installs on a protocol-compatible provider even though
 # their wheel does not contain the monorepo's package.json. This fallback must
 # be bumped together with the provider package during a coordinated release.
-_PROVIDER_VERSION = _resolve_provider_version() or "0.2.18"
+_PROVIDER_VERSION = _resolve_provider_version() or "0.2.19"
 
 # Tool categories that nonoka-cli needs OpenCode to auto-approve when
 # ``cli.auto_approve`` is enabled. These are OpenCode's native permission
@@ -47,6 +79,11 @@ _OPENCODE_AUTO_APPROVED_TOOLS = [
   "write",
   "todowrite",
 ]
+
+_NONOKA_RELOAD_COMMAND = {
+  "template": "__NONOKA_RELOAD_CONFIG__",
+  "description": "Reload nonoka config.yaml and rebuild the active Nonoka agent.",
+}
 
 
 def _build_opencode_permission(config: CLIConfig) -> dict[str, str]:
@@ -190,8 +227,10 @@ _OPENCODE_PROMPT_GUIDELINES = (
   "- When writing or editing files, use absolute paths under the current working directory "
   "unless the user provides a different path.\n"
   "- Prefer reading a file before editing it when you need context.\n"
-  "- For a task that changes code or configuration, prefix the final focused acceptance check with `NONOKA_VERIFY=focused`.\n"
-  "- Answer greetings, simple questions, and requests for explanation directly; do not inspect files or run tools unless the user asks for repository work.\n"
+  "- For a task that changes code or configuration, prefix the final focused "
+  "acceptance check with `NONOKA_VERIFY=focused`.\n"
+  "- Answer greetings, simple questions, and requests for explanation directly; "
+  "do not inspect files or run tools unless the user asks for repository work.\n"
 )
 
 
@@ -297,7 +336,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     if isinstance(existing_options, dict):
       provider_block["options"].update(existing_options)
   if config.model:
-    provider_block["models"] = {"default": {"name": f"Nonoka {config.model}"}}
+    model_definition: dict[str, Any] = {"name": f"Nonoka {config.model}"}
+    cost = _model_cost_from_litellm(config.model)
+    if cost is not None:
+      model_definition["cost"] = cost
+    provider_block["models"] = {"default": model_definition}
   provider_block["options"]["configPath"] = str(resolved_config_path)
   # Use an absolute path.  A literal "." relies on OpenCode preserving its
   # own process cwd while loading a provider, which has caused tools to start
@@ -340,6 +383,14 @@ def cmd_init(args: argparse.Namespace) -> int:
   tools_block = dict(existing_tools) if isinstance(existing_tools, dict) else {}
   tools_block["skill"] = False
   merged["tools"] = tools_block
+
+  # OpenCode custom commands expand to messages. The bridge recognizes this
+  # private sentinel and performs a real in-process reload, rather than asking
+  # the model to describe a reload that it cannot actually perform.
+  existing_commands = existing.get("command", {})
+  commands_block = dict(existing_commands) if isinstance(existing_commands, dict) else {}
+  commands_block.setdefault("reload", dict(_NONOKA_RELOAD_COMMAND))
+  merged["command"] = commands_block
 
   # This command configures the Nonoka execution path.  Keeping an unrelated
   # existing model would produce a valid-looking file that bypasses Nonoka.

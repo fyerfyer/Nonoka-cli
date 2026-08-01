@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,59 @@ def test_opencode_init_creates_file(tmp_path: Path):
   assert data["provider"]["nonoka"]["options"]["serverCommand"] == [
     sys.executable, "-m", "nonoka_cli", "--config", str(config_path), "--server",
   ]
+  assert data["command"]["reload"]["template"] == "__NONOKA_RELOAD_CONFIG__"
+
+
+def test_opencode_init_uses_litellm_prices_when_the_model_is_known(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek/deepseek-v4-pro"), config_path)
+  prices = {"input": 0.000001, "output": 0.000002, "cache_read": 0.0000001}
+  monkeypatch.setattr(opencode_cmd, "_model_cost_from_litellm", lambda _model: prices)
+
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  model = data["provider"]["nonoka"]["models"]["default"]
+  assert model["cost"] == prices
+
+
+def test_model_cost_lookup_resolves_provider_prefixed_model_names(
+  monkeypatch: pytest.MonkeyPatch,
+):
+  model_info = {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000002,
+    "cache_read_input_token_cost": 0.0000001,
+  }
+  fake_litellm = SimpleNamespace(
+    model_cost={},
+    get_model_info=lambda model: model_info if model == "openai/gpt-4o" else {},
+  )
+  monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+
+  assert opencode_cmd._model_cost_from_litellm("openai/gpt-4o") == {
+    "input": 0.000001,
+    "output": 0.000002,
+    "cache_read": 0.0000001,
+  }
+
+
+def test_opencode_init_omits_price_when_litellm_has_no_model_entry(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="custom/private-model"), config_path)
+  monkeypatch.setattr(opencode_cmd, "_model_cost_from_litellm", lambda _model: None)
+
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  model = data["provider"]["nonoka"]["models"]["default"]
+  assert "cost" not in model
 
 
 def test_opencode_init_removes_legacy_benchmark_contract_from_interactive_config(tmp_path: Path):
@@ -71,7 +125,8 @@ def test_opencode_init_removes_legacy_benchmark_contract_from_interactive_config
     }}},
   }))
 
-  assert cmd_init(argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)) == 0
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
 
   options = json.loads((tmp_path / "opencode.json").read_text())["provider"]["nonoka"]["options"]
   for key in (

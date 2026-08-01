@@ -23,6 +23,7 @@ from nonoka.observability import ObservabilityPipeline, SQLiteEventStore
 from nonoka.safety import SafetyPolicy
 from nonoka.skills.registry import SkillRegistry
 
+from nonoka_cli.builtin_skills import bundled_skills_path, enabled_skill_names
 from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel
 from nonoka_cli.core.agent_factory import AgentFactory
@@ -473,11 +474,11 @@ class Orchestrator:
     cwd: Path | None = None,
   ) -> SkillRegistry | None:
     """Build a SkillRegistry from config, optionally scoped to a cwd."""
-    if not self._config.skills:
-      return None
     if cwd is None and self._agent_factory is not None:
       return self._agent_factory.skill_registry
-    search_paths: list[Path] = []
+    # SkillRegistry applies later paths as overrides. Keep the shipped skills
+    # first so a project-local skill can tailor the same workflow safely.
+    search_paths: list[Path] = [bundled_skills_path()]
     if cwd is not None:
       search_paths.extend(
         [
@@ -486,7 +487,7 @@ class Orchestrator:
         ]
       )
     return SkillRegistry(
-      enabled=list(self._config.skills),
+      enabled=enabled_skill_names(list(self._config.skills)),
       search_paths=search_paths,
     )
 
@@ -812,7 +813,7 @@ class Orchestrator:
     if self._config_manager is None:
       raise OrchestratorError("No ConfigManager available. Hot-reload is disabled.")
 
-    old_config = self._config.model_dump()
+    old_config = self._config.model_copy(deep=True)
     try:
       new_config = self._config_manager.reload()
     except ConfigError:
@@ -821,17 +822,67 @@ class Orchestrator:
 
     self._config = new_config
 
-    if self._tool_loader is not None:
-      self._tool_loader.search_paths = [Path(p).expanduser() for p in new_config.tool_paths]
-      self._tool_loader.reload()
-    if self._agent_factory is not None:
-      try:
-        self._agent_factory.rebuild(new_config.model_dump())
-      except Exception as exc:
-        self._config = CLIConfig.model_validate(old_config)
-        if self._agent_factory is not None:
-          self._agent_factory.rebuild(old_config)
-        raise OrchestratorError(f"Failed to rebuild Agent after config reload: {exc}") from exc
+    try:
+      if self._tool_loader is not None:
+        self._tool_loader.search_paths = [Path(p).expanduser() for p in new_config.tool_paths]
+        self._tool_loader.reload()
+
+      # MCPs and project agents are runtime dependencies, not just prompt
+      # text. Recreate them so `/reload` applies an edited mcp_servers block
+      # and a newly-written .nonoka/plugin.json to the next turn.
+      if old_config.mcp_servers != new_config.mcp_servers:
+        await self._mcp_manager.stop_all()
+        self._mcp_manager = MCPManager()
+        if new_config.mcp_servers:
+          await self._mcp_manager.start_all(new_config.mcp_servers)
+
+      manifest_loader = PluginManifestLoader(extra_paths=list(new_config.plugins.manifests))
+      self._loaded_plugin_manifests = manifest_loader.load_with_sources(Path.cwd())
+      self._plugin_manifests = [loaded.manifest for loaded in self._loaded_plugin_manifests]
+      if os.getenv("NONOKA_DISABLE_PROJECT_AGENTS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+      }:
+        self._project_agent_tools = []
+      else:
+        compilation = compile_project_agents(
+          effective_agent_definitions(self._loaded_plugin_manifests),
+          ToolOutputPolicy.from_config(new_config.tool_output.model_dump()),
+          effective_dynamic_agent_definition(self._loaded_plugin_manifests),
+        )
+        self._project_agent_tools = compilation.tools
+        for diagnostic in compilation.diagnostics:
+          log = logger.warning if diagnostic.level == "warning" else logger.error
+          log(
+            "project_agent_configuration_diagnostic",
+            level=diagnostic.level,
+            role=diagnostic.role,
+            source=str(diagnostic.source) if diagnostic.source else None,
+            message=diagnostic.message,
+          )
+
+      if self._agent_factory is not None:
+        self._agent_factory.reconfigure(
+          new_config,
+          mcp_manager=self._mcp_manager,
+          tool_loader=self._tool_loader,
+          allowed_tools=self._effective_allowed_tools(),
+          project_agent_tools=self._project_agent_tools,
+        )
+      self._tool_service = ToolService(self._agent_factory, self._tool_loader)
+      self._mcp_service = MCPService(self._mcp_manager, self._agent_factory)
+    except Exception as exc:
+      self._config = old_config
+      if self._agent_factory is not None:
+        self._agent_factory.reconfigure(
+          old_config,
+          mcp_manager=self._mcp_manager,
+          tool_loader=self._tool_loader,
+          allowed_tools=self._effective_allowed_tools(),
+          project_agent_tools=self._project_agent_tools,
+        )
+      raise OrchestratorError(f"Failed to apply reloaded configuration: {exc}") from exc
 
     logger.info(
       "config_reloaded_and_applied",

@@ -60,6 +60,7 @@ export function createNonokaStreamTransformer(
       toolName: string,
       args: Record<string, unknown>,
     ) => Record<string, unknown>;
+    fallbackContextTokens?: number;
   } = {},
 ): TransformStream<string, LanguageModelV3StreamPart> {
   let textBlockId: string | null = null;
@@ -269,7 +270,11 @@ export function createNonokaStreamTransformer(
           // an exact current-memory measurement.  Use it only as a context
           // display fallback; never invent output-token or cost figures.
           const contextTokens = Number(usageState?.context_tokens);
-          const inputTokens = reportedInputTokens > 0 ? reportedInputTokens : contextTokens;
+          const inputTokens = reportedInputTokens > 0
+            ? reportedInputTokens
+            : contextTokens > 0
+              ? contextTokens
+              : Number(options.fallbackContextTokens);
           const outputTokens = Number(usageState?.output_tokens ?? usageState?.completion_tokens);
           const hasInputTokenUsage = Number.isFinite(inputTokens) && inputTokens > 0;
           const hasOutputTokenUsage = Number.isFinite(outputTokens) && outputTokens > 0;

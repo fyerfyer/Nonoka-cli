@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 import yaml
 
+from nonoka_cli.builtin_skills import BUILTIN_SKILL_NAMES
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIBehaviorConfig, CLIConfig, HITLConfigModel, SafetyConfig
@@ -263,6 +264,7 @@ def cmd_init(args: argparse.Namespace) -> int:
       model=model,
       system_prompt=_DEFAULT_SYSTEM_PROMPT,
       api_key="",
+      skills=list(BUILTIN_SKILL_NAMES),
       cli=CLIBehaviorConfig(auto_approve=auto_approve),
       hitl=HITLConfigModel(
         policy="auto" if auto_approve else "interactive",
@@ -308,6 +310,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     model=model,
     system_prompt=system_prompt,
     api_key=api_key_value,
+    skills=list(BUILTIN_SKILL_NAMES),
     cli=CLIBehaviorConfig(auto_approve=auto_approve),
     hitl=HITLConfigModel(
       policy="auto" if auto_approve else "interactive",

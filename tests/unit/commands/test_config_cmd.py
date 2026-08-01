@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from nonoka_cli.commands import config_cmd
+from nonoka_cli.builtin_skills import BUILTIN_SKILL_NAMES
 from nonoka_cli.commands.config_cmd import (
   _allowed_domains_for_model,
   _coerce_value,
@@ -76,6 +77,7 @@ def test_config_init_yes(tmp_path: Path):
   assert cfg.cli.auto_approve is False
   assert cfg.hitl.policy == "interactive"
   assert cfg.safety.allowed_domains == ["api.deepseek.com"]
+  assert cfg.skills == list(BUILTIN_SKILL_NAMES)
 
 
 def test_write_env_file(tmp_path: Path):

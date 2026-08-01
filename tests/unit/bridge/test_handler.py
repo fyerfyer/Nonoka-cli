@@ -117,6 +117,43 @@ async def test_handle_title_uses_tool_free_title_path(handler, sent):
       )
 
 
+async def test_handle_reload_command_reloads_without_an_llm_turn(handler, sent):
+  with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
+    with patch.object(handler, "_apply_session", new=AsyncMock()):
+      orchestrator = MagicMock()
+      orchestrator.session_id = "sess-reload"
+      orchestrator.reload_config = AsyncMock(return_value=MagicMock(model="deepseek/test"))
+      handler._orchestrator = orchestrator
+      handler._session_id = "sess-reload"
+
+      await handler.handle(
+        ChatRequest(messages=[ChatMessage(role="user", content="__NONOKA_RELOAD_CONFIG__")])
+      )
+
+  orchestrator.reload_config.assert_awaited_once()
+  assert [message.type for message in sent] == ["session_init", "text_delta", "finish"]
+  assert "configuration reloaded" in sent[1].text.lower()
+  assert sent[2].finish_reason == "stop"
+
+
+async def test_handle_reload_command_reports_invalid_config(handler, sent):
+  with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
+    with patch.object(handler, "_apply_session", new=AsyncMock()):
+      orchestrator = MagicMock()
+      orchestrator.session_id = "sess-reload"
+      orchestrator.reload_config = AsyncMock(side_effect=RuntimeError("invalid model"))
+      handler._orchestrator = orchestrator
+      handler._session_id = "sess-reload"
+
+      await handler.handle(
+        ChatRequest(messages=[ChatMessage(role="user", content="__NONOKA_RELOAD_CONFIG__")])
+      )
+
+  assert [message.type for message in sent] == ["session_init", "error", "finish"]
+  assert "Configuration reload failed: invalid model" == sent[1].message
+  assert sent[2].finish_reason == "error"
+
+
 async def test_existing_orchestrator_receives_generation_overrides(handler):
   orchestrator = MagicMock()
   handler._orchestrator = orchestrator

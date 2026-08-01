@@ -1,5 +1,10 @@
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import pytest
+
+from nonoka_cli.config.loader import ConfigLoader
+from nonoka_cli.config.manager import ConfigManager
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.core.plugin_manifest import PluginManifest
@@ -45,3 +50,25 @@ def test_plugin_summary_hides_roles_disabled_by_validation() -> None:
 
   assert "Agents:" not in summary
   assert "agent__planner" not in summary
+
+
+async def test_reload_config_reconfigures_agent_for_the_next_opencode_turn(
+  tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="before"), config_path)
+  manager = ConfigManager.load(config_path)
+  orchestrator = Orchestrator(config=manager.get(), config_manager=manager)
+  orchestrator._initialized = True
+  factory = MagicMock()
+  orchestrator._agent_factory = factory
+  monkeypatch.chdir(tmp_path)
+
+  ConfigLoader.save(CLIConfig(model="after", skills=["project-skill"]), config_path)
+
+  config = await orchestrator.reload_config()
+
+  assert config.model == "after"
+  assert orchestrator.config.model == "after"
+  factory.reconfigure.assert_called_once()
+  assert factory.reconfigure.call_args.args[0].model == "after"

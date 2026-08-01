@@ -55,6 +55,14 @@ export const PROVIDER_SOFT_REQUEST_BYTES = 256 * 1024;
 export const PROVIDER_HARD_REQUEST_BYTES = 1024 * 1024;
 export const PROVIDER_COMPLETE_OBSERVATION_MAX_BYTES = 8 * 1024;
 
+function estimateContextTokens(messages: NonokaChatMessage[]): number {
+  // This is only a display fallback for providers that omit streaming usage.
+  // Four UTF-8 bytes/token is conservative enough for the OpenCode context
+  // indicator; billed input/output figures still come exclusively from the
+  // model provider.
+  return Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(messages), 'utf8') / 4));
+}
+
 function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
@@ -694,7 +702,13 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     );
     providerLog(`allowedToolNames count=${allowedToolNames.size} names=${JSON.stringify([...allowedToolNames])}`);
 
-    const rawStream = this.createOutputStream(child, isTitle, options.abortSignal, allowedToolNames);
+    const rawStream = this.createOutputStream(
+      child,
+      isTitle,
+      options.abortSignal,
+      allowedToolNames,
+      estimateContextTokens(request.messages),
+    );
 
     // Wrap the raw stream so we can guarantee it closes as soon as the
     // server signals the turn is finished. OpenCode will not schedule the
@@ -1113,6 +1127,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     isTitle: boolean,
     abortSignal?: AbortSignal,
     allowedToolNames?: Set<string>,
+    fallbackContextTokens?: number,
   ): ReadableStream<LanguageModelV3StreamPart> {
     let cleanupDone = false;
     let lifecycleController: TransformStreamDefaultController<LanguageModelV3StreamPart> | undefined;
@@ -1161,6 +1176,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       },
       allowedToolNames,
       cwd: this.config.cwd,
+      fallbackContextTokens,
       requireProtocolAck: true,
       prepareToolArguments: (toolCallId, toolName, args) => {
         const prepared = prepareHostShellCommand(toolCallId, toolName, args, {

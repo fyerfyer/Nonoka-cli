@@ -56,6 +56,7 @@ else:
   _SUPPORTS_EXECUTION_METADATA = True
 
 from nonoka_cli.bridge.nonoka_tools import get_hosted_tools
+from nonoka_cli.builtin_skills import bundled_skills_path, enabled_skill_names
 from nonoka_cli.config.models import CLIConfig
 from nonoka_cli.core.namespaces import (
   PrefixedCapability,
@@ -128,8 +129,10 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "- Do NOT use OpenCode's native ``skill:<name>`` syntax; it is disabled in\n"
   "  this configuration to avoid conflicting with nonoka's skill tools.\n\n"
   "Guidelines:\n"
-  "- Answer greetings, simple questions, and requests for explanation directly. Do not explore the workspace or call tools unless the user asks for repository work.\n"
-  "- For repository work, stay within the current working directory. Do not inspect parent directories or unrelated paths unless the user explicitly asks.\n"
+  "- Answer greetings, simple questions, and requests for explanation directly. "
+  "Do not explore the workspace or call tools unless the user asks for repository work.\n"
+  "- For repository work, stay within the current working directory. Do not inspect "
+  "parent directories or unrelated paths unless the user explicitly asks.\n"
   "- Prefer reading files before editing them.\n"
   "- Treat an unambiguous task instruction as authorization to perform its required "
   "changes. Do not stop to ask whether to apply a remediation, implementation, or "
@@ -139,13 +142,15 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "- Run build/test commands when available and report the result.\n"
   "- Preserve volatile evidence (for example databases with WAL/journals, logs, and "
   "crash artifacts) before using a tool that could mutate it.\n"
-  "- Before completing a task that changes the workspace, verify every requested output and behavior; start services and "
+  "- Before completing a task that changes the workspace, verify every requested "
+  "output and behavior; start services and "
   "make a real health/request check when applicable.\n"
   "- Do not repeatedly retry the same environmental failure. Use a distinct fallback "
   "or report the dependency as blocked.\n"
   "- Bound expensive commands and validate on a small representative case before a "
   "known-slow full baseline.\n"
-  "- For a workspace-changing task, run the final focused check as `NONOKA_VERIFY=focused <command>`. After it passes, "
+  "- For a workspace-changing task, run the final focused check as "
+  "`NONOKA_VERIFY=focused <command>`. After it passes, "
   "complete TODO/progress bookkeeping before that final check because tools are disabled "
   "as soon as the check passes. "
   "stop and report the result. "
@@ -732,14 +737,14 @@ class AgentFactory:
     cwd: str | Path | None = None,
   ) -> SkillRegistry | None:
     """Return a SkillRegistry for the current config and optional cwd."""
-    if not self._config.skills:
-      return None
-
     # If no cwd is supplied and a registry was injected, reuse it.
     if cwd is None and self._skill_registry is not None:
       return self._skill_registry
 
-    search_paths: list[Path] = []
+    # Search bundled guidance first.  SkillRegistry lets later paths override
+    # earlier ones, so a repository can replace a shipped skill with a local
+    # policy-specific version when needed.
+    search_paths: list[Path] = [bundled_skills_path()]
     if cwd is not None:
       cwd_path = Path(cwd).expanduser().resolve()
       search_paths.extend(
@@ -748,9 +753,8 @@ class AgentFactory:
           cwd_path / "skills",
         ]
       )
-
     return SkillRegistry(
-      enabled=list(self._config.skills),
+      enabled=enabled_skill_names(list(self._config.skills)),
       search_paths=search_paths,
     )
 
@@ -881,6 +885,23 @@ class AgentFactory:
       plugin_summary=self._plugin_summary,
       execution_plan=self._execution_plan,
     )
+
+  def reconfigure(
+    self,
+    config: CLIConfig,
+    *,
+    mcp_manager: MCPManager | None,
+    tool_loader: ToolLoader | None,
+    allowed_tools: list[str],
+    project_agent_tools: list[Capability],
+  ) -> Agent:
+    """Apply a complete reload while preserving transient run options."""
+    self._config = config
+    self._mcp_manager = mcp_manager
+    self._tool_loader = tool_loader
+    self._allowed_tools = set(allowed_tools)
+    self._project_agent_tools = list(project_agent_tools)
+    return self.rebuild()
 
   def get_agent(self) -> Agent | None:
     """Return the currently built Agent, if any."""

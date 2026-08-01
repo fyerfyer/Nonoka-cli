@@ -80,6 +80,15 @@ expand_user_path() {
   esac
 }
 
+canonicalize_path() {
+  # All three layout directories are created before this helper is used, so
+  # `cd -P` can remove cosmetic `.` / `..` segments without relying on a
+  # GNU-only `realpath -m` implementation.
+  (
+    cd -P "$1" 2>/dev/null && pwd -P
+  )
+}
+
 trim_surrounding_whitespace() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -282,7 +291,8 @@ if [ -z "$NONOKA_NPM_PREFIX" ]; then
   NONOKA_NPM_PREFIX="${NONOKA_INSTALL_DIR}/npm"
 fi
 NONOKA_NPM_PREFIX=$(expand_user_path "$(trim_surrounding_whitespace "$NONOKA_NPM_PREFIX")")
-NONOKA_CONFIG_PATH="${NONOKA_CONFIG_DIR}/config.yaml"
+# Filled after the user-provided directory has been created and canonicalized.
+NONOKA_CONFIG_PATH=""
 
 # --------------------------------------------------------------------------- #
 # Preflight checks
@@ -314,6 +324,10 @@ fi
 
 prepare_install_layout() {
   mkdir -p "$NONOKA_INSTALL_DIR" "$NONOKA_CONFIG_DIR" "$NONOKA_NPM_PREFIX"
+  NONOKA_INSTALL_DIR=$(canonicalize_path "$NONOKA_INSTALL_DIR")
+  NONOKA_CONFIG_DIR=$(canonicalize_path "$NONOKA_CONFIG_DIR")
+  NONOKA_NPM_PREFIX=$(canonicalize_path "$NONOKA_NPM_PREFIX")
+  NONOKA_CONFIG_PATH="${NONOKA_CONFIG_DIR}/config.yaml"
 
   if [ -z "$NONOKA_PYTHON_ENV" ]; then
     NONOKA_PYTHON_ENV="${NONOKA_INSTALL_DIR}/.venv"

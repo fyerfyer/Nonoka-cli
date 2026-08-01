@@ -115,6 +115,19 @@ describe("createNonokaStreamTransformer", () => {
     expect(finish.usage.outputTokens.total).toBeUndefined();
   });
 
+  it("estimates request context when the bridge has no usage telemetry", async () => {
+    const transformer = createNonokaStreamTransformer({ fallbackContextTokens: 321 });
+    const input = createInputStream([
+      '{"type":"finish","finish_reason":"stop","runtime":{"usage":{"input_tokens":0,"output_tokens":0}}}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const finish = parts[parts.length - 1] as any;
+
+    expect(finish.usage.inputTokens.total).toBe(321);
+    expect(finish.usage.outputTokens.total).toBeUndefined();
+  });
+
   it("keeps token usage unknown when the model backend omits it", async () => {
     const transformer = createNonokaStreamTransformer();
     const input = createInputStream([

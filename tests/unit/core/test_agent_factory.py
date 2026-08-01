@@ -114,7 +114,11 @@ async def test_build_with_external_tools(factory):
   ]
   agent = factory.build_with_external_tools(tools)
   assert agent.model == "gpt-4o"
-  assert {tool.name for tool in agent.tools} == {"bash", "nonoka__search_evidence"}
+  assert {tool.name for tool in agent.tools} == {
+    "bash",
+    "load_skill",
+    "nonoka__search_evidence",
+  }
   assert "OpenCode" in agent.system_prompt
   assert "todowrite" not in agent.system_prompt
   assert "execute_command" not in agent.system_prompt
@@ -180,7 +184,7 @@ async def test_build_with_external_tools_injects_cwd():
   assert "Preserve volatile evidence" in agent.system_prompt
   assert "Treat an unambiguous task instruction as authorization" in agent.system_prompt
   assert "do not finish with an audit or plan" in agent.system_prompt
-  assert "Before completion, verify every requested output" in agent.system_prompt
+  assert "Before completing a task that changes the workspace" in agent.system_prompt
   assert "NONOKA_VERIFY=focused" in agent.system_prompt
 
 
@@ -257,6 +261,22 @@ async def test_build_with_external_tools_includes_skills(tmp_path):
   assert any(t.name == "bash" for t in agent.tools)
   assert "code-review" in agent.system_prompt
   assert "Review code changes" in agent.system_prompt
+
+
+def test_default_skill_registry_includes_builtin_configuration_skills(tmp_path):
+  factory = AgentFactory(CLIConfig(model="gpt-4o"))
+
+  registry = factory._skill_registry_for_build(cwd=tmp_path)
+
+  assert registry is not None
+  discovered = registry.discover()
+  assert {"skill-creator", "mcp-creator", "config-editor", "subagent-creator"} <= set(discovered)
+  config_editor_sources = {
+    info.source.parent.parent for info in discovered.values() if info.name == "config-editor"
+  }
+  assert config_editor_sources == {
+    Path(__file__).resolve().parents[3] / "src" / "nonoka_cli" / "skills"
+  }
 
 
 @pytest.mark.asyncio

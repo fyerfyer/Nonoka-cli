@@ -25,6 +25,7 @@ from nonoka_cli.bridge.protocol import (
   OutboundMessage,
   ProtocolAckEvent,
   SessionInitEvent,
+  TextDeltaEvent,
   encode_outbound_message,
 )
 from nonoka_cli.core.agent_factory import AgentFactory
@@ -36,6 +37,8 @@ from nonoka_cli.utils.errors import SessionNotFoundError
 from nonoka_cli.utils.trace_logger import TraceLogger
 
 logger = structlog.get_logger("nonoka_cli.bridge.handler")
+
+_RELOAD_COMMAND_SENTINEL = "__NONOKA_RELOAD_CONFIG__"
 
 
 def _package_version(distribution: str) -> str:
@@ -132,6 +135,10 @@ class ChatRequestHandler:
     if not self._session_init_sent and self._session_id:
       await self._send(SessionInitEvent(session_id=self._session_id))
       self._session_init_sent = True
+
+    if self._extract_prompt(msg).strip() == _RELOAD_COMMAND_SENTINEL:
+      await self._reload_config()
+      return
 
     trace_logger = TraceLogger(request_id=msg.request_id)
     trace_logger.log_request(
@@ -282,6 +289,29 @@ class ChatRequestHandler:
       )
     )
     return True
+
+  async def _reload_config(self) -> None:
+    """Run the generated OpenCode ``/reload`` command without an LLM turn."""
+    if self._orchestrator is None:
+      await self._send(ErrorEvent(message="Nonoka is not initialized; cannot reload config."))
+      return
+    try:
+      config = await self._orchestrator.reload_config()
+    except Exception as exc:
+      logger.warning("opencode_reload_failed", error=str(exc))
+      await self._send(ErrorEvent(message=f"Configuration reload failed: {exc}"))
+      await self._send(FinishEvent(finish_reason="error"))
+      return
+
+    await self._send(
+      TextDeltaEvent(
+        text=(
+          f"Nonoka configuration reloaded. Model: {config.model}. "
+          "New settings apply to the next message."
+        )
+      )
+    )
+    await self._send(FinishEvent(finish_reason="stop"))
 
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
     """Initialize the orchestrator on first request."""

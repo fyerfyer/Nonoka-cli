@@ -6,7 +6,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "install.sh"
 
@@ -98,7 +97,10 @@ def test_install_dir_flags_expand_home_and_drive_all_commands(tmp_path: Path) ->
   home = Path(env["HOME"])
   calls = log.read_text()
   assert f"uv:venv {home}/chosen-install/.venv --python python3" in calls
-  assert f"uv:pip install --python {home}/chosen-install/.venv/bin/python --upgrade nonoka-cli" in calls
+  expected_install = (
+    f"uv:pip install --python {home}/chosen-install/.venv/bin/python --upgrade nonoka-cli"
+  )
+  assert expected_install in calls
   assert f"nonoka:config init --yes --config {home}/chosen-config/config.yaml" in calls
   assert f"nonoka:init --config {home}/chosen-config/config.yaml" in calls
   assert f"npm prefix: {home}/chosen-npm" in result.stdout
@@ -198,6 +200,36 @@ def test_interactive_paths_trim_accidental_surrounding_whitespace(tmp_path: Path
   assert f"uv:venv {selected_install}/.venv --python python3" in calls
   assert f"nonoka:config init --config {selected_config}/config.yaml" in calls
   assert f"npm prefix: {selected_npm}" in result.stdout
+
+
+def test_relative_layout_paths_are_canonicalized_before_use(tmp_path: Path) -> None:
+  env, log = _fake_environment(tmp_path)
+
+  result = _run(
+    tmp_path,
+    "--yes",
+    "--uv",
+    "--no-opencode",
+    "--install-dir",
+    "./nonoka",
+    "--config-dir",
+    "./nonoka/config",
+    "--npm-prefix",
+    "./nonoka/npm",
+    env=env,
+  )
+
+  assert result.returncode == 0, result.stderr
+  install_dir = tmp_path / "nonoka"
+  config_dir = install_dir / "config"
+  npm_prefix = install_dir / "npm"
+  calls = log.read_text()
+  assert f"uv:venv {install_dir}/.venv --python python3" in calls
+  assert f"nonoka:config init --yes --config {config_dir}/config.yaml" in calls
+  assert f"Install directory: {install_dir}" in result.stdout
+  assert f"Configuration directory: {config_dir}" in result.stdout
+  assert f"npm prefix: {npm_prefix}" in result.stdout
+  assert "/./" not in result.stdout
 
 
 def test_interactive_defaults_are_displayed_with_tilde(tmp_path: Path) -> None:
