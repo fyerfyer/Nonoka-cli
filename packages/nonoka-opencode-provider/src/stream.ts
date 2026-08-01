@@ -252,17 +252,27 @@ export function createNonokaStreamTransformer(
         }
 
         case NONOKA_OUTBOUND_TYPES.finish: {
-          const runtimeUsage = event.runtime?.usage;
+          // Current bridges send runtime.usage. Accept the standard aliases as
+          // well so a provider upgrade cannot silently turn the OpenCode
+          // context panel back into zeroes.
+          const runtimeUsage = event.runtime?.usage
+            ?? (event.runtime as Record<string, unknown> | undefined)?.usage_data
+            ?? (event as unknown as Record<string, unknown>).usage;
           const usageState = runtimeUsage && typeof runtimeUsage === 'object'
             ? runtimeUsage as Record<string, unknown>
             : undefined;
-          const inputTokens = Number(usageState?.input_tokens);
-          const outputTokens = Number(usageState?.output_tokens);
-          const hasTokenUsage = (
-            Number.isFinite(inputTokens) && inputTokens > 0
-          ) || (
-            Number.isFinite(outputTokens) && outputTokens > 0
+          const reportedInputTokens = Number(
+            usageState?.input_tokens ?? usageState?.prompt_tokens,
           );
+          // Some OpenAI-compatible streaming endpoints (including the
+          // affected DeepSeek route) omit billing usage but Nonoka still has
+          // an exact current-memory measurement.  Use it only as a context
+          // display fallback; never invent output-token or cost figures.
+          const contextTokens = Number(usageState?.context_tokens);
+          const inputTokens = reportedInputTokens > 0 ? reportedInputTokens : contextTokens;
+          const outputTokens = Number(usageState?.output_tokens ?? usageState?.completion_tokens);
+          const hasInputTokenUsage = Number.isFinite(inputTokens) && inputTokens > 0;
+          const hasOutputTokenUsage = Number.isFinite(outputTokens) && outputTokens > 0;
           if (event.finish_reason !== NONOKA_FINISH_REASONS.tool_calls) {
             if (usageState) {
               const state = usageState;
@@ -295,14 +305,14 @@ export function createNonokaStreamTransformer(
             },
             usage: {
               inputTokens: {
-                total: hasTokenUsage ? inputTokens : undefined,
-                noCache: hasTokenUsage ? inputTokens : undefined,
+                total: hasInputTokenUsage ? inputTokens : undefined,
+                noCache: hasInputTokenUsage ? inputTokens : undefined,
                 cacheRead: undefined,
                 cacheWrite: undefined,
               },
               outputTokens: {
-                total: hasTokenUsage ? outputTokens : undefined,
-                text: hasTokenUsage ? outputTokens : undefined,
+                total: hasOutputTokenUsage ? outputTokens : undefined,
+                text: hasOutputTokenUsage ? outputTokens : undefined,
                 reasoning: undefined,
               },
             },

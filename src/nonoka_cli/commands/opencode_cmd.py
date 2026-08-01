@@ -33,7 +33,7 @@ def _resolve_provider_version() -> str | None:
 # Keep published CLI installs on a protocol-compatible provider even though
 # their wheel does not contain the monorepo's package.json. This fallback must
 # be bumped together with the provider package during a coordinated release.
-_PROVIDER_VERSION = _resolve_provider_version() or "0.2.17"
+_PROVIDER_VERSION = _resolve_provider_version() or "0.2.18"
 
 # Tool categories that nonoka-cli needs OpenCode to auto-approve when
 # ``cli.auto_approve`` is enabled. These are OpenCode's native permission
@@ -89,8 +89,6 @@ _DEFAULT_OPENCODE_CONFIG = {
       "options": {
         "serverCommand": [sys.executable, "-m", "nonoka_cli", "--server"],
         "cwd": ".",
-        "requireFocusedVerification": True,
-        "verificationEnforcement": "strict",
       },
       "models": {"default": {"name": "Nonoka Default"}},
     }
@@ -192,7 +190,8 @@ _OPENCODE_PROMPT_GUIDELINES = (
   "- When writing or editing files, use absolute paths under the current working directory "
   "unless the user provides a different path.\n"
   "- Prefer reading a file before editing it when you need context.\n"
-  "- Prefix the final focused acceptance check with `NONOKA_VERIFY=focused`.\n"
+  "- For a task that changes code or configuration, prefix the final focused acceptance check with `NONOKA_VERIFY=focused`.\n"
+  "- Answer greetings, simple questions, and requests for explanation directly; do not inspect files or run tools unless the user asks for repository work.\n"
 )
 
 
@@ -300,6 +299,10 @@ def cmd_init(args: argparse.Namespace) -> int:
   if config.model:
     provider_block["models"] = {"default": {"name": f"Nonoka {config.model}"}}
   provider_block["options"]["configPath"] = str(resolved_config_path)
+  # Use an absolute path.  A literal "." relies on OpenCode preserving its
+  # own process cwd while loading a provider, which has caused tools to start
+  # in an unrelated directory in some host launch paths.
+  provider_block["options"]["cwd"] = str(cwd)
   provider_block["options"]["serverCommand"] = [
     sys.executable,
     "-m",
@@ -308,6 +311,14 @@ def cmd_init(args: argparse.Namespace) -> int:
     str(resolved_config_path),
     "--server",
   ]
+  # These were accidentally enabled for ordinary interactive installs in
+  # 0.2.17.  They are benchmark-only policies: a greeting should never be
+  # forced to modify a workspace and run a focused test.
+  provider_block["options"].pop("requireWorkspaceMutation", None)
+  provider_block["options"].pop("requireObservedEffect", None)
+  provider_block["options"].pop("requireFocusedVerification", None)
+  provider_block["options"].pop("verificationEnforcement", None)
+  provider_block["options"].pop("maxCompletionCorrections", None)
 
   if not isinstance(merged.get("provider"), dict):
     merged["provider"] = {}

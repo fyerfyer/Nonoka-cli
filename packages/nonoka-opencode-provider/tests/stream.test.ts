@@ -89,6 +89,32 @@ describe("createNonokaStreamTransformer", () => {
     expect(finish.usage.outputTokens.total).toBe(7);
   });
 
+  it("accepts OpenAI-compatible token-usage aliases", async () => {
+    const transformer = createNonokaStreamTransformer();
+    const input = createInputStream([
+      '{"type":"finish","finish_reason":"stop","runtime":{"usage":{"prompt_tokens":12,"completion_tokens":7}}}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const finish = parts[parts.length - 1] as any;
+
+    expect(finish.usage.inputTokens.total).toBe(12);
+    expect(finish.usage.outputTokens.total).toBe(7);
+  });
+
+  it("uses measured context when a streaming backend omits billing usage", async () => {
+    const transformer = createNonokaStreamTransformer();
+    const input = createInputStream([
+      '{"type":"finish","finish_reason":"stop","runtime":{"usage":{"input_tokens":0,"output_tokens":0,"context_tokens":4606}}}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const finish = parts[parts.length - 1] as any;
+
+    expect(finish.usage.inputTokens.total).toBe(4606);
+    expect(finish.usage.outputTokens.total).toBeUndefined();
+  });
+
   it("keeps token usage unknown when the model backend omits it", async () => {
     const transformer = createNonokaStreamTransformer();
     const input = createInputStream([

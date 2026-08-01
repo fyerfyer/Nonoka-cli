@@ -194,7 +194,9 @@ class SystemPromptBuilder:
       )
     block = (
       f"Current working directory: {cwd_str}\n"
-      "All file paths must be relative to this directory or use the absolute path above."
+      "All file paths must be relative to this directory or use the absolute path above. "
+      "Do not inspect parent directories or unrelated paths unless the user explicitly asks. "
+      "For greetings and simple questions, respond directly without exploring files."
       f"{tool_guidance}"
     )
     if "Current working directory:" in self._base:

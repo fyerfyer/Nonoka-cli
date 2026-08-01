@@ -50,11 +50,35 @@ def test_opencode_init_creates_file(tmp_path: Path):
   data = json.loads(opencode_path.read_text())
   assert data["model"] == "nonoka/default"
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
-  assert data["provider"]["nonoka"]["options"]["requireFocusedVerification"] is True
-  assert data["provider"]["nonoka"]["options"]["verificationEnforcement"] == "strict"
+  assert data["provider"]["nonoka"]["options"]["cwd"] == str(tmp_path)
+  assert "requireFocusedVerification" not in data["provider"]["nonoka"]["options"]
+  assert "verificationEnforcement" not in data["provider"]["nonoka"]["options"]
   assert data["provider"]["nonoka"]["options"]["serverCommand"] == [
     sys.executable, "-m", "nonoka_cli", "--config", str(config_path), "--server",
   ]
+
+
+def test_opencode_init_removes_legacy_benchmark_contract_from_interactive_config(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="deepseek-chat"), config_path)
+  (tmp_path / "opencode.json").write_text(json.dumps({
+    "provider": {"nonoka": {"options": {
+      "requireWorkspaceMutation": True,
+      "requireObservedEffect": True,
+      "requireFocusedVerification": True,
+      "verificationEnforcement": "strict",
+      "maxCompletionCorrections": 1,
+    }}},
+  }))
+
+  assert cmd_init(argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)) == 0
+
+  options = json.loads((tmp_path / "opencode.json").read_text())["provider"]["nonoka"]["options"]
+  for key in (
+    "requireWorkspaceMutation", "requireObservedEffect", "requireFocusedVerification",
+    "verificationEnforcement", "maxCompletionCorrections",
+  ):
+    assert key not in options
 
 
 def test_opencode_init_merges_existing(tmp_path: Path):

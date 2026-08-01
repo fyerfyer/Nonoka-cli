@@ -638,6 +638,10 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       unified: 'other',
       raw: undefined,
     };
+    let usage: LanguageModelV3GenerateResult['usage'] = {
+      inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+    };
 
     const reader = stream.getReader();
     while (true) {
@@ -649,6 +653,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         currentText += part.delta;
       } else if (part.type === 'finish') {
         finishReason = part.finishReason;
+        usage = part.usage;
       }
     }
 
@@ -659,19 +664,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     return {
       content,
       finishReason,
-      usage: {
-        inputTokens: {
-          total: undefined,
-          noCache: undefined,
-          cacheRead: undefined,
-          cacheWrite: undefined,
-        },
-        outputTokens: {
-          total: undefined,
-          text: undefined,
-          reasoning: undefined,
-        },
-      },
+      usage,
       warnings: [],
     };
   }

@@ -19,11 +19,6 @@ def _unsandboxed_test_config() -> CLIConfig:
     return CLIConfig(safety=SafetyConfig(enabled=False, sandbox="disabled"))
 
 
-@pytest.fixture(autouse=True)
-def _stable_readiness(monkeypatch):
-    monkeypatch.setattr(run_cmd, "_repo_state", lambda _cwd: "clean")
-
-
 def _write_ready_project(tmp_path: Path) -> None:
     config_path = tmp_path / "nonoka.yaml"
     config_path.write_text("model: deepseek-chat\nsafety:\n  enabled: false\n")
@@ -40,7 +35,7 @@ def _write_ready_project(tmp_path: Path) -> None:
     }))
     package = tmp_path / "node_modules" / "nonoka-opencode-provider"
     package.mkdir(parents=True)
-    (package / "package.json").write_text(json.dumps({"version": "0.2.16"}))
+    (package / "package.json").write_text(json.dumps({"version": "0.2.18"}))
 
 
 def test_run_missing_opencode_returns_error(tmp_path: Path, monkeypatch):
@@ -102,6 +97,34 @@ def test_run_skips_init_when_config_exists(tmp_path: Path, monkeypatch):
         cwd=tmp_path,
         env=mock_subprocess.run.call_args.kwargs["env"],
     )
+
+
+def test_run_does_not_block_on_full_doctor_preflight(tmp_path: Path, monkeypatch):
+    """Normal launches avoid provider/Git diagnostics; ``doctor`` owns those."""
+    monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    _write_ready_project(tmp_path)
+
+    with patch.object(run_cmd, "subprocess") as mock_subprocess:
+        mock_subprocess.run.return_value.returncode = 0
+        assert run_cmd.launch_tui(argparse.Namespace(config=None, cwd=str(tmp_path), message=None)) == 0
+
+    assert mock_subprocess.run.call_count == 1
+    assert mock_subprocess.run.call_args.args[0] == ["opencode", str(tmp_path)]
+
+
+def test_run_migrates_legacy_interactive_contract_once(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    _write_ready_project(tmp_path)
+    project = json.loads((tmp_path / "opencode.json").read_text())
+    project["provider"]["nonoka"]["options"]["requireFocusedVerification"] = True
+    (tmp_path / "opencode.json").write_text(json.dumps(project))
+
+    with patch.object(run_cmd, "cmd_init", return_value=0) as initialize:
+        with patch.object(run_cmd, "subprocess") as mock_subprocess:
+            mock_subprocess.run.return_value.returncode = 0
+            assert run_cmd.launch_tui(argparse.Namespace(config=None, cwd=str(tmp_path), message=None)) == 0
+
+    initialize.assert_called_once()
 
 
 def test_run_one_shot_message_mode(tmp_path: Path, monkeypatch):

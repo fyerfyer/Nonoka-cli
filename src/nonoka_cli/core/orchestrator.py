@@ -95,10 +95,12 @@ class Orchestrator:
     mcp_manager: MCPManager | None = None,
     tool_loader: ToolLoader | None = None,
     db_path: Path | str | None = None,
+    event_db_path: Path | str | None = None,
   ):
     self._config = config
     self._config_manager = config_manager
     self._session_service = session_service or SessionService(db_path=db_path)
+    self._event_db_path = Path(event_db_path) if event_db_path is not None else None
     self._mcp_manager = mcp_manager or MCPManager()
     self._tool_loader = tool_loader
     self._agent_factory: AgentFactory | None = None
@@ -228,7 +230,10 @@ class Orchestrator:
         SQLiteEventStore(
           os.getenv(
             "NONOKA_EVENT_DB",
-            str(Path.home() / ".local" / "share" / "nonoka" / "events.db"),
+            str(
+              self._event_db_path
+              or Path.home() / ".local" / "share" / "nonoka" / "events.db"
+            ),
           )
         )
       ),

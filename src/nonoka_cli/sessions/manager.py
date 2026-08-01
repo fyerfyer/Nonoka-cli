@@ -26,6 +26,21 @@ _DEFAULT_DB_DIR = Path.home() / ".local" / "share" / "nonoka"
 _DEFAULT_DB_PATH = _DEFAULT_DB_DIR / "nonoka.db"
 
 
+def project_session_db_path(working_dir: Path | str) -> Path:
+  """Return the session/checkpoint database owned by one workspace.
+
+  The OpenCode bridge is long-lived and several projects can be open at once.
+  Keeping their state below each project avoids cross-project SQLite writer
+  contention and prevents session history leaking into another project's TUI.
+  """
+  return Path(working_dir).expanduser().resolve() / ".nonoka" / "sessions.db"
+
+
+def project_event_db_path(working_dir: Path | str) -> Path:
+  """Return the structured-event database owned by one workspace."""
+  return Path(working_dir).expanduser().resolve() / ".nonoka" / "events.db"
+
+
 class SessionManager:
   """Manages the CLI session index table in SQLite.
 
@@ -58,8 +73,15 @@ class SessionManager:
     """Return an open connection, creating tables if necessary."""
     if self._conn is None:
       self._db_path.parent.mkdir(parents=True, exist_ok=True)
-      self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+      self._conn = sqlite3.connect(
+        str(self._db_path), check_same_thread=False, timeout=10.0
+      )
       self._conn.row_factory = sqlite3.Row
+      # WAL permits readers while a writer is active; busy_timeout handles the
+      # short writes from another OpenCode window instead of failing startup.
+      self._conn.execute("PRAGMA busy_timeout = 10000")
+      self._conn.execute("PRAGMA journal_mode = WAL")
+      self._conn.execute("PRAGMA synchronous = NORMAL")
       self._create_tables()
     return self._conn
 

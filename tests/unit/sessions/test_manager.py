@@ -1,6 +1,10 @@
 import pytest
 
-from nonoka_cli.sessions.manager import SessionManager
+from nonoka_cli.sessions.manager import (
+  SessionManager,
+  project_event_db_path,
+  project_session_db_path,
+)
 from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.utils.errors import SessionNotFoundError
 
@@ -56,3 +60,20 @@ async def test_list_ordered_by_last_active(session_manager):
   await session_manager.touch("a")
   sessions = await session_manager.list()
   assert [s.session_id for s in sessions] == ["a", "b"]
+
+
+def test_project_database_paths_are_isolated_per_workspace(tmp_path):
+  first = tmp_path / "first"
+  second = tmp_path / "second"
+
+  assert project_session_db_path(first) == first / ".nonoka" / "sessions.db"
+  assert project_event_db_path(first) == first / ".nonoka" / "events.db"
+  assert project_session_db_path(first) != project_session_db_path(second)
+
+
+async def test_session_manager_enables_wal_and_busy_timeout(session_manager):
+  await session_manager.list()
+  conn = session_manager._conn
+  assert conn is not None
+  assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+  assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10000

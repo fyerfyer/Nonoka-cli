@@ -24,6 +24,7 @@ from nonoka_cli.bridge.protocol import (
   ToolCall,
 )
 from nonoka_cli.core.task_state import TaskStateService
+from nonoka_cli.sessions.manager import project_event_db_path, project_session_db_path
 
 
 @pytest.fixture
@@ -144,6 +145,26 @@ async def test_existing_orchestrator_receives_generation_overrides(handler):
     verification_enforcement="strict",
     max_completion_corrections=1,
   )
+
+
+async def test_bridge_initializes_project_scoped_databases(handler, tmp_path):
+  orchestrator = MagicMock()
+  orchestrator.session_id = "sess-1"
+  orchestrator.config.task_state.tasks_dir = ".nonoka/tasks"
+  orchestrator.config.task_state.enabled = True
+  orchestrator.initialize = AsyncMock()
+
+  with patch("nonoka_cli.bridge.handler.Orchestrator", return_value=orchestrator) as factory:
+    await handler._ensure_orchestrator(
+      ChatRequest(messages=[ChatMessage(role="user", content="hello")], cwd=str(tmp_path))
+    )
+
+  assert handler._working_dir == tmp_path.resolve()
+  factory.assert_called_once_with(
+    db_path=project_session_db_path(tmp_path),
+    event_db_path=project_event_db_path(tmp_path),
+  )
+  orchestrator.initialize.assert_awaited_once()
 
 
 async def test_handle_resume_approval(handler, sent):

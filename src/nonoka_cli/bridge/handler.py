@@ -31,6 +31,7 @@ from nonoka_cli.core.agent_factory import AgentFactory
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.core.task_state import TaskStateService
 from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
+from nonoka_cli.sessions.manager import project_event_db_path, project_session_db_path
 from nonoka_cli.utils.errors import SessionNotFoundError
 from nonoka_cli.utils.trace_logger import TraceLogger
 
@@ -304,7 +305,10 @@ class ChatRequestHandler:
 
     self._working_dir = Path(msg.cwd or ".").resolve()
 
-    self._orchestrator = Orchestrator()
+    self._orchestrator = Orchestrator(
+      db_path=project_session_db_path(self._working_dir),
+      event_db_path=project_event_db_path(self._working_dir),
+    )
     await self._orchestrator.initialize(config_path=self._config_path)
     if self._has_generation_options(msg):
       self._orchestrator.set_generation_options(

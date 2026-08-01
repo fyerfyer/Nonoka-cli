@@ -13,7 +13,7 @@ export const NONOKA_MESSAGE_ROLES = {
 export type NonokaMessageRole = keyof typeof NONOKA_MESSAGE_ROLES;
 
 export const NONOKA_BRIDGE_PROTOCOL_VERSION = '1.1';
-export const NONOKA_PROVIDER_VERSION = '0.2.17';
+export const NONOKA_PROVIDER_VERSION = '0.2.18';
 export const NONOKA_REQUIRED_CAPABILITIES = [
   'external_tool_receipts',
   'persistent_runtime_limits',

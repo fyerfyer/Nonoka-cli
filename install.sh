@@ -80,6 +80,13 @@ expand_user_path() {
   esac
 }
 
+trim_surrounding_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
 read_path() {
   local prompt="$1" default_value="$2" value
   printf '%s [%s]: ' "$prompt" "$default_value" >&2
@@ -93,6 +100,9 @@ read_path() {
   elif ! IFS= read -r value; then
     value=""
   fi
+  # Terminal paste and shell completion can add a trailing space. Treat this
+  # as input formatting, not part of the directory name.
+  value=$(trim_surrounding_whitespace "$value")
   printf '%s' "${value:-$default_value}"
 }
 
@@ -266,12 +276,12 @@ if [ "$YES" = false ]; then
     "${NONOKA_NPM_PREFIX:-${NONOKA_INSTALL_DIR}/npm}")
 fi
 
-NONOKA_INSTALL_DIR=$(expand_user_path "$NONOKA_INSTALL_DIR")
-NONOKA_CONFIG_DIR=$(expand_user_path "$NONOKA_CONFIG_DIR")
+NONOKA_INSTALL_DIR=$(expand_user_path "$(trim_surrounding_whitespace "$NONOKA_INSTALL_DIR")")
+NONOKA_CONFIG_DIR=$(expand_user_path "$(trim_surrounding_whitespace "$NONOKA_CONFIG_DIR")")
 if [ -z "$NONOKA_NPM_PREFIX" ]; then
   NONOKA_NPM_PREFIX="${NONOKA_INSTALL_DIR}/npm"
 fi
-NONOKA_NPM_PREFIX=$(expand_user_path "$NONOKA_NPM_PREFIX")
+NONOKA_NPM_PREFIX=$(expand_user_path "$(trim_surrounding_whitespace "$NONOKA_NPM_PREFIX")")
 NONOKA_CONFIG_PATH="${NONOKA_CONFIG_DIR}/config.yaml"
 
 # --------------------------------------------------------------------------- #

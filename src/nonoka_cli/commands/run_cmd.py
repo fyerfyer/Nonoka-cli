@@ -12,11 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from nonoka_cli.commands.opencode_cmd import cmd_init
-from nonoka_cli.commands.doctor_cmd import (
-    _provider_version_from_project,
-    check_opencode_config,
-    check_provider,
-)
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.safety import PROCESS_SANDBOX_ENV, SrtSandbox
 
@@ -31,16 +26,42 @@ def _has_opencode_config(cwd: Path) -> bool:
     return (cwd / "opencode.json").exists()
 
 
+def _needs_interactive_config_upgrade(cwd: Path) -> bool:
+    """Return whether a project contains the broken 0.2.17 interactive profile.
+
+    This is intentionally a fast, one-time JSON read.  It lets users who
+    installed the affected release recover by simply launching ``nonoka``
+    after upgrading the CLI, without restoring the old per-launch doctor
+    checks.
+    """
+    try:
+        data = json.loads((cwd / "opencode.json").read_text(encoding="utf-8"))
+        options = data["provider"]["nonoka"]["options"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(options, dict):
+        return False
+    legacy_contract_keys = {
+        "requireWorkspaceMutation",
+        "requireObservedEffect",
+        "requireFocusedVerification",
+        "verificationEnforcement",
+        "maxCompletionCorrections",
+    }
+    return options.get("cwd") == "." or any(key in options for key in legacy_contract_keys)
+
+
 def _ensure_opencode_config(args: argparse.Namespace, cwd: Path) -> int:
     """Initialize opencode.json if it is missing.
 
     Returns:
         0 if the config exists or was created successfully, otherwise an error code.
     """
-    if _has_opencode_config(cwd):
+    if _has_opencode_config(cwd) and not _needs_interactive_config_upgrade(cwd):
         return 0
 
-    print(f"No opencode.json found in {cwd}. Running 'nonoka init'...", file=sys.stderr)
+    action = "Updating legacy Nonoka OpenCode settings" if _has_opencode_config(cwd) else "No opencode.json found"
+    print(f"{action} in {cwd}. Running 'nonoka init'...", file=sys.stderr)
 
     init_args = argparse.Namespace(
         config=getattr(args, "config", None),
@@ -64,22 +85,18 @@ def _referenced_config_path(cwd: Path) -> Path | None:
         return None
 
 
-def _run_preflight(args: argparse.Namespace, cwd: Path) -> tuple[Path, Any] | None:
-    """Validate the executable OpenCode/Nonoka project contract."""
-    config_result = check_opencode_config(cwd)
-    provider_result = check_provider(cwd, require_project=True)
-    failures = [result for result in (config_result, provider_result) if result.status == "error"]
-    for result in failures:
-        print(f"Error: {result.message}", file=sys.stderr)
-        if result.remedy:
-            print(f"  Try: {result.remedy}", file=sys.stderr)
-    if failures:
-        print(f"  Diagnose: nonoka doctor --cwd {cwd}", file=sys.stderr)
-        return None
+def _load_launch_config(args: argparse.Namespace, cwd: Path) -> tuple[Path, Any] | None:
+    """Load only what is necessary to launch OpenCode.
 
+    Full provider, Git, and repository-map diagnostics belong to ``doctor``.
+    Doing them before every interactive launch makes the TUI feel blocked,
+    particularly in large repositories.  OpenCode/the provider can report
+    provider failures when the first request actually needs the bridge.
+    """
     referenced = _referenced_config_path(cwd)
     if referenced is None:
         print("Error: OpenCode config does not identify the active Nonoka config.", file=sys.stderr)
+        print(f"  Diagnose: nonoka doctor --cwd {cwd}", file=sys.stderr)
         return None
 
     explicit = getattr(args, "config", None)
@@ -104,44 +121,6 @@ def _run_preflight(args: argparse.Namespace, cwd: Path) -> tuple[Path, Any] | No
     return referenced, config
 
 
-def _repo_state(cwd: Path) -> str:
-    """Return a bounded, human-readable Git state for the readiness banner."""
-    if not (cwd / ".git").exists():
-        return "not a Git repository"
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if result.returncode != 0:
-            return "unknown"
-        count = len([line for line in result.stdout.splitlines() if line.strip()])
-        return "clean" if count == 0 else f"dirty, {count} changed paths"
-    except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-
-
-def _print_readiness(cwd: Path, config_path: Path, config: Any) -> None:
-    provider_version = _provider_version_from_project(cwd) or "unknown"
-    capability_parts = [
-        f"{len(config.mcp_servers)} MCP",
-        f"{len(config.skills)} skills",
-        f"{len(config.tool_paths)} custom tool paths",
-    ]
-    print("Nonoka readiness", file=sys.stderr)
-    print(f"  Project       {cwd}", file=sys.stderr)
-    print(f"  Config        {config_path}", file=sys.stderr)
-    print(f"  Model         {config.model} via nonoka/default", file=sys.stderr)
-    print(f"  Provider      {provider_version} ready", file=sys.stderr)
-    print(f"  Capabilities  {' · '.join(capability_parts)}", file=sys.stderr)
-    print(f"  Repo          {_repo_state(cwd)}", file=sys.stderr)
-    repo_map_state = "enabled; backend resolves at runtime" if config.repo_map.enabled else "disabled"
-    print(f"  Repo map      {repo_map_state}", file=sys.stderr)
-
-
 def launch_tui(args: argparse.Namespace) -> int:
     """Launch the OpenCode TUI in the requested directory.
 
@@ -162,18 +141,14 @@ def launch_tui(args: argparse.Namespace) -> int:
         print("Install it with: npm install -g opencode", file=sys.stderr)
         return 1
 
-    print("Preparing Nonoka: resolving project configuration...", file=sys.stderr)
     ret = _ensure_opencode_config(args, cwd)
     if ret != 0:
         return ret
 
-    print("Preparing Nonoka: checking provider and bridge command...", file=sys.stderr)
-    preflight = _run_preflight(args, cwd)
-    if preflight is None:
+    launch_config = _load_launch_config(args, cwd)
+    if launch_config is None:
         return 1
-    config_path, config = preflight
-    _print_readiness(cwd, config_path, config)
-    print("Preparing Nonoka: ready; starting OpenCode...", file=sys.stderr)
+    _, config = launch_config
 
     message = getattr(args, "message", None)
     if message:

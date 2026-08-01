@@ -184,6 +184,22 @@ def test_interactive_prompts_explain_each_directory(tmp_path: Path) -> None:
   assert f"nonoka:config init --config {selected_config}/config.yaml" in calls
 
 
+def test_interactive_paths_trim_accidental_surrounding_whitespace(tmp_path: Path) -> None:
+  env, log = _fake_environment(tmp_path)
+  selected_install = tmp_path / "interactive-install"
+  selected_config = tmp_path / "interactive-config"
+  selected_npm = tmp_path / "interactive-npm"
+  answers = f"  {selected_install}  \n {selected_config}\t\n\t{selected_npm} \n"
+
+  result = _run(tmp_path, "--uv", "--no-opencode", input_text=answers, env=env)
+
+  assert result.returncode == 0, result.stderr
+  calls = log.read_text()
+  assert f"uv:venv {selected_install}/.venv --python python3" in calls
+  assert f"nonoka:config init --config {selected_config}/config.yaml" in calls
+  assert f"npm prefix: {selected_npm}" in result.stdout
+
+
 def test_interactive_defaults_are_displayed_with_tilde(tmp_path: Path) -> None:
   env, _log = _fake_environment(tmp_path)
 

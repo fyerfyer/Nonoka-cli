@@ -135,10 +135,10 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.15
+✓ nonoka-cli 0.2.17
 ✓ Python 3.11
 ✓ opencode 1.18.2
-✓ provider nonoka-opencode-provider@0.2.17
+✓ provider nonoka-opencode-provider@0.2.18
 ✓ nonoka framework 1.3.8
 ✓ config ~/.config/nonoka/config.yaml
 ✓ API key DEEPSEEK_API_KEY set
