@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,7 +57,29 @@ def test_opencode_init_creates_file(tmp_path: Path):
   assert data["provider"]["nonoka"]["options"]["serverCommand"] == [
     sys.executable, "-m", "nonoka_cli", "--config", str(config_path), "--server",
   ]
+  assert data["default_agent"] == "build"
+  assert data["agent"]["build"]["model"] == "nonoka/default"
+  assert data["agent"]["plan"]["disable"] is True
+  assert data["command"]["reload"] == {
+    "template": "__NONOKA_RELOAD_CONFIG__",
+    "description": "Reload nonoka config.yaml and rebuild the active Nonoka agent.",
+    "agent": "build",
+    "model": "nonoka/default",
+  }
+
+
+def test_opencode_init_replaces_conflicting_reload_command(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="openai/gpt-4o"), config_path)
+  target = tmp_path / "opencode.json"
+  target.write_text(json.dumps({"command": {"reload": {"template": "unrelated"}}}))
+
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
+
+  data = json.loads(target.read_text())
   assert data["command"]["reload"]["template"] == "__NONOKA_RELOAD_CONFIG__"
+  assert data["command"]["reload"]["agent"] == "build"
 
 
 def test_opencode_init_uses_litellm_prices_when_the_model_is_known(

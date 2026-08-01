@@ -83,6 +83,8 @@ _OPENCODE_AUTO_APPROVED_TOOLS = [
 _NONOKA_RELOAD_COMMAND = {
   "template": "__NONOKA_RELOAD_CONFIG__",
   "description": "Reload nonoka config.yaml and rebuild the active Nonoka agent.",
+  "agent": "build",
+  "model": "nonoka/default",
 }
 
 
@@ -115,6 +117,9 @@ def _build_opencode_permission(config: CLIConfig) -> dict[str, str]:
 _DEFAULT_OPENCODE_CONFIG = {
   "$schema": "https://opencode.ai/config.json",
   "model": "nonoka/default",
+  # OpenCode supplies built-in agents even when absent from this file. Pin the
+  # interactive entry point to the managed Build agent below.
+  "default_agent": "build",
   # Disable OpenCode's auto-updater so that a verified provider version keeps
   # working. Silent upgrades have broken custom provider initialization in the
   # past (e.g. 1.17 -> 1.18 changed provider resolution).
@@ -142,6 +147,7 @@ _DEFAULT_OPENCODE_CONFIG = {
   "agent": {
     "build": {
       "mode": "primary",
+      "model": "nonoka/default",
       # Permission is regenerated from nonoka.yaml in cmd_init.
       "permission": {
         "*": "ask",
@@ -151,7 +157,11 @@ _DEFAULT_OPENCODE_CONFIG = {
         "write": "ask",
         "todowrite": "ask",
       },
-    }
+    },
+    # Nonoka owns planning and agent runtime. Leaving OpenCode's built-in
+    # Plan agent selectable exposes a host-side role whose prompt is not a
+    # Nonoka agent definition.
+    "plan": {"disable": True},
   },
   # Disable OpenCode's native skill tool. nonoka-cli registers its own
   # skill__<skill>__<tool> and load_skill tools; leaving OpenCode's native
@@ -375,7 +385,15 @@ def cmd_init(args: argparse.Namespace) -> int:
   merged["agent"].setdefault("build", {})
   if not isinstance(merged["agent"].get("build"), dict):
     merged["agent"]["build"] = {}
-  merged["agent"]["build"]["permission"] = dict(permission_block)
+  build_agent = merged["agent"]["build"]
+  build_agent["mode"] = "primary"
+  build_agent["model"] = "nonoka/default"
+  build_agent["permission"] = dict(permission_block)
+  existing_plan = merged["agent"].get("plan", {})
+  plan_agent = dict(existing_plan) if isinstance(existing_plan, dict) else {}
+  plan_agent["disable"] = True
+  merged["agent"]["plan"] = plan_agent
+  merged["default_agent"] = "build"
 
   # Preserve unrelated OpenCode tool settings while always disabling the
   # conflicting native skill tool owned by OpenCode.
@@ -386,10 +404,12 @@ def cmd_init(args: argparse.Namespace) -> int:
 
   # OpenCode custom commands expand to messages. The bridge recognizes this
   # private sentinel and performs a real in-process reload, rather than asking
-  # the model to describe a reload that it cannot actually perform.
+  # the model to describe a reload that it cannot actually perform. `/reload`
+  # is a managed Nonoka command, so it must not be replaced by an unrelated
+  # existing OpenCode template.
   existing_commands = existing.get("command", {})
   commands_block = dict(existing_commands) if isinstance(existing_commands, dict) else {}
-  commands_block.setdefault("reload", dict(_NONOKA_RELOAD_COMMAND))
+  commands_block["reload"] = dict(_NONOKA_RELOAD_COMMAND)
   merged["command"] = commands_block
 
   # This command configures the Nonoka execution path.  Keeping an unrelated
