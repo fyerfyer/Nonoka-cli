@@ -7,7 +7,13 @@ import os
 from pathlib import Path
 
 from nonoka_cli.commands import config_cmd
-from nonoka_cli.commands.config_cmd import _coerce_value, _set_dotted, cmd_init, cmd_set
+from nonoka_cli.commands.config_cmd import (
+  _allowed_domains_for_model,
+  _coerce_value,
+  _set_dotted,
+  cmd_init,
+  cmd_set,
+)
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.models import CLIConfig
 
@@ -27,6 +33,15 @@ def test_coerce_value_list():
 
 def test_coerce_value_string():
   assert _coerce_value("hello") == "hello"
+
+
+def test_allowed_domains_for_model_uses_minimal_provider_hosts():
+  assert _allowed_domains_for_model("deepseek/deepseek-v4-pro") == ["api.deepseek.com"]
+  assert _allowed_domains_for_model("openai/gpt-4o") == ["api.openai.com"]
+  assert _allowed_domains_for_model("anthropic/claude-sonnet-4-20250514") == [
+    "api.anthropic.com"
+  ]
+  assert _allowed_domains_for_model("custom/model") == []
 
 
 def test_set_dotted_nested():
@@ -60,6 +75,7 @@ def test_config_init_yes(tmp_path: Path):
   assert cfg.model == "deepseek-chat"
   assert cfg.cli.auto_approve is False
   assert cfg.hitl.policy == "interactive"
+  assert cfg.safety.allowed_domains == ["api.deepseek.com"]
 
 
 def test_write_env_file(tmp_path: Path):

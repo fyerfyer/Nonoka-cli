@@ -172,6 +172,32 @@ def _api_key_env_for_model(model: str) -> str:
   return "OPENAI_API_KEY"
 
 
+def _allowed_domains_for_model(model: str) -> list[str]:
+  """Return the first-party API hosts required by the selected model.
+
+  ``config init`` enables the SRT process-tree sandbox by default.  Its
+  network policy is deny-by-default, so leaving the allowlist empty makes an
+  otherwise valid API key fail with an opaque proxy 403 before it reaches the
+  provider.  Keep this list intentionally small and only include the host
+  implied by a well-known model family.  Custom endpoints remain an explicit
+  user configuration choice.
+  """
+  lowered = model.lower()
+  if "deepseek" in lowered:
+    return ["api.deepseek.com"]
+  if "anthropic" in lowered or "claude" in lowered:
+    return ["api.anthropic.com"]
+  if "openrouter" in lowered:
+    return ["openrouter.ai"]
+  if "gemini" in lowered or "google" in lowered:
+    return ["generativelanguage.googleapis.com"]
+  if "openai" in lowered or lowered.startswith("gpt-"):
+    return ["api.openai.com"]
+  if "ollama" in lowered:
+    return ["localhost", "127.0.0.1"]
+  return []
+
+
 def _api_key_source_summary(env_var: str, env_path: Path = _GLOBAL_ENV_PATH) -> str:
   """Return a short description of where the API key is currently sourced."""
   if os.getenv(env_var):
@@ -242,7 +268,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         policy="auto" if auto_approve else "interactive",
         dangerous_tools=[] if auto_approve else _DEFAULT_DANGEROUS_TOOLS,
       ),
-      safety=SafetyConfig(sandbox="auto", required=True),
+      safety=SafetyConfig(
+        sandbox="auto",
+        required=True,
+        allowed_domains=_allowed_domains_for_model(model),
+      ),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     ConfigLoader.save(config, path)
@@ -283,7 +313,11 @@ def cmd_init(args: argparse.Namespace) -> int:
       policy="auto" if auto_approve else "interactive",
       dangerous_tools=[] if auto_approve else _DEFAULT_DANGEROUS_TOOLS,
     ),
-    safety=SafetyConfig(sandbox="auto", required=True),
+    safety=SafetyConfig(
+      sandbox="auto",
+      required=True,
+      allowed_domains=_allowed_domains_for_model(model),
+    ),
   )
 
   path.parent.mkdir(parents=True, exist_ok=True)
