@@ -66,6 +66,31 @@ def test_opencode_init_creates_file(tmp_path: Path):
     "agent": "build",
     "model": "nonoka/default",
   }
+  tui_config = json.loads((tmp_path / ".opencode" / "tui.json").read_text())
+  assert tui_config["plugin"] == ["./plugins/nonoka-hide-agents.ts"]
+  plugin = (tmp_path / ".opencode" / "plugins" / "nonoka-hide-agents.ts").read_text()
+  assert 'name: "agent.list"' in plugin
+  assert "hidden: true" in plugin
+
+
+def test_opencode_init_preserves_existing_tui_settings_and_plugins(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(CLIConfig(model="openai/gpt-4o"), config_path)
+  tui_dir = tmp_path / ".opencode"
+  tui_dir.mkdir()
+  (tui_dir / "tui.json").write_text(json.dumps({
+    "theme": "custom",
+    "plugin": ["./plugins/user.ts"],
+  }))
+
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
+
+  tui_config = json.loads((tui_dir / "tui.json").read_text())
+  assert tui_config == {
+    "theme": "custom",
+    "plugin": ["./plugins/user.ts", "./plugins/nonoka-hide-agents.ts"],
+  }
 
 
 def test_opencode_init_replaces_conflicting_reload_command(tmp_path: Path):
