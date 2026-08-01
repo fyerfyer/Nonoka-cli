@@ -307,6 +307,7 @@ class ChatRequestHandler:
       TextDeltaEvent(
         text=(
           f"Nonoka configuration reloaded. Model: {config.model}. "
+          f"Max turns: {config.agents.executor.max_turns}. "
           "New settings apply to the next message."
         )
       )

@@ -133,6 +133,7 @@ async def test_handle_reload_command_reloads_without_an_llm_turn(handler, sent):
   orchestrator.reload_config.assert_awaited_once()
   assert [message.type for message in sent] == ["session_init", "text_delta", "finish"]
   assert "configuration reloaded" in sent[1].text.lower()
+  assert "max turns" in sent[1].text.lower()
   assert sent[2].finish_reason == "stop"
 
 

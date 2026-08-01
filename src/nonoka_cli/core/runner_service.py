@@ -8,10 +8,23 @@ from typing import Any
 import structlog
 from nonoka import Agent, Runner
 from nonoka.core.runner import StreamEvent
+from nonoka.core.runtime import RuntimeLimits, TerminalReason
+from nonoka.core.session import SessionStatus
 
 from nonoka_cli.utils.errors import OrchestratorError
 
 logger = structlog.get_logger("nonoka_cli.core.runner")
+
+_RELOADABLE_TERMINATIONS = {
+  TerminalReason.TURN_BUDGET_EXHAUSTED,
+  TerminalReason.TOOL_BUDGET_EXHAUSTED,
+  TerminalReason.CONTEXT_BUDGET_EXHAUSTED,
+  TerminalReason.DEADLINE_EXCEEDED,
+  TerminalReason.MODEL_TIMEOUT,
+  TerminalReason.TOKEN_BUDGET_EXHAUSTED,
+  TerminalReason.COST_BUDGET_EXHAUSTED,
+  TerminalReason.COST_UNAVAILABLE,
+}
 
 
 class RunnerService:
@@ -31,6 +44,49 @@ class RunnerService:
   def runner(self) -> Runner:
     """Underlying nonoka Runner."""
     return self._runner
+
+  async def refresh_persisted_session_limits(self, *, session_id: str, agent: Agent) -> bool:
+    """Apply an agent's current runtime policy to a saved session checkpoint.
+
+    Host tool calls pause the ReAct loop and serialize their runtime limits.
+    Those serialized limits deliberately win on resume, so an agent rebuild by
+    itself cannot apply edited configuration after ``/reload``. Cancellation
+    and execution-policy failures are intentionally never cleared here.
+    """
+    state = await self._runner.checkpoint_store.load_session(session_id)
+    if state is None or state.runtime_state is None:
+      return False
+
+    configured = getattr(agent, "runtime_limits", None)
+    limits = (
+      configured.model_copy(deep=True)
+      if isinstance(configured, RuntimeLimits)
+      else RuntimeLimits()
+    )
+    # Mirror Session.__init__'s effective-limit calculation. Agent builders
+    # leave these fields unset whenever their persisted configuration owns it.
+    if limits.max_model_turns is None:
+      limits.max_model_turns = getattr(agent, "max_turns", None)
+    if limits.max_tool_calls is None:
+      limits.max_tool_calls = getattr(agent, "max_steps", None)
+    if limits.model_timeout_seconds is None:
+      limits.model_timeout_seconds = getattr(agent, "default_timeout", None)
+
+    previous_limits = state.runtime_state.limits
+    state.runtime_state.limits = limits
+    state.completion_contract = getattr(agent, "completion_contract", None)
+
+    termination = state.runtime_state.termination
+    if previous_limits != limits and termination and termination.reason in _RELOADABLE_TERMINATIONS:
+      state.runtime_state.termination = None
+      # The next resume will set RUNNING. Mark the checkpoint accurately while
+      # it waits for the host to return its pending external tool result.
+      if state.status == SessionStatus.FAILED:
+        state.status = SessionStatus.PAUSED
+      state.end_time = None
+
+    await self._runner.checkpoint_store.save_session(session_id, state)
+    return True
 
   async def run(
     self,

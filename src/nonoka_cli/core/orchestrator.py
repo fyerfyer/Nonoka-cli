@@ -870,6 +870,19 @@ class Orchestrator:
           allowed_tools=self._effective_allowed_tools(),
           project_agent_tools=self._project_agent_tools,
         )
+        if self._runner_service is not None:
+          active_agent = self._agent_factory.get_agent()
+          if active_agent is not None:
+            refreshed = await self._runner_service.refresh_persisted_session_limits(
+              session_id=self.session_id,
+              agent=active_agent,
+            )
+            logger.info(
+              "reloaded_session_runtime_limits",
+              session_id=self.session_id,
+              refreshed=refreshed,
+              max_model_turns=getattr(active_agent, "max_turns", None),
+            )
       self._tool_service = ToolService(self._agent_factory, self._tool_loader)
       self._mcp_service = MCPService(self._mcp_manager, self._agent_factory)
     except Exception as exc:
