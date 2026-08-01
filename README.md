@@ -14,7 +14,7 @@ tool execution and human-in-the-loop (HITL) approval using its native tools.
 The easiest way to get nonoka + OpenCode is the one-line installer:
 
 ```bash
-curl -fsSL https://nonoka.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fyerfyer/Nonoka-cli/main/install.sh | bash
 ```
 
 The installer will:
@@ -60,8 +60,9 @@ The legacy `nonoka-cli` executable remains available for compatibility.
 `nonoka-cli` automatically loads `~/.config/nonoka/.env` and `./.env` on startup,
 so you don't need to `export` every time if you save the key in `.env`.
 
-> To use `uv` instead of `pip`, or to run non-interactively, pass flags:
-> `curl -fsSL https://nonoka.dev/install.sh | bash -s -- --uv --yes`.
+> The installer uses `uv` by default when it is available and falls back to
+> the isolated environment's pip. Pass `--pip` to explicitly select pip, or
+> `--yes` to run non-interactively.
 
 For a non-interactive custom location, use flags (environment variables with
 the same names are also supported):
@@ -134,7 +135,7 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.13
+✓ nonoka-cli 0.2.14
 ✓ Python 3.11
 ✓ opencode 1.18.2
 ✓ provider nonoka-opencode-provider@0.2.17

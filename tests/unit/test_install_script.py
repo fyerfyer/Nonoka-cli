@@ -20,7 +20,18 @@ def _fake_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
   fake_bin = tmp_path / "bin"
   fake_bin.mkdir()
   log = tmp_path / "calls.log"
-  _command(fake_bin / "python3", "printf '3.13\\n'\n")
+  _command(
+    fake_bin / "python3",
+    'if [ "${1:-}" = "-c" ]; then\n'
+    '  printf "3.13\\n"\n'
+    'elif [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then\n'
+    '  mkdir -p "$3/bin"\n'
+    '  cp "$0" "$3/bin/python"\n'
+    '  cp "$(dirname "$0")/nonoka" "$3/bin/nonoka"\n'
+    'elif [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then\n'
+    '  printf "python-pip:%s\\n" "${*:3}" >> "$NONOKA_TEST_LOG"\n'
+    'fi\n',
+  )
   _command(
     fake_bin / "uv",
     'printf "uv:%s\\n" "$*" >> "$NONOKA_TEST_LOG"\n'
@@ -87,7 +98,7 @@ def test_install_dir_flags_expand_home_and_drive_all_commands(tmp_path: Path) ->
   home = Path(env["HOME"])
   calls = log.read_text()
   assert f"uv:venv {home}/chosen-install/.venv --python python3" in calls
-  assert "uv:pip install --upgrade nonoka-cli" in calls
+  assert f"uv:pip install --python {home}/chosen-install/.venv/bin/python --upgrade nonoka-cli" in calls
   assert f"nonoka:config init --yes --config {home}/chosen-config/config.yaml" in calls
   assert f"nonoka:init --config {home}/chosen-config/config.yaml" in calls
   assert f"npm prefix: {home}/chosen-npm" in result.stdout
@@ -110,6 +121,49 @@ def test_environment_variables_select_noninteractive_layout(tmp_path: Path) -> N
   assert f"uv:venv {tmp_path}/env-install/.venv --python python3" in calls
   assert f"nonoka:config init --yes --config {tmp_path}/env-config/config.yaml" in calls
   assert f"npm prefix: {tmp_path}/env-npm" in result.stdout
+
+
+def test_uv_is_the_default_and_targets_the_created_environment(tmp_path: Path) -> None:
+  env, log = _fake_environment(tmp_path)
+  install_dir = tmp_path / "default-uv"
+
+  result = _run(
+    tmp_path,
+    "--yes",
+    "--no-opencode",
+    "--install-dir",
+    str(install_dir),
+    env=env,
+  )
+
+  assert result.returncode == 0, result.stderr
+  calls = log.read_text()
+  assert f"uv:venv {install_dir}/.venv --python python3" in calls
+  assert (
+    f"uv:pip install --python {install_dir}/.venv/bin/python --upgrade nonoka-cli"
+    in calls
+  )
+  assert "python-pip:" not in calls
+
+
+def test_pip_mode_is_pinned_to_the_created_environment(tmp_path: Path) -> None:
+  env, log = _fake_environment(tmp_path)
+  install_dir = tmp_path / "explicit-pip"
+
+  result = _run(
+    tmp_path,
+    "--yes",
+    "--pip",
+    "--no-opencode",
+    "--install-dir",
+    str(install_dir),
+    env=env,
+  )
+
+  assert result.returncode == 0, result.stderr
+  calls = log.read_text()
+  assert "python-pip:install --upgrade nonoka-cli" in calls
+  assert f"uv:venv {install_dir}/.venv --python python3" not in calls
 
 
 def test_interactive_prompts_explain_each_directory(tmp_path: Path) -> None:

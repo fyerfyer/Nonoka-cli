@@ -23,7 +23,7 @@
 普通安装会从 PyPI/npm 拉包，不能只把本地 `install.sh` 改好。面试前确认以下版本组合已发布并重新冷启动验证：
 
 ```text
-nonoka-cli                 0.2.13
+nonoka-cli                 0.2.14
 nonoka                     1.3.8
 nonoka-opencode-provider   0.2.17
 OpenCode                   1.18.10
@@ -83,7 +83,7 @@ bash "$NONOKA_DEMO_ROOT/install.sh" \
   --config-dir "$NONOKA_DEMO_ROOT/config" \
   --npm-prefix "$NONOKA_DEMO_ROOT/npm" \
   --opencode-version 1.18.10 \
-  --cli-version 0.2.13
+  --cli-version 0.2.14
 ```
 
 如果要在现场展示交互选择，去掉 `--yes` 和三个目录参数。安装器会逐项显示
@@ -586,7 +586,7 @@ usage: {}  # 未采集，不解释为零成本
 修复后的 editable smoke（Python 3.13.9）还验证了：
 
 ```text
-nonoka --version: 0.2.13
+nonoka --version: 0.2.14
 nonoka init: provider 0.2.17 installed and config generated
 generated serverCommand: <editable-venv>/bin/python -m nonoka_cli --server
 top/build permissions: glob + grep allowed; YAML override round-trip passed

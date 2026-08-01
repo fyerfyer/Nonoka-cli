@@ -14,7 +14,7 @@ Nonoka 负责对话与决策，而 OpenCode 使用其原生工具负责工具执
 获取 nonoka + OpenCode 最简单的方式是一行安装脚本：
 
 ```bash
-curl -fsSL https://nonoka.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fyerfyer/Nonoka-cli/main/install.sh | bash
 ```
 
 安装脚本会：
@@ -60,8 +60,8 @@ nonoka
 `nonoka-cli` 启动时会自动加载 `~/.config/nonoka/.env` 和 `./.env`，
 因此如果你把 key 保存在 `.env` 中，就不需要每次都 `export`。
 
-> 如果想用 `uv` 代替 `pip`，或以非交互方式运行，可以传入参数：
-> `curl -fsSL https://nonoka.dev/install.sh | bash -s -- --uv --yes`。
+> 检测到 `uv` 时安装器会默认全程使用 `uv`，否则回退到隔离环境中的 pip。
+> 只有想明确使用 pip 时才传 `--pip`；非交互安装使用 `--yes`。
 
 非交互安装到指定目录时，可以直接使用参数（也支持同名环境变量）：
 
@@ -133,7 +133,7 @@ nonoka-cli doctor
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.13
+✓ nonoka-cli 0.2.14
 ✓ Python 3.11
 ✓ opencode 1.18.2
 ✓ provider nonoka-opencode-provider@0.2.17

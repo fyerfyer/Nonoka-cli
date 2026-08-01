@@ -2,8 +2,8 @@
 #
 # One-line installer for nonoka + OpenCode.
 #
-#   curl -fsSL https://nonoka.dev/install.sh | bash
-#   curl -fsSL https://nonoka.dev/install.sh | bash -s -- --uv --yes
+#   curl -fsSL https://raw.githubusercontent.com/fyerfyer/Nonoka-cli/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/fyerfyer/Nonoka-cli/main/install.sh | bash -s -- --yes
 #
 set -euo pipefail
 
@@ -14,7 +14,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 YES=false
-USE_UV=false
+# Prefer uv end-to-end when it is available.  ``uv venv`` does not seed pip by
+# default, so mixing it with an unqualified ``pip`` can accidentally install
+# into the user's system environment instead of the new Nonoka environment.
+USE_UV=true
 DEV_MODE=false
 NO_OPENCODE=false
 GLOBAL_OPENCODE=false
@@ -118,6 +121,10 @@ while [ $# -gt 0 ]; do
       USE_UV=true
       shift
       ;;
+    --pip)
+      USE_UV=false
+      shift
+      ;;
     --dev)
       DEV_MODE=true
       shift
@@ -201,8 +208,9 @@ Usage: install.sh [OPTIONS]
 
 Options:
   -y, --yes              Non-interactive mode
-      --uv               Use uv to install nonoka-cli (falls back to pip)
-      --dev              Install nonoka-cli from the local repo (implies --uv if uv is present)
+      --uv               Prefer uv for the venv and Python packages (default)
+      --pip              Use venv's pip instead of uv
+      --dev              Install nonoka-cli from the local repo
       --local-dist DIR   Install nonoka-agent and nonoka-cli from local wheel files in DIR
       --no-opencode      Skip installing OpenCode
       --global-opencode  Write OpenCode config to ~/.config/opencode (default: ./opencode.json)
@@ -303,7 +311,7 @@ prepare_install_layout() {
 
   if [ ! -x "${NONOKA_PYTHON_ENV}/bin/python" ]; then
     info "Creating Python environment at ${NONOKA_PYTHON_ENV}..."
-    if command_exists uv; then
+    if [ "$USE_UV" = true ] && command_exists uv; then
       uv venv "$NONOKA_PYTHON_ENV" --python python3
     else
       python3 -m venv "$NONOKA_PYTHON_ENV"
@@ -374,6 +382,19 @@ fi
 # nonoka-cli
 # --------------------------------------------------------------------------- #
 
+install_python_packages() {
+  if [ "$USE_UV" = true ] && command_exists uv; then
+    uv pip install --python "${NONOKA_PYTHON_ENV}/bin/python" "$@"
+    return
+  fi
+
+  if ! "${NONOKA_PYTHON_ENV}/bin/python" -m pip --version >/dev/null 2>&1; then
+    info "Bootstrapping pip in ${NONOKA_PYTHON_ENV}..."
+    "${NONOKA_PYTHON_ENV}/bin/python" -m ensurepip --upgrade
+  fi
+  "${NONOKA_PYTHON_ENV}/bin/python" -m pip install "$@"
+}
+
 install_nonoka_cli() {
   # Local dist install: pick up nonoka-agent + nonoka-cli wheels from the
   # supplied directories. Useful for validating a release before pushing to PyPI.
@@ -390,11 +411,7 @@ install_nonoka_cli() {
       exit 1
     fi
     info "Installing from local wheels: $agent_whl $cli_whl"
-    if command_exists uv && [ -n "${VIRTUAL_ENV:-}" ]; then
-      uv pip install "$agent_whl" "$cli_whl"
-    else
-      pip install --user "$agent_whl" "$cli_whl"
-    fi
+    install_python_packages "$agent_whl" "$cli_whl"
     return
   fi
 
@@ -417,34 +434,22 @@ install_nonoka_cli() {
     agent_root="${NONOKA_AGENT_ROOT:-$script_dir/../nonoka-agent}"
     if [ -f "$agent_root/pyproject.toml" ]; then
       info "Installing nonoka-agent in editable mode from $agent_root"
-      if [ "$USE_UV" = true ] && command_exists uv; then
-        uv pip install -e "$agent_root"
-      else
-        pip install -e "$agent_root"
-      fi
+      install_python_packages -e "$agent_root"
     fi
 
     info "Installing nonoka-cli in editable mode from $script_dir"
-    if [ "$USE_UV" = true ] && command_exists uv; then
-      uv pip install -e "$script_dir"
-    else
-      pip install -e "$script_dir"
-    fi
+    install_python_packages -e "$script_dir"
     return
   fi
 
-  if [ "$USE_UV" = true ]; then
-    if command_exists uv; then
-      info "Installing $pkg_spec with uv..."
-      uv pip install --upgrade "$pkg_spec"
-    else
-      warn "uv not found; falling back to pip"
-      pip install --upgrade "$pkg_spec"
-    fi
+  if [ "$USE_UV" = true ] && command_exists uv; then
+    info "Installing $pkg_spec with uv..."
+  elif [ "$USE_UV" = true ]; then
+    warn "uv not found; using the isolated environment's pip"
   else
     info "Installing $pkg_spec with pip..."
-    pip install --upgrade "$pkg_spec"
   fi
+  install_python_packages --upgrade "$pkg_spec"
 }
 
 install_nonoka_cli
