@@ -473,7 +473,14 @@ install_nonoka_cli() {
   else
     info "Installing $pkg_spec with pip..."
   fi
-  install_python_packages --upgrade "$pkg_spec"
+  # uv caches index metadata aggressively. Refresh just this package's entry
+  # so a newly published CLI release is not hidden behind an older cached
+  # Simple API response during the first few minutes after a release.
+  if [ "$USE_UV" = true ] && command_exists uv; then
+    install_python_packages --upgrade --refresh-package nonoka-cli "$pkg_spec"
+  else
+    install_python_packages --upgrade "$pkg_spec"
+  fi
 }
 
 install_nonoka_cli

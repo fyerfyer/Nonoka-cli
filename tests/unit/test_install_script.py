@@ -98,7 +98,8 @@ def test_install_dir_flags_expand_home_and_drive_all_commands(tmp_path: Path) ->
   calls = log.read_text()
   assert f"uv:venv {home}/chosen-install/.venv --python python3" in calls
   expected_install = (
-    f"uv:pip install --python {home}/chosen-install/.venv/bin/python --upgrade nonoka-cli"
+    f"uv:pip install --python {home}/chosen-install/.venv/bin/python "
+    "--upgrade --refresh-package nonoka-cli nonoka-cli"
   )
   assert expected_install in calls
   assert f"nonoka:config init --yes --config {home}/chosen-config/config.yaml" in calls
@@ -142,7 +143,8 @@ def test_uv_is_the_default_and_targets_the_created_environment(tmp_path: Path) -
   calls = log.read_text()
   assert f"uv:venv {install_dir}/.venv --python python3" in calls
   assert (
-    f"uv:pip install --python {install_dir}/.venv/bin/python --upgrade nonoka-cli"
+    f"uv:pip install --python {install_dir}/.venv/bin/python "
+    "--upgrade --refresh-package nonoka-cli nonoka-cli"
     in calls
   )
   assert "python-pip:" not in calls
