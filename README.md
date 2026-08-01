@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 OpenCode backend for the [Nonoka](https://pypi.org/project/nonoka/) Agent framework.
 
-`nonoka-cli` runs as a stdio NDJSON bridge server (`nonoka-cli --server`) that
+Nonoka runs as a stdio NDJSON bridge server (`python -m nonoka_cli --server`) that
 talks to the `nonoka-opencode-provider` TypeScript package. When used inside
 OpenCode, Nonoka acts as the conversation/decision backend while OpenCode owns
 tool execution and human-in-the-loop (HITL) approval using its native tools.
@@ -22,30 +22,61 @@ The installer will:
 1. Check Python 3.10+ and Node/npm.
 2. Install or update OpenCode.
 3. Install `nonoka-cli` and the OpenCode provider.
-4. Generate `~/.config/nonoka/config.yaml` and `~/.config/opencode/opencode.json`.
+4. Ask where to keep the installation, configuration, and npm packages.
+5. Generate the Nonoka and project-level OpenCode configuration.
+
+The prompts show what each directory contains and provide these defaults:
+
+```text
+Installation directory (Python environment, launchers, and npm tools; e.g. ~/nonoka)
+  [~/.local/share/nonoka]
+Configuration directory (config.yaml and .env; e.g. ~/.config/nonoka)
+  [~/.config/nonoka]
+npm prefix (OpenCode/provider global packages)
+  [~/.local/share/nonoka/npm]
+```
+
+Press Enter to accept a default, or type a path such as `~/tools/nonoka`.
+The generated `INSTALL_DIR/bin/nonoka` launcher remembers all three paths, so
+using its absolute path does not require any environment exports.
 
 After installing, configure your API key and run `nonoka`:
 
 ```bash
 # Interactive: it will ask for your key and save it to ~/.config/nonoka/.env
-nonoka-cli config init
+nonoka config init
 
 # Or set it manually
 export DEEPSEEK_API_KEY=<your-key>
 
-nonoka-cli doctor
+nonoka doctor
 nonoka
 ```
 
-`nonoka` is a shortcut for `nonoka-cli run` and starts the OpenCode TUI with the
-Nonoka backend. You can also use `nonoka run --message "<task>"` for one-shot
-CLI usage.
+`nonoka` is the primary command. It starts the OpenCode TUI when invoked without
+a subcommand, while `nonoka run --message "<task>"` provides one-shot CLI usage.
+The legacy `nonoka-cli` executable remains available for compatibility.
 
 `nonoka-cli` automatically loads `~/.config/nonoka/.env` and `./.env` on startup,
 so you don't need to `export` every time if you save the key in `.env`.
 
 > To use `uv` instead of `pip`, or to run non-interactively, pass flags:
 > `curl -fsSL https://nonoka.dev/install.sh | bash -s -- --uv --yes`.
+
+For a non-interactive custom location, use flags (environment variables with
+the same names are also supported):
+
+```bash
+bash install.sh --yes --uv --npm-opencode \
+  --install-dir ~/tools/nonoka \
+  --config-dir ~/.config/nonoka \
+  --npm-prefix ~/tools/nonoka/npm
+
+~/tools/nonoka/bin/nonoka doctor
+```
+
+The corresponding variables are `NONOKA_INSTALL_DIR`, `NONOKA_CONFIG_DIR`,
+and `NONOKA_NPM_PREFIX`. CLI flags take precedence over environment variables.
 
 ## Manual installation
 
@@ -65,24 +96,24 @@ npm install -g nonoka-opencode-provider
    `~/.config/nonoka/.env`):
 
 ```bash
-nonoka-cli config init
+nonoka config init
 ```
 
 For scripted setups, use the non-interactive mode (you'll still need to set the
 API key via `.env` or `export`):
 
 ```bash
-nonoka-cli config init --yes --model deepseek/deepseek-v4-pro
+nonoka config init --yes --model deepseek/deepseek-v4-pro
 ```
 
 2. Generate an OpenCode config in the current project or globally:
 
 ```bash
 # Project-level
-nonoka-cli opencode init
+nonoka init
 
 # User-level
-nonoka-cli opencode init --global
+nonoka init --global
 ```
 
 3. Make sure your model API key is exported, then run:
@@ -103,7 +134,7 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.11
+✓ nonoka-cli 0.2.13
 ✓ Python 3.11
 ✓ opencode 1.18.2
 ✓ provider nonoka-opencode-provider@0.2.17
@@ -374,7 +405,7 @@ similarity score without storing raw cache queries. `max_total_tokens` and
 is unavailable, `fail_on_unknown_cost: true` terminates the task rather than
 silently exceeding the cost budget.
 
-### `nonoka-cli opencode init`
+### `nonoka init`
 
 Generate or merge an `opencode.json` in the current directory and create
 `.opencode/agents/build.md` from your nonoka `system_prompt`. The generated
@@ -383,7 +414,8 @@ nonoka config path to the backend.
 
 ## OpenCode configuration
 
-`nonoka-cli opencode init` generates two things:
+`nonoka init` generates two things. `nonoka opencode init` remains as a
+backward-compatible, explicit spelling:
 
 1. `opencode.json` in the current directory, which wires OpenCode to the
    `nonoka-opencode-provider` package and sets HITL permissions.
@@ -400,7 +432,7 @@ A typical generated `opencode.json` looks like:
       "npm": "nonoka-opencode-provider",
       "name": "Nonoka",
       "options": {
-        "serverCommand": ["bash", "-c", "nonoka-cli --server 2>/tmp/nonoka-server.log"],
+        "serverCommand": ["/path/to/python", "-m", "nonoka_cli", "--server"],
         "cwd": ".",
         "configPath": "~/.config/nonoka/config.yaml"
       },
@@ -434,12 +466,12 @@ A typical generated `opencode.json` looks like:
 
 The `"tools": {"skill": false}` line disables OpenCode's native `skill:<name>`
 tool so it does not collide with nonoka's `load_skill` / `skill__<name>__<tool>`
-workflow. `nonoka-cli opencode init` writes this automatically.
+workflow. `nonoka init` writes this automatically.
 
 ## Prompt ownership
 
 Nonoka owns the canonical system prompt via `system_prompt` in
-`~/.config/nonoka/config.yaml`. When you run `nonoka-cli opencode init`, the
+`~/.config/nonoka/config.yaml`. When you run `nonoka init`, the
 command adapts that prompt and writes it to `.opencode/agents/build.md` so
 OpenCode uses it for its primary agent. OpenCode-specific guidelines (tool
 names, approval behavior, path conventions) are appended automatically; they are
@@ -453,10 +485,9 @@ When running inside OpenCode, HITL is handled by OpenCode itself. The generated
 Nonoka forwards OpenCode's native tool definitions to the model, approval
 dialogs render natively for `bash`, `read`, `write`, and `edit` operations.
 
-`nonoka-cli`'s own `cli.auto_approve` and `hitl.policy` settings only apply to
-standalone server / CLI mode. In OpenCode mode, permissions are governed by the
-`permission` block in `opencode.json`. To keep `nonoka.yaml` as the single
-source of truth, add a `permissions` block and re-run `nonoka-cli opencode init`:
+In OpenCode mode, `nonoka init` derives both generated permission blocks from
+`cli.auto_approve` and optional `permissions` overrides in `nonoka.yaml`. Add a
+`permissions` block and re-run `nonoka init` to keep YAML as the source of truth:
 
 ```yaml
 permissions:
@@ -466,8 +497,9 @@ permissions:
   edit: ask
 ```
 
-`cli.auto_approve: true` still auto-allows the core coding tools when no
-`permissions` block is present. For standalone mode, use `hitl.policy: auto`.
+`cli.auto_approve: true` auto-allows the core coding tools, including read-only
+`glob` and `grep`, before explicit overrides are applied. For standalone mode,
+`hitl.policy` still controls Nonoka-owned tool approval.
 
 ## External-tools mode
 
@@ -482,7 +514,8 @@ default. OpenCode sends its native tool list (e.g. `bash`, `read`, `write`,
   `Runner.resume_external_tools()`.
 
 To start external-tools mode, run OpenCode with the generated `opencode.json`;
-the provider spawns `nonoka-cli --server` automatically.
+the provider automatically spawns `python -m nonoka_cli --server` with the
+interpreter that generated the project config.
 
 ## MCP and Skill support
 
@@ -681,7 +714,8 @@ here because they affect the TUI/HITL experience but cannot be fixed inside
 
 ## Server logs and request traces
 
-When running inside OpenCode, the provider spawns `nonoka-cli --server` as a
+When running inside OpenCode, the provider spawns the interpreter-pinned
+`python -m nonoka_cli --server` command as a
 long-lived NDJSON bridge. Server stderr is redirected by the provider to a
 per-working-directory log file so it does not pollute OpenCode's TUI:
 

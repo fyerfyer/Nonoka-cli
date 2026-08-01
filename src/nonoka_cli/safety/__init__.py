@@ -1,6 +1,20 @@
 """Sandbox execution helpers."""
 
-from .preflight import SandboxPreflight, inspect_sandbox, require_sandbox
+from .preflight import (
+  PROCESS_SANDBOX_ENV,
+  SandboxPreflight,
+  active_process_sandbox,
+  inspect_sandbox,
+  require_sandbox,
+)
 from .sandbox import DockerSandbox, SrtSandbox
 
-__all__ = ["DockerSandbox", "SrtSandbox", "SandboxPreflight", "inspect_sandbox", "require_sandbox"]
+__all__ = [
+  "DockerSandbox",
+  "SrtSandbox",
+  "PROCESS_SANDBOX_ENV",
+  "SandboxPreflight",
+  "active_process_sandbox",
+  "inspect_sandbox",
+  "require_sandbox",
+]

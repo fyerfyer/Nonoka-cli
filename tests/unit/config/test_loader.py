@@ -8,6 +8,10 @@ from nonoka_cli.config.loader import ConfigLoader, _substitute_env_vars
 from nonoka_cli.utils.errors import ConfigError, ConfigNotFoundError
 
 
+def test_default_config_assets_share_configured_directory():
+  assert ConfigLoader.MCP_SERVERS_PATH.parent == ConfigLoader.DEFAULT_PATH.parent
+
+
 def test_substitute_env_vars_with_default():
   value = _substitute_env_vars("${UNSET_VAR:-default_value}")
   assert value == "default_value"

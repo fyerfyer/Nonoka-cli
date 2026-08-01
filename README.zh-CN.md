@@ -4,7 +4,7 @@
 
 [Nonoka](https://pypi.org/project/nonoka/) Agent 框架的 OpenCode 后端。
 
-`nonoka-cli` 以 stdio NDJSON 桥接服务器（`nonoka-cli --server`）的方式运行，
+Nonoka 以 stdio NDJSON 桥接服务器（`python -m nonoka_cli --server`）的方式运行，
 与 `nonoka-opencode-provider` TypeScript 包通信。在 OpenCode 内部使用时，
 Nonoka 负责对话与决策，而 OpenCode 使用其原生工具负责工具执行和
 人在回路（human-in-the-loop，HITL）审批。
@@ -22,29 +22,60 @@ curl -fsSL https://nonoka.dev/install.sh | bash
 1. 检查 Python 3.10+ 和 Node/npm。
 2. 安装或更新 OpenCode。
 3. 安装 `nonoka-cli` 和 OpenCode provider。
-4. 生成 `~/.config/nonoka/config.yaml` 和 `~/.config/opencode/opencode.json`。
+4. 询问安装目录、配置目录和 npm 包目录。
+5. 生成 Nonoka 配置和项目级 OpenCode 配置。
+
+每个提示都会说明目录用途并给出默认值：
+
+```text
+Installation directory (Python environment, launchers, and npm tools; e.g. ~/nonoka)
+  [~/.local/share/nonoka]
+Configuration directory (config.yaml and .env; e.g. ~/.config/nonoka)
+  [~/.config/nonoka]
+npm prefix (OpenCode/provider global packages)
+  [~/.local/share/nonoka/npm]
+```
+
+直接按 Enter 接受默认值，也可以填写 `~/tools/nonoka` 之类的路径。安装器生成的
+`INSTALL_DIR/bin/nonoka` launcher 会记住这三个目录，因此通过绝对路径运行时
+不需要手工 `export`。
 
 安装完成后，配置你的 API key 并运行 `nonoka`：
 
 ```bash
 # Interactive: it will ask for your key and save it to ~/.config/nonoka/.env
-nonoka-cli config init
+nonoka config init
 
 # Or set it manually
 export DEEPSEEK_API_KEY=<your-key>
 
-nonoka-cli doctor
+nonoka doctor
 nonoka
 ```
 
-`nonoka` 是 `nonoka-cli run` 的快捷方式，会以 Nonoka 后端启动 OpenCode TUI。
-你也可以使用 `nonoka run --message "<task>"` 进行一次性 CLI 调用。
+`nonoka` 是主入口：不带子命令时启动 OpenCode TUI；也可以使用
+`nonoka run --message "<task>"` 进行一次性 CLI 调用。旧的 `nonoka-cli`
+可执行文件继续保留以兼容已有脚本。
 
 `nonoka-cli` 启动时会自动加载 `~/.config/nonoka/.env` 和 `./.env`，
 因此如果你把 key 保存在 `.env` 中，就不需要每次都 `export`。
 
 > 如果想用 `uv` 代替 `pip`，或以非交互方式运行，可以传入参数：
 > `curl -fsSL https://nonoka.dev/install.sh | bash -s -- --uv --yes`。
+
+非交互安装到指定目录时，可以直接使用参数（也支持同名环境变量）：
+
+```bash
+bash install.sh --yes --uv --npm-opencode \
+  --install-dir ~/tools/nonoka \
+  --config-dir ~/.config/nonoka \
+  --npm-prefix ~/tools/nonoka/npm
+
+~/tools/nonoka/bin/nonoka doctor
+```
+
+对应环境变量为 `NONOKA_INSTALL_DIR`、`NONOKA_CONFIG_DIR` 和
+`NONOKA_NPM_PREFIX`；CLI 参数优先级高于环境变量。
 
 ## 手动安装
 
@@ -64,24 +95,24 @@ npm install -g nonoka-opencode-provider
    `~/.config/nonoka/.env`）：
 
 ```bash
-nonoka-cli config init
+nonoka config init
 ```
 
 对于脚本化安装，使用非交互模式（你仍需通过 `.env` 或 `export` 设置
 API key）：
 
 ```bash
-nonoka-cli config init --yes --model deepseek/deepseek-v4-pro
+nonoka config init --yes --model deepseek/deepseek-v4-pro
 ```
 
 2. 在当前项目或全局生成 OpenCode 配置：
 
 ```bash
 # Project-level
-nonoka-cli opencode init
+nonoka init
 
 # User-level
-nonoka-cli opencode init --global
+nonoka init --global
 ```
 
 3. 确保你的模型 API key 已导出，然后运行：
@@ -102,7 +133,7 @@ nonoka-cli doctor
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.11
+✓ nonoka-cli 0.2.13
 ✓ Python 3.11
 ✓ opencode 1.18.2
 ✓ provider nonoka-opencode-provider@0.2.17
@@ -383,7 +414,7 @@ budget:
 `max_cost_usd` 是随任务会话持久化的硬限制；当价格数据不可用时，
 `fail_on_unknown_cost: true` 会终止任务，而不是默默地超出成本预算。
 
-### `nonoka-cli opencode init`
+### `nonoka init`
 
 在当前目录生成或合并 `opencode.json`，并根据你的 nonoka `system_prompt`
 创建 `.opencode/agents/build.md`。生成的配置将 OpenCode 指向
@@ -391,7 +422,7 @@ budget:
 
 ## OpenCode 配置
 
-`nonoka-cli opencode init` 生成两样东西：
+`nonoka init` 生成两样东西。`nonoka opencode init` 作为显式的旧写法继续兼容：
 
 1. 当前目录中的 `opencode.json`，它把 OpenCode 接入
    `nonoka-opencode-provider` 包并设置 HITL 权限。
@@ -408,7 +439,7 @@ budget:
       "npm": "nonoka-opencode-provider",
       "name": "Nonoka",
       "options": {
-        "serverCommand": ["bash", "-c", "nonoka-cli --server 2>/tmp/nonoka-server.log"],
+        "serverCommand": ["/path/to/python", "-m", "nonoka_cli", "--server"],
         "cwd": ".",
         "configPath": "~/.config/nonoka/config.yaml"
       },
@@ -442,12 +473,12 @@ budget:
 
 `"tools": {"skill": false}` 这一行禁用了 OpenCode 原生的 `skill:<name>`
 工具，以免与 nonoka 的 `load_skill` / `skill__<name>__<tool>` 工作流冲突。
-`nonoka-cli opencode init` 会自动写入该设置。
+`nonoka init` 会自动写入该设置。
 
 ## 提示词归属
 
 Nonoka 通过 `~/.config/nonoka/config.yaml` 中的 `system_prompt` 拥有规范的
-系统提示词。当你运行 `nonoka-cli opencode init` 时，该命令会调整这个提示词
+系统提示词。当你运行 `nonoka init` 时，该命令会调整这个提示词
 并将其写入 `.opencode/agents/build.md`，使 OpenCode 将其用于主 agent。
 OpenCode 特有的指南（工具名称、审批行为、路径约定）会自动追加；它们不会
 混入 Nonoka 的核心提示词，因此同一份配置将来也能用于其他前端。
@@ -459,10 +490,9 @@ OpenCode 特有的指南（工具名称、审批行为、路径约定）会自�
 原生工具定义转发给模型，`bash`、`read`、`write` 和 `edit` 操作的审批对话框
 都能以原生方式渲染。
 
-`nonoka-cli` 自己的 `cli.auto_approve` 和 `hitl.policy` 设置只适用于独立
-server / CLI 模式。在 OpenCode 模式下，权限由 `opencode.json` 中的
-`permission` 块管理。如果希望以 `nonoka.yaml` 作为单一事实来源，可以添加
-`permissions` 块并重新运行 `nonoka-cli opencode init`：
+在 OpenCode 模式下，`nonoka init` 会从 `cli.auto_approve` 和
+`nonoka.yaml` 中可选的 `permissions` 覆盖项派生两处生成权限块。要让 YAML
+保持为单一事实来源，可以添加 `permissions` 后重新运行 `nonoka init`：
 
 ```yaml
 permissions:
@@ -472,8 +502,9 @@ permissions:
   edit: ask
 ```
 
-当没有 `permissions` 块时，`cli.auto_approve: true` 仍会自动允许核心编码
-工具。对于独立模式，使用 `hitl.policy: auto`。
+`cli.auto_approve: true` 会先自动允许核心编码工具，包括只读的 `glob` 和
+`grep`，再应用显式覆盖。对于独立模式，Nonoka 自有工具的审批仍由
+`hitl.policy` 控制。
 
 ## 外部工具模式
 
@@ -487,7 +518,8 @@ permissions:
 - 工具结果由 OpenCode 返回，并通过 `Runner.resume_external_tools()` 恢复执行。
 
 要启动外部工具模式，使用生成的 `opencode.json` 运行 OpenCode；
-provider 会自动派生 `nonoka-cli --server`。
+provider 会使用生成项目配置时的同一个 Python 解释器，自动派生
+`python -m nonoka_cli --server`。
 
 ## MCP 与 Skill 支持
 
@@ -680,7 +712,8 @@ TUI/HITL 体验，但无法在 `nonoka-cli` 或 `nonoka-opencode-provider` 内�
 
 ## 服务器日志与请求 trace
 
-在 OpenCode 内部运行时，provider 会将 `nonoka-cli --server` 作为长驻的
+在 OpenCode 内部运行时，provider 会将绑定当前解释器的
+`python -m nonoka_cli --server` 作为长驻的
 NDJSON 桥接派生。provider 会把服务器 stderr 重定向到一个按工作目录区分的
 日志文件，以免污染 OpenCode 的 TUI：
 

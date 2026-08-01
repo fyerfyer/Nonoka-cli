@@ -23,6 +23,16 @@ logger = structlog.get_logger("nonoka_cli.commands.config")
 _GLOBAL_ENV_PATH = Path.home() / ".config" / "nonoka" / ".env"
 
 
+def _env_path_for_config(config_path: Path | None) -> Path:
+  """Keep credentials beside an explicitly selected configuration file."""
+  if config_path is not None:
+    return config_path.expanduser().resolve().parent / ".env"
+  configured_dir = os.getenv("NONOKA_CONFIG_DIR")
+  if configured_dir:
+    return Path(configured_dir).expanduser().resolve() / ".env"
+  return _GLOBAL_ENV_PATH
+
+
 def _load_manager(args: argparse.Namespace) -> ConfigManager:
   """Load or create a ConfigManager from the requested path."""
   path = getattr(args, "config", None)
@@ -162,23 +172,23 @@ def _api_key_env_for_model(model: str) -> str:
   return "OPENAI_API_KEY"
 
 
-def _api_key_source_summary(env_var: str) -> str:
+def _api_key_source_summary(env_var: str, env_path: Path = _GLOBAL_ENV_PATH) -> str:
   """Return a short description of where the API key is currently sourced."""
   if os.getenv(env_var):
     return f"from environment (${env_var})"
-  if _load_env_file(_GLOBAL_ENV_PATH).get(env_var):
-    return f"from {_GLOBAL_ENV_PATH}"
+  if _load_env_file(env_path).get(env_var):
+    return f"from {env_path}"
   return ""
 
 
-def _collect_api_key(model: str) -> tuple[str, str, str]:
+def _collect_api_key(model: str, env_path: Path = _GLOBAL_ENV_PATH) -> tuple[str, str, str]:
   """Collect API key info and optionally persist it.
 
   Returns:
     (env_var_name, api_key_for_config, summary_for_user)
   """
   env_var = _api_key_env_for_model(model)
-  existing = os.getenv(env_var) or _load_env_file(_GLOBAL_ENV_PATH).get(env_var)
+  existing = os.getenv(env_var) or _load_env_file(env_path).get(env_var)
   if existing:
     print(f"Found {env_var} already set.")
     return env_var, "", f"using existing ${env_var}"
@@ -203,16 +213,17 @@ def _collect_api_key(model: str) -> tuple[str, str, str]:
     return env_var, "", "not saved"
 
   # Default: save to .env
-  _write_env_file(_GLOBAL_ENV_PATH, env_var, key_input)
+  _write_env_file(env_path, env_var, key_input)
   # Make it available for the rest of this process too.
   os.environ[env_var] = key_input
-  print(f"Saved {env_var} to {_GLOBAL_ENV_PATH}")
-  return env_var, "", f"saved to {_GLOBAL_ENV_PATH}"
+  print(f"Saved {env_var} to {env_path}")
+  return env_var, "", f"saved to {env_path}"
 
 
 def cmd_init(args: argparse.Namespace) -> int:
   """Create an initial nonoka config, interactively or with --yes defaults."""
-  path = Path(args.config) if args.config else ConfigLoader.DEFAULT_PATH
+  path = Path(args.config).expanduser() if args.config else ConfigLoader.DEFAULT_PATH
+  env_path = _env_path_for_config(path if args.config else None)
 
   print(f"Creating nonoka configuration at: {path}")
 
@@ -220,7 +231,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     model = getattr(args, "model", None) or "deepseek/deepseek-v4-pro"
     auto_approve = getattr(args, "auto_approve", False)
     env_var = _api_key_env_for_model(model)
-    key_summary = _api_key_source_summary(env_var) or "not configured"
+    key_summary = _api_key_source_summary(env_var, env_path) or "not configured"
 
     config = CLIConfig(
       model=model,
@@ -240,9 +251,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"Configuration saved to {path}")
     print(f"Model: {model}")
     print(f"API key ({env_var}): {key_summary}")
-    if not os.getenv(env_var) and not _load_env_file(_GLOBAL_ENV_PATH).get(env_var):
+    if not os.getenv(env_var) and not _load_env_file(env_path).get(env_var):
       print(
-        f"Set your API key with: nonoka-cli config init (interactive) "
+        f"Set your API key with: nonoka config init (interactive) "
         f"or export {env_var}=<your-key>"
       )
     return 0
@@ -254,7 +265,7 @@ def cmd_init(args: argparse.Namespace) -> int:
   )
 
   model = _read_input("Model identifier", "deepseek/deepseek-v4-pro")
-  env_var, api_key_value, key_summary = _collect_api_key(model)
+  env_var, api_key_value, key_summary = _collect_api_key(model, env_path)
 
   system_prompt = _read_input(
     "Optional system prompt",

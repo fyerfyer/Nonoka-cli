@@ -74,7 +74,6 @@ def test_write_env_file(tmp_path: Path):
 def test_config_init_saves_api_key_to_env(tmp_path: Path, monkeypatch):
   config_path = tmp_path / "config.yaml"
   env_path = tmp_path / ".env"
-  monkeypatch.setattr(config_cmd, "_GLOBAL_ENV_PATH", env_path)
 
   inputs = iter(["deepseek-chat", "", "d", ""])
   def fake_read_input(prompt: str, default: str = "") -> str:
@@ -97,3 +96,10 @@ def test_config_init_saves_api_key_to_env(tmp_path: Path, monkeypatch):
 
   # Clean up so the key does not leak into other tests.
   monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+
+def test_config_init_uses_configured_directory_for_default_env(tmp_path: Path, monkeypatch):
+  config_dir = tmp_path / "configured"
+  monkeypatch.setenv("NONOKA_CONFIG_DIR", str(config_dir))
+
+  assert config_cmd._env_path_for_config(None) == config_dir / ".env"

@@ -7,6 +7,7 @@ import copy
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,15 @@ _PROVIDER_VERSION = _resolve_provider_version() or "0.2.17"
 # Tool categories that nonoka-cli needs OpenCode to auto-approve when
 # ``cli.auto_approve`` is enabled. These are OpenCode's native permission
 # keys, not nonoka-cli's internal tool names.
-_OPENCODE_AUTO_APPROVED_TOOLS = ["read", "bash", "edit", "write", "todowrite"]
+_OPENCODE_AUTO_APPROVED_TOOLS = [
+  "read",
+  "glob",
+  "grep",
+  "bash",
+  "edit",
+  "write",
+  "todowrite",
+]
 
 
 def _build_opencode_permission(config: CLIConfig) -> dict[str, str]:
@@ -57,9 +66,7 @@ def _build_opencode_permission(config: CLIConfig) -> dict[str, str]:
     permission[tool] = action
 
   # nonoka.yaml permissions take precedence over auto_approve defaults.
-  user_permissions = getattr(config, "permissions", None)
-  if user_permissions:
-    permission.update(user_permissions)
+  permission.update(config.permissions)
   # OpenCode 1.18 migrates ``tools.skill=false`` to a top-level permission,
   # but an agent-specific permission block overrides that migration.  Deny it
   # explicitly in both generated blocks so Build cannot prompt for the native
@@ -80,7 +87,7 @@ _DEFAULT_OPENCODE_CONFIG = {
       "npm": "nonoka-opencode-provider",
       "name": "Nonoka",
       "options": {
-        "serverCommand": ["nonoka-cli", "--server"],
+        "serverCommand": [sys.executable, "-m", "nonoka_cli", "--server"],
         "cwd": ".",
         "requireFocusedVerification": True,
         "verificationEnforcement": "strict",
@@ -293,7 +300,14 @@ def cmd_init(args: argparse.Namespace) -> int:
   if config.model:
     provider_block["models"] = {"default": {"name": f"Nonoka {config.model}"}}
   provider_block["options"]["configPath"] = str(resolved_config_path)
-  provider_block["options"]["serverCommand"] = ["nonoka-cli", "--server"]
+  provider_block["options"]["serverCommand"] = [
+    sys.executable,
+    "-m",
+    "nonoka_cli",
+    "--config",
+    str(resolved_config_path),
+    "--server",
+  ]
 
   if not isinstance(merged.get("provider"), dict):
     merged["provider"] = {}
@@ -374,7 +388,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     )
 
   print(f"Provider: {_PROVIDER_PACKAGE}@{_PROVIDER_VERSION} ready")
-  print("Ready. Then run: nonoka-cli run")
+  print("Ready. Then run: nonoka run")
   return 0
 
 
@@ -384,6 +398,39 @@ def _add_config_arg(parser: Any) -> None:
     dest="config",
     help="Path to the nonoka config file (default: ~/.config/nonoka/config.yaml)",
   )
+
+
+def _configure_init_parser(parser: Any) -> None:
+  """Add the shared options for ``nonoka init`` and ``opencode init``."""
+  _add_config_arg(parser)
+  parser.add_argument(
+    "--yes",
+    "-y",
+    action="store_true",
+    help="Non-interactive mode (default; kept for script compatibility)",
+  )
+  parser.add_argument(
+    "--cwd",
+    dest="cwd",
+    default=".",
+    help="Directory to write opencode.json into (default: current directory)",
+  )
+  parser.add_argument(
+    "--global",
+    dest="global_",
+    action="store_true",
+    help="Write to ~/.config/opencode/opencode.json instead of ./opencode.json",
+  )
+  parser.set_defaults(func=cmd_init)
+
+
+def add_init_subparser(subparsers: Any) -> None:
+  """Register the concise top-level alias for OpenCode integration setup."""
+  init_parser = subparsers.add_parser(
+    "init",
+    help="Generate or merge OpenCode integration config",
+  )
+  _configure_init_parser(init_parser)
 
 
 def add_subparser(subparsers: Any) -> None:
@@ -405,23 +452,4 @@ def add_subparser(subparsers: Any) -> None:
 
   opencode_subparsers = opencode_parser.add_subparsers(dest="opencode_command", required=True)
   init_parser = opencode_subparsers.add_parser("init", help="Generate or merge opencode.json")
-  _add_config_arg(init_parser)
-  init_parser.add_argument(
-    "--yes",
-    "-y",
-    action="store_true",
-    help="Non-interactive mode (default; kept for script compatibility)",
-  )
-  init_parser.add_argument(
-    "--cwd",
-    dest="cwd",
-    default=".",
-    help="Directory to write opencode.json into (default: current directory)",
-  )
-  init_parser.add_argument(
-    "--global",
-    dest="global_",
-    action="store_true",
-    help="Write to ~/.config/opencode/opencode.json instead of ./opencode.json",
-  )
-  init_parser.set_defaults(func=cmd_init)
+  _configure_init_parser(init_parser)

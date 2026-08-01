@@ -18,7 +18,7 @@ from nonoka_cli.commands.doctor_cmd import (
     check_provider,
 )
 from nonoka_cli.config.loader import ConfigLoader
-from nonoka_cli.safety import SrtSandbox
+from nonoka_cli.safety import PROCESS_SANDBOX_ENV, SrtSandbox
 
 
 def _has_opencode() -> bool:
@@ -40,7 +40,7 @@ def _ensure_opencode_config(args: argparse.Namespace, cwd: Path) -> int:
     if _has_opencode_config(cwd):
         return 0
 
-    print(f"No opencode.json found in {cwd}. Running 'nonoka-cli opencode init'...", file=sys.stderr)
+    print(f"No opencode.json found in {cwd}. Running 'nonoka init'...", file=sys.stderr)
 
     init_args = argparse.Namespace(
         config=getattr(args, "config", None),
@@ -74,7 +74,7 @@ def _run_preflight(args: argparse.Namespace, cwd: Path) -> tuple[Path, Any] | No
         if result.remedy:
             print(f"  Try: {result.remedy}", file=sys.stderr)
     if failures:
-        print(f"  Diagnose: nonoka-cli doctor --cwd {cwd}", file=sys.stderr)
+        print(f"  Diagnose: nonoka doctor --cwd {cwd}", file=sys.stderr)
         return None
 
     referenced = _referenced_config_path(cwd)
@@ -93,7 +93,7 @@ def _run_preflight(args: argparse.Namespace, cwd: Path) -> tuple[Path, Any] | No
             print("Error: --config does not match the config recorded in opencode.json.", file=sys.stderr)
             print(f"  Requested: {requested}", file=sys.stderr)
             print(f"  OpenCode:  {referenced}", file=sys.stderr)
-            print(f"  Try: nonoka-cli opencode init --cwd {cwd} --config {requested}", file=sys.stderr)
+            print(f"  Try: nonoka init --cwd {cwd} --config {requested}", file=sys.stderr)
             return None
 
     try:
@@ -189,7 +189,16 @@ def launch_tui(args: argparse.Namespace) -> int:
         executable = srt.executable()
         if not executable:
             if config.safety.required:
-                print("Error: required SRT sandbox is unavailable. Run `nonoka-cli doctor --check-sandbox`.", file=sys.stderr)
+                print(
+                    "Error: the required OpenCode process-tree sandbox needs SRT, "
+                    "but `srt` is unavailable.",
+                    file=sys.stderr,
+                )
+                print(
+                    "Install it with `npm install -g @anthropic-ai/sandbox-runtime`, "
+                    "then run `nonoka doctor --check-sandbox`.",
+                    file=sys.stderr,
+                )
                 return 1
         else:
             settings = srt.settings(cwd)
@@ -201,6 +210,10 @@ def launch_tui(args: argparse.Namespace) -> int:
         # for the whole TUI process tree so a launch cannot race an upgrade,
         # even if OpenCode reads update policy before the project config.
         launch_env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+        if settings is not None:
+            # The bridge and its custom tools inherit the outer SRT boundary.
+            # Mark ownership so they do not try to bootstrap a nested SRT.
+            launch_env[PROCESS_SANDBOX_ENV] = "srt"
         result = subprocess.run(cmd, cwd=cwd, env=launch_env)
         return result.returncode
     except KeyboardInterrupt:

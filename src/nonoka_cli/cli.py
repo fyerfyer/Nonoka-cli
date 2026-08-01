@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 import os
 import sys
@@ -42,17 +43,37 @@ from nonoka_cli.utils.logging import setup_logging
 logger = structlog.get_logger("nonoka_cli.cli")
 
 
-def _load_env_files() -> None:
+def _version() -> str:
+  """Return the installed CLI version, including editable installs."""
+  try:
+    return importlib.metadata.version("nonoka-cli")
+  except importlib.metadata.PackageNotFoundError:
+    return "unknown"
+
+
+def _load_env_files(config_path: Path | str | None = None) -> None:
   """Load .env files so config env-var substitution works transparently.
 
   Priority (lowest to highest):
-  1. ~/.config/nonoka/.env
-  2. ./.env
+  1. $NONOKA_CONFIG_DIR/.env or ~/.config/nonoka/.env
+  2. the explicit config file's sibling .env
+  3. ./.env
   Existing environment variables always win.
   """
-  global_env = Path.home() / ".config" / "nonoka" / ".env"
+  configured_dir = Path(
+    os.getenv("NONOKA_CONFIG_DIR", str(Path.home() / ".config" / "nonoka"))
+  ).expanduser()
+  candidates = [configured_dir / ".env"]
+  if config_path is not None:
+    candidates.append(Path(config_path).expanduser().resolve().parent / ".env")
   local_env = Path.cwd() / ".env"
-  for path in (global_env, local_env):
+  candidates.append(local_env)
+  seen: set[Path] = set()
+  for path in candidates:
+    path = path.resolve()
+    if path in seen:
+      continue
+    seen.add(path)
     if path.exists():
       load_dotenv(dotenv_path=path, override=False)
       logger.debug("loaded_env_file", path=str(path))
@@ -61,8 +82,13 @@ def _load_env_files() -> None:
 def _build_parser() -> argparse.ArgumentParser:
   """Build the argument parser."""
   parser = argparse.ArgumentParser(
-    prog="nonoka-cli",
+    prog="nonoka",
     description="Terminal frontend for the Nonoka Agent framework",
+  )
+  parser.add_argument(
+    "--version",
+    action="version",
+    version=f"%(prog)s {_version()}",
   )
   parser.add_argument(
     "--config",
@@ -96,6 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
   subparsers = parser.add_subparsers(dest="command")
   config_cmd.add_subparser(subparsers)
   doctor_cmd.add_subparser(subparsers)
+  opencode_cmd.add_init_subparser(subparsers)
   opencode_cmd.add_subparser(subparsers)
   plugin_cmd.add_subparser(subparsers)
   run_cmd.add_subparser(subparsers)
@@ -116,28 +143,23 @@ def main() -> int:
   parser = _build_parser()
   args = parser.parse_args()
 
-  # Load .env files early so configuration and LLM providers see API keys.
-  _load_env_files()
-
-  if args.server:
-    return server_main(config_path=args.config, model=args.model)
-
-  if args.command and getattr(args, "func", None):
-    log_level = (
-      logging.DEBUG if args.debug
-      else logging.INFO if args.verbose
-      else logging.WARNING
-    )
-    setup_logging(level=log_level, console=args.verbose or args.debug)
-    return args.func(args)
-
-  # No subcommand given: launch the OpenCode TUI by default.
   log_level = (
     logging.DEBUG if args.debug
     else logging.INFO if args.verbose
     else logging.WARNING
   )
   setup_logging(level=log_level, console=args.verbose or args.debug)
+
+  # Load .env files after logging is configured so the debug-only path message
+  # does not leak into normal command output.
+  _load_env_files(args.config)
+  if args.server:
+    return server_main(config_path=args.config, model=args.model)
+
+  if args.command and getattr(args, "func", None):
+    return args.func(args)
+
+  # No subcommand given: launch the OpenCode TUI by default.
   return run_cmd.launch_tui(args)
 
 

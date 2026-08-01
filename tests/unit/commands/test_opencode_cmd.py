@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,7 +52,9 @@ def test_opencode_init_creates_file(tmp_path: Path):
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
   assert data["provider"]["nonoka"]["options"]["requireFocusedVerification"] is True
   assert data["provider"]["nonoka"]["options"]["verificationEnforcement"] == "strict"
-  assert data["provider"]["nonoka"]["options"]["serverCommand"] == ["nonoka-cli", "--server"]
+  assert data["provider"]["nonoka"]["options"]["serverCommand"] == [
+    sys.executable, "-m", "nonoka_cli", "--config", str(config_path), "--server",
+  ]
 
 
 def test_opencode_init_merges_existing(tmp_path: Path):
@@ -73,7 +76,9 @@ def test_opencode_init_merges_existing(tmp_path: Path):
   assert data["model"] == "nonoka/default"
   assert data["custom"] is True
   assert data["provider"]["nonoka"]["options"]["configPath"] == str(config_path)
-  assert data["provider"]["nonoka"]["options"]["serverCommand"] == ["nonoka-cli", "--server"]
+  assert data["provider"]["nonoka"]["options"]["serverCommand"] == [
+    sys.executable, "-m", "nonoka_cli", "--config", str(config_path), "--server",
+  ]
 
 
 def test_opencode_init_creates_agent_prompt(tmp_path: Path):
@@ -160,6 +165,27 @@ def test_opencode_init_auto_approve_permissions(tmp_path: Path):
   agent_file = tmp_path / ".opencode" / "agents" / "build.md"
   content = agent_file.read_text()
   assert "auto-approved" in content or "auto-approve" in content
+
+
+def test_opencode_init_applies_yaml_permission_overrides(tmp_path: Path):
+  config_path = tmp_path / "nonoka.yaml"
+  ConfigLoader.save(
+    CLIConfig(
+      model="deepseek-chat",
+      cli={"auto_approve": True},
+      permissions={"glob": "deny", "custom-safe-tool": "allow"},
+    ),
+    config_path,
+  )
+
+  args = argparse.Namespace(config=str(config_path), cwd=str(tmp_path), global_=False)
+  assert cmd_init(args) == 0
+
+  data = json.loads((tmp_path / "opencode.json").read_text())
+  for block in (data["permission"], data["agent"]["build"]["permission"]):
+    assert block["glob"] == "deny"
+    assert block["grep"] == "allow"
+    assert block["custom-safe-tool"] == "allow"
 
 
 def test_opencode_init_disables_native_skill_tool(tmp_path: Path):

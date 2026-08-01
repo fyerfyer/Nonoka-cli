@@ -63,14 +63,24 @@ def _run(
   timeout: float = 10.0,
   check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-  """Run a command and return its result."""
-  return subprocess.run(
-    cmd,
-    capture_output=True,
-    text=True,
-    timeout=timeout,
-    check=check,
-  )
+  """Run a diagnostic command without leaking OS/timeout exceptions."""
+  try:
+    return subprocess.run(
+      cmd,
+      capture_output=True,
+      text=True,
+      timeout=timeout,
+      check=check,
+    )
+  except subprocess.TimeoutExpired as exc:
+    return subprocess.CompletedProcess(
+      cmd,
+      124,
+      stdout=exc.stdout if isinstance(exc.stdout, str) else "",
+      stderr=f"timed out after {timeout:g}s",
+    )
+  except OSError as exc:
+    return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
 
 
 def check_nonoka_cli_version() -> CheckResult:
@@ -123,6 +133,12 @@ def check_opencode() -> CheckResult:
   version = result.stdout.strip() if result.returncode == 0 else "unknown"
   if result.returncode == 0:
     return CheckResult("ok", f"opencode {version}")
+  if result.returncode == 124:
+    return CheckResult(
+      "error",
+      "opencode version check timed out after 5s",
+      "Run `opencode --version` directly; inspect proxy/startup configuration or reinstall OpenCode.",
+    )
   return CheckResult(
     "warn",
     f"opencode found but returned an error (reported {version})",

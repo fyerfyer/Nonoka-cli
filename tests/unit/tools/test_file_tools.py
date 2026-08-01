@@ -12,6 +12,7 @@ import pytest
 from nonoka.core.errors import SafetyError
 from nonoka.safety import SafetyPolicy
 
+from nonoka_cli.safety import PROCESS_SANDBOX_ENV
 from nonoka_cli.tools.builtins.file_tools import execute_command, read_file, write_file
 
 
@@ -58,3 +59,62 @@ async def test_file_tools_enforce_filesystem_policy(tmp_path: Path) -> None:
     await read_file._func(ctx, path=".env")
   with pytest.raises(SafetyError):
     await write_file._func(ctx, path=".env", content="changed")
+
+
+@pytest.mark.asyncio
+async def test_execute_command_does_not_nest_an_active_process_sandbox(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  class FakeProcess:
+    returncode = 0
+
+    async def communicate(self):
+      return b"nested-ok", b""
+
+  async def fake_subprocess(command: str, **options):
+    assert command == "printf nested-ok"
+    assert options["cwd"] == str(tmp_path)
+    return FakeProcess()
+
+  monkeypatch.setenv(PROCESS_SANDBOX_ENV, "srt")
+  monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_subprocess)
+  ctx = SimpleNamespace(
+    deps=SimpleNamespace(
+      working_dir=tmp_path,
+      config=SimpleNamespace(
+        safety=SimpleNamespace(sandbox="auto", required=True, allowed_domains=[]),
+      ),
+    ),
+  )
+
+  result = await execute_command._func(ctx, command="printf nested-ok")
+
+  assert "nested-ok" in result
+  assert "sandbox" not in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_command_auto_falls_back_to_docker(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  async def fake_docker_run(_self, command: str, workspace: Path, timeout: int):
+    assert command == "printf docker-ok"
+    assert workspace == tmp_path
+    return 0, "docker-ok"
+
+  monkeypatch.delenv(PROCESS_SANDBOX_ENV, raising=False)
+  monkeypatch.setattr("nonoka_cli.safety.SrtSandbox.executable", lambda: None)
+  monkeypatch.setattr("nonoka_cli.safety.DockerSandbox.run", fake_docker_run)
+  ctx = SimpleNamespace(
+    deps=SimpleNamespace(
+      working_dir=tmp_path,
+      config=SimpleNamespace(
+        safety=SimpleNamespace(sandbox="auto", required=True, allowed_domains=[]),
+      ),
+    ),
+  )
+
+  result = await execute_command._func(ctx, command="printf docker-ok")
+
+  assert "exit code 0 (success, docker-sandbox)" in result
+  assert "docker-ok" in result

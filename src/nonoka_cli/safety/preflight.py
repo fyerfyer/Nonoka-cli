@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from nonoka_cli.safety.sandbox import DockerSandbox, SrtSandbox
+
+
+PROCESS_SANDBOX_ENV = "NONOKA_PROCESS_SANDBOX"
+
+
+def active_process_sandbox() -> str | None:
+  """Return the sandbox already owning this process tree, if any."""
+  value = os.getenv(PROCESS_SANDBOX_ENV, "").strip().lower()
+  return value if value in {"srt"} else None
 
 
 @dataclass(frozen=True)
@@ -19,6 +29,9 @@ class SandboxPreflight:
 
 async def inspect_sandbox(safety: Any, workspace: Path) -> SandboxPreflight:
   """Run a harmless command through the configured backend."""
+  active = active_process_sandbox()
+  if active:
+    return SandboxPreflight("ok", f"{active.upper()} already owns this process tree")
   selected = str(getattr(safety, "sandbox", "docker"))
   if selected == "disabled":
     return SandboxPreflight("warn", "sandbox is disabled by configuration")

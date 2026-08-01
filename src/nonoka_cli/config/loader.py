@@ -15,6 +15,10 @@ from nonoka_cli.utils.errors import ConfigError, ConfigNotFoundError
 
 logger = structlog.get_logger("nonoka_cli.config")
 
+_DEFAULT_CONFIG_DIR = Path(
+  os.getenv("NONOKA_CONFIG_DIR", str(Path.home() / ".config" / "nonoka"))
+).expanduser()
+
 _ENV_PATTERN = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-?(?P<default>[^}]*))?\}")
 
 
@@ -99,8 +103,8 @@ class ConfigLoader:
   main-config entries of the same name.
   """
 
-  DEFAULT_PATH = Path.home() / ".config" / "nonoka" / "config.yaml"
-  MCP_SERVERS_PATH = Path.home() / ".config" / "nonoka" / "mcp_servers.yaml"
+  DEFAULT_PATH = _DEFAULT_CONFIG_DIR / "config.yaml"
+  MCP_SERVERS_PATH = _DEFAULT_CONFIG_DIR / "mcp_servers.yaml"
 
   @classmethod
   def fallback_path(cls, search_dir: Path | str | None = None) -> Path:

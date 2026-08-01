@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from nonoka_cli.config.models import (
   CLIBehaviorConfig,
   CLIConfig,
@@ -24,6 +27,7 @@ def test_cli_config_defaults():
   assert cfg.mcp_servers == {}
   assert cfg.tool_paths == []
   assert cfg.skills == []
+  assert cfg.permissions == {}
   assert isinstance(cfg.cli, CLIBehaviorConfig)
   assert isinstance(cfg.hitl, HITLConfigModel)
 
@@ -47,9 +51,16 @@ def test_cli_config_roundtrip():
     "system_prompt": "You are a helpful assistant.",
     "cli": {"theme": "light", "auto_approve": True},
     "hitl": {"policy": "auto", "dangerous_tools": ["execute_command"]},
+    "permissions": {"glob": "allow", "bash": "deny"},
   }
   cfg = CLIConfig.model_validate(data)
   assert cfg.model == "deepseek-chat"
   assert cfg.cli.theme == "light"
   assert cfg.cli.auto_approve is True
   assert cfg.hitl.dangerous_tools == ["execute_command"]
+  assert cfg.permissions == {"glob": "allow", "bash": "deny"}
+
+
+def test_cli_config_rejects_invalid_permission_action():
+  with pytest.raises(ValidationError, match="permissions.bad-tool"):
+    CLIConfig(permissions={"bad-tool": "sometimes"})

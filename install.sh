@@ -27,13 +27,25 @@ OPENCODE_VERSION=""
 CLI_VERSION=""
 PROVIDER_VERSION=""
 
+# Installation layout. Every value can be supplied as an environment variable
+# or with the matching CLI option. A leading "~/" is expanded against HOME.
+#
+#   NONOKA_INSTALL_DIR  Python venv and npm tools (e.g. ~/.local/share/nonoka)
+#   NONOKA_CONFIG_DIR   config.yaml and .env (e.g. ~/.config/nonoka)
+#   NONOKA_NPM_PREFIX   npm global prefix (e.g. ~/.local/share/nonoka/npm)
+INSTALL_DIR_EXPLICIT=false
+if [ -n "${NONOKA_INSTALL_DIR:-}" ]; then INSTALL_DIR_EXPLICIT=true; fi
+
+NONOKA_INSTALL_DIR="${NONOKA_INSTALL_DIR:-~/.local/share/nonoka}"
+NONOKA_CONFIG_DIR="${NONOKA_CONFIG_DIR:-~/.config/nonoka}"
+NONOKA_NPM_PREFIX="${NONOKA_NPM_PREFIX:-}"
+NONOKA_PYTHON_ENV=""
+
 # uv's 30-second default is brittle for the framework's larger wheels on
 # slower or proxied networks. Respect an explicit user value while giving the
 # installer a more practical default.
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-120}"
 
-NONOKA_CONFIG_DIR="${HOME}/.config/nonoka"
-NONOKA_CONFIG_PATH="${NONOKA_CONFIG_DIR}/config.yaml"
 OPENCODE_CONFIG_DIR="${HOME}/.config/opencode"
 
 # --------------------------------------------------------------------------- #
@@ -54,6 +66,31 @@ error() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+expand_user_path() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+
+read_path() {
+  local prompt="$1" default_value="$2" value
+  printf '%s [%s]: ' "$prompt" "$default_value" >&2
+  # A curl | bash installation uses stdin for the script itself. Read answers
+  # from the controlling terminal when one exists, while retaining stdin as a
+  # fallback for downloaded scripts, redirected input, and automated tests.
+  if [ ! -t 0 ] && { : </dev/tty; } 2>/dev/null; then
+    if ! IFS= read -r value </dev/tty; then
+      value=""
+    fi
+  elif ! IFS= read -r value; then
+    value=""
+  fi
+  printf '%s' "${value:-$default_value}"
 }
 
 python_version_ok() {
@@ -133,6 +170,31 @@ while [ $# -gt 0 ]; do
       PROVIDER_VERSION="${2:-}"
       shift 2
       ;;
+    --install-dir)
+      NONOKA_INSTALL_DIR="${2:-}"
+      if [ -z "$NONOKA_INSTALL_DIR" ]; then
+        error "--install-dir requires a directory"
+        exit 1
+      fi
+      INSTALL_DIR_EXPLICIT=true
+      shift 2
+      ;;
+    --config-dir)
+      NONOKA_CONFIG_DIR="${2:-}"
+      if [ -z "$NONOKA_CONFIG_DIR" ]; then
+        error "--config-dir requires a directory"
+        exit 1
+      fi
+      shift 2
+      ;;
+    --npm-prefix)
+      NONOKA_NPM_PREFIX="${2:-}"
+      if [ -z "$NONOKA_NPM_PREFIX" ]; then
+        error "--npm-prefix requires a directory"
+        exit 1
+      fi
+      shift 2
+      ;;
     -h|--help)
       cat <<'EOF'
 Usage: install.sh [OPTIONS]
@@ -151,7 +213,15 @@ Options:
       --opencode-version VER  Install a specific opencode-ai version (only with --npm-opencode)
       --cli-version VER  Install a specific nonoka-cli version
       --provider-version VER  Install a specific nonoka-opencode-provider version
+      --install-dir DIR       Python venv and npm tools (default: ~/.local/share/nonoka)
+      --config-dir DIR        config.yaml and .env (default: ~/.config/nonoka)
+      --npm-prefix DIR        npm global prefix (default: INSTALL_DIR/npm)
   -h, --help             Show this help message
+
+Environment variables:
+  NONOKA_INSTALL_DIR     Same as --install-dir
+  NONOKA_CONFIG_DIR      Same as --config-dir
+  NONOKA_NPM_PREFIX      Same as --npm-prefix
 EOF
       exit 0
       ;;
@@ -161,6 +231,40 @@ EOF
       ;;
   esac
 done
+
+# Reuse an already activated venv unless the caller explicitly selected an
+# install root. This preserves existing uv/pip workflows while making a fresh
+# install self-contained by default.
+if [ "$INSTALL_DIR_EXPLICIT" = false ] && [ -n "${VIRTUAL_ENV:-}" ]; then
+  NONOKA_PYTHON_ENV="$VIRTUAL_ENV"
+  NONOKA_INSTALL_DIR="$(dirname "$VIRTUAL_ENV")"
+fi
+
+if [ "$YES" = false ]; then
+  install_answer=$(read_path \
+    "Installation directory (Python environment, launchers, and npm tools; e.g. ~/nonoka)" \
+    "$NONOKA_INSTALL_DIR")
+  if [ "$install_answer" != "$NONOKA_INSTALL_DIR" ]; then
+    INSTALL_DIR_EXPLICIT=true
+    NONOKA_PYTHON_ENV=""
+  fi
+  NONOKA_INSTALL_DIR="$install_answer"
+
+  NONOKA_CONFIG_DIR=$(read_path \
+    "Configuration directory (config.yaml and .env; e.g. ~/.config/nonoka)" \
+    "$NONOKA_CONFIG_DIR")
+  NONOKA_NPM_PREFIX=$(read_path \
+    "npm prefix (OpenCode/provider global packages)" \
+    "${NONOKA_NPM_PREFIX:-${NONOKA_INSTALL_DIR}/npm}")
+fi
+
+NONOKA_INSTALL_DIR=$(expand_user_path "$NONOKA_INSTALL_DIR")
+NONOKA_CONFIG_DIR=$(expand_user_path "$NONOKA_CONFIG_DIR")
+if [ -z "$NONOKA_NPM_PREFIX" ]; then
+  NONOKA_NPM_PREFIX="${NONOKA_INSTALL_DIR}/npm"
+fi
+NONOKA_NPM_PREFIX=$(expand_user_path "$NONOKA_NPM_PREFIX")
+NONOKA_CONFIG_PATH="${NONOKA_CONFIG_DIR}/config.yaml"
 
 # --------------------------------------------------------------------------- #
 # Preflight checks
@@ -185,6 +289,40 @@ if ! command_exists curl; then
   error "curl is required to run this installer."
   exit 1
 fi
+
+# --------------------------------------------------------------------------- #
+# Installation layout
+# --------------------------------------------------------------------------- #
+
+prepare_install_layout() {
+  mkdir -p "$NONOKA_INSTALL_DIR" "$NONOKA_CONFIG_DIR" "$NONOKA_NPM_PREFIX"
+
+  if [ -z "$NONOKA_PYTHON_ENV" ]; then
+    NONOKA_PYTHON_ENV="${NONOKA_INSTALL_DIR}/.venv"
+  fi
+
+  if [ ! -x "${NONOKA_PYTHON_ENV}/bin/python" ]; then
+    info "Creating Python environment at ${NONOKA_PYTHON_ENV}..."
+    if command_exists uv; then
+      uv venv "$NONOKA_PYTHON_ENV" --python python3
+    else
+      python3 -m venv "$NONOKA_PYTHON_ENV"
+    fi
+  else
+    info "Using existing Python environment: ${NONOKA_PYTHON_ENV}"
+  fi
+
+  export VIRTUAL_ENV="$NONOKA_PYTHON_ENV"
+  export NONOKA_CONFIG_DIR="$NONOKA_CONFIG_DIR"
+  export NPM_CONFIG_PREFIX="$NONOKA_NPM_PREFIX"
+  export PATH="${NONOKA_PYTHON_ENV}/bin:${NONOKA_NPM_PREFIX}/bin:${PATH}"
+
+  info "Install directory: ${NONOKA_INSTALL_DIR}"
+  info "Configuration directory: ${NONOKA_CONFIG_DIR}"
+  info "npm prefix: ${NONOKA_NPM_PREFIX}"
+}
+
+prepare_install_layout
 
 # --------------------------------------------------------------------------- #
 # OpenCode
@@ -311,8 +449,32 @@ install_nonoka_cli() {
 
 install_nonoka_cli
 
-if ! command_exists nonoka-cli; then
-  warn "nonoka-cli is not on PATH. If you installed with --user, ensure ~/.local/bin is in PATH."
+write_launcher() {
+  local launcher_dir launcher python_env_q config_dir_q npm_prefix_q nonoka_q
+  launcher_dir="${NONOKA_INSTALL_DIR}/bin"
+  launcher="${launcher_dir}/nonoka"
+  mkdir -p "$launcher_dir"
+  printf -v python_env_q '%q' "$NONOKA_PYTHON_ENV"
+  printf -v config_dir_q '%q' "$NONOKA_CONFIG_DIR"
+  printf -v npm_prefix_q '%q' "$NONOKA_NPM_PREFIX"
+  printf -v nonoka_q '%q' "${NONOKA_PYTHON_ENV}/bin/nonoka"
+  cat > "$launcher" <<EOF
+#!/usr/bin/env bash
+export VIRTUAL_ENV=$python_env_q
+export NONOKA_CONFIG_DIR=$config_dir_q
+export NPM_CONFIG_PREFIX=$npm_prefix_q
+export PATH="\${VIRTUAL_ENV}/bin:\${NPM_CONFIG_PREFIX}/bin:\${PATH}"
+exec $nonoka_q "\$@"
+EOF
+  chmod 755 "$launcher"
+  ln -sf "nonoka" "${launcher_dir}/nonoka-cli"
+  info "Launcher saved to: ${launcher}"
+}
+
+write_launcher
+
+if ! command_exists nonoka; then
+  warn "nonoka is not on PATH. The launcher is still available at ${NONOKA_INSTALL_DIR}/bin/nonoka."
 fi
 
 # --------------------------------------------------------------------------- #
@@ -324,7 +486,7 @@ fi
 # locally. For global installs, we fall back to a global npm package.
 install_provider() {
   if [ "$GLOBAL_OPENCODE" = false ]; then
-    info "Provider will be installed locally by 'nonoka-cli opencode init'."
+    info "Provider will be installed locally by 'nonoka init'."
     return
   fi
 
@@ -355,21 +517,21 @@ install_provider
 info "Generating default nonoka configuration..."
 mkdir -p "$NONOKA_CONFIG_DIR"
 
-if command_exists nonoka-cli; then
+if command_exists nonoka; then
   if [ "$YES" = true ]; then
-    nonoka-cli config init --yes --config "$NONOKA_CONFIG_PATH"
+    nonoka config init --yes --config "$NONOKA_CONFIG_PATH"
   else
-    nonoka-cli config init --config "$NONOKA_CONFIG_PATH"
+    nonoka config init --config "$NONOKA_CONFIG_PATH"
   fi
 
   info "Generating OpenCode configuration..."
   if [ "$GLOBAL_OPENCODE" = true ]; then
-    nonoka-cli opencode init --global --config "$NONOKA_CONFIG_PATH"
+    nonoka init --global --config "$NONOKA_CONFIG_PATH"
   else
-    nonoka-cli opencode init --config "$NONOKA_CONFIG_PATH"
+    nonoka init --config "$NONOKA_CONFIG_PATH"
   fi
 else
-  warn "nonoka-cli not found in PATH; skipping configuration generation."
+  warn "nonoka not found in PATH; skipping configuration generation."
 fi
 
 # --------------------------------------------------------------------------- #
@@ -381,15 +543,15 @@ run_verify() {
     return
   fi
 
-  if ! command_exists nonoka-cli; then
-    warn "nonoka-cli not found; skipping verification."
+  if ! command_exists nonoka; then
+    warn "nonoka not found; skipping verification."
     return
   fi
 
   # Load the same .env files nonoka-cli loads for the API-key check.
-  if [ -f "$HOME/.config/nonoka/.env" ]; then
+  if [ -f "$NONOKA_CONFIG_DIR/.env" ]; then
     # shellcheck source=/dev/null
-    . "$HOME/.config/nonoka/.env"
+    . "$NONOKA_CONFIG_DIR/.env"
   fi
 
   if [ -z "${DEEPSEEK_API_KEY:-}${OPENAI_API_KEY:-}" ]; then
@@ -397,8 +559,8 @@ run_verify() {
     return
   fi
 
-  info "Running nonoka-cli doctor --check-llm..."
-  if nonoka-cli doctor --check-llm; then
+  info "Running nonoka doctor --check-llm..."
+  if nonoka doctor --config "$NONOKA_CONFIG_PATH" --check-llm; then
     info "Verification passed."
   else
     warn "Verification failed. Check the logs above for details."
@@ -416,9 +578,9 @@ run_smoke() {
   fi
 
   # Load the same .env files nonoka-cli loads for the API-key check.
-  if [ -f "$HOME/.config/nonoka/.env" ]; then
+  if [ -f "$NONOKA_CONFIG_DIR/.env" ]; then
     # shellcheck source=/dev/null
-    . "$HOME/.config/nonoka/.env"
+    . "$NONOKA_CONFIG_DIR/.env"
   fi
 
   if [ -z "${DEEPSEEK_API_KEY:-}${OPENAI_API_KEY:-}" ]; then
@@ -427,7 +589,7 @@ run_smoke() {
   fi
 
   info "Running smoke test: nonoka run --message hello"
-  if nonoka run --message "hello"; then
+  if nonoka run --config "$NONOKA_CONFIG_PATH" --message "hello"; then
     info "Smoke test passed."
   else
     warn "Smoke test failed. Check the logs above for details."
@@ -442,19 +604,24 @@ run_smoke
 # --------------------------------------------------------------------------- #
 
 info "Installation complete!"
+printf -v launcher_q '%q' "${NONOKA_INSTALL_DIR}/bin/nonoka"
+printf -v launcher_bin_q '%q' "${NONOKA_INSTALL_DIR}/bin"
+printf -v config_path_q '%q' "$NONOKA_CONFIG_PATH"
 cat <<EOF
 
 Next steps:
-  1. Export your model API key if you haven't already, e.g.:
-       export DEEPSEEK_API_KEY=<your-key>
+  1. Save your model API key without exporting it in every shell:
+       ${launcher_q} config init
   2. Run diagnostics:
-       nonoka-cli doctor
+       ${launcher_q} doctor
   3. Start OpenCode:
-       opencode
+       ${launcher_q} run
 
-If opencode or nonoka-cli are not found, open a new shell or add the
-following directories to your PATH:
-  - ~/.opencode/bin
-  - ~/.local/bin
+No environment exports are required when using the launcher above.
+To type 'nonoka' directly, add this one directory to PATH:
+  ${launcher_bin_q}
+
+Configuration:
+  ${config_path_q}
 
 EOF

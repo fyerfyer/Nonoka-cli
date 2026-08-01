@@ -1,140 +1,132 @@
-# Nonoka CLI 面试现场演示 Runbook
+# Nonoka CLI 技术面试演示与答辩 Runbook
 
-这份文档用于一次由演示者亲自操作的完整演示。目标不是执行一个预制脚本后展示结果，而是从陌生用户安装开始，进入一个已有代码仓库，通过自然语言让 OpenCode/Nonoka 创建并配置 MCP Server、Skill 和自定义 Tool，重启后真实加载这些能力，最后让 Agent 修复代码并完成验证。
+> 最后实测：2026-07-31。本文是供演示者逐步操作的手册，不是一键脚本。
 
-建议把正式演示控制在 10–15 分钟。依赖下载和模型响应都有不确定性，因此现场保留一个预热环境和一份成功 trace 作为兜底，但主流程仍由演示者逐条输入命令和自然语言消息。
+这套演示要呈现一条完整但诚实的产品链路：陌生用户从 PyPI/npm 安装，进入一个已有且测试失败的代码仓库，配置项目 YAML，创建 MCP Server、Skill 和自定义 Tool，验证并重启加载，最后让 OpenCode/Nonoka 调用三类能力修复真实 Bug。正式面试建议只演示 10–15 分钟主路径；完整冷启动留作讲解或备份。
 
-## 1. 演示要证明什么
+## 1. 一句话叙事与成功标准
 
-演示结束时，面试官应该能清楚看到以下边界：
+建议开场这样说：
 
-1. `install.sh` 从 GitHub 获取，负责安装 CLI、OpenCode 和 provider，并生成基础配置。
-2. `nonoka-cli` 通过 stdio bridge 接入 OpenCode，而不是替换 OpenCode TUI。
-3. OpenCode 原生工具负责读取、编辑和执行命令。
-4. Nonoka runtime 负责模型循环、MCP 生命周期、Skill、项目自定义 Tool、运行预算和验证收据。
-5. MCP、Skill 和自定义 Tool 不是写进 YAML 就算完成，而是会被真实发现和调用。
-6. 在已有仓库中，Agent 先读代码和测试、保留已有内容，再进行有界修改和 focused verification。
+> Nonoka 不替代 OpenCode，而是在它下面提供 Agent runtime、能力注册、预算、验证收据和安全边界。今天我会从一个干净环境开始，让它进入已有仓库，真实装载 Skill、MCP 和自定义 Tool，再用这些能力完成一个带状态机、去重、时区排序和审计要求的 Bug 修复。
 
-## 2. 面试前必须完成的发布准备
+结束时必须有可核验的五项证据：
 
-当前工作区中的修复不能仅推送 `install.sh`。普通安装模式会从 PyPI/npm 获取实际包，因此发布顺序应为：
+1. PyPI 安装的 `nonoka-cli`、`nonoka` 与 npm 安装的 OpenCode/provider 版本。
+2. baseline 确实是 `3 failed`。
+3. capability verifier 不只看文件存在，而是真实启动 MCP 并调用三类能力。
+4. TUI trace 中出现 `load_skill`、`skill__...`、`mcp__...`、`custom__...` 和宿主读写/测试工具。
+5. 独立终端复验为 `3 passed`，并人工检查 `git diff`；模型的最终自述不作为证据。
 
-1. 发布包含 MCP SDK 与 finalization 修复的 `nonoka-agent` 新版本。
-2. 更新并发布依赖该 Agent 版本的 `nonoka-cli` 新版本。
-3. 确认 `nonoka-opencode-provider` 的兼容版本已发布到 npm。
-4. 更新 CLI 中的 provider fallback 版本。
-5. 提交并推送两个仓库以及本目录的 demo 文件。
-6. 在全新 HOME 和虚拟环境中重新执行本文件的完整流程。
+## 2. 面试前的发布与屏幕准备
 
-发布完成前，可以使用本文的“GitHub 源码安装”路径，但必须明确称为源码预览安装，不能称为最终用户安装。
+普通安装会从 PyPI/npm 拉包，不能只把本地 `install.sh` 改好。面试前确认以下版本组合已发布并重新冷启动验证：
 
-## 3. 屏幕与凭据准备
+```text
+nonoka-cli                 0.2.13
+nonoka                     1.3.8
+nonoka-opencode-provider   0.2.17
+OpenCode                   1.18.10
+Python                     3.13.9
+```
 
-不要在共享屏幕上输入 API key。面试前把 key 放到一个不会展示内容的文件中，例如：
+上述是 2026-07-31 实测组合，不代表未来版本永远兼容。面试当天应冻结版本，不临场升级。
+
+API key 预先放进不展示内容的文件，并限制权限：
 
 ```bash
 mkdir -p ~/.config/nonoka
 chmod 700 ~/.config/nonoka
-# 在非共享环境中提前创建 ~/.config/nonoka/.env，并 chmod 600。
+# 在停止共享屏幕时创建 ~/.config/nonoka/.env，并 chmod 600。
 ```
 
-现场只展示检查结果：
+现场只显示：
 
 ```bash
 test -s ~/.config/nonoka/.env && echo 'credential file: ready'
 ```
 
-建议使用至少 100×30 的终端。关闭会弹出通知、用户名或 token 的 shell 插件。
+建议准备两个 tmux 窗口：`demo` 跑 TUI，`audit` 看 diff、日志和独立测试。终端至少 100×30，并关闭可能显示用户名或 token 的 shell 插件。
 
-## 4. 第一幕：模拟陌生用户从 GitHub 安装
+## 3. 完整冷启动：在 `/tmp` 从零安装
 
-### 4.1 正式发布后的推荐路径
+### 3.1 创建隔离目录
 
-使用临时 HOME，避免演示成功依赖自己电脑上的既有配置：
+安装器现在可以自己创建 venv 和隔离的 npm prefix，不需要预先激活 venv，
+也不需要为安装后的每条命令反复 `export`。先只保存本次演示根目录：
 
 ```bash
-export NONOKA_USER_ROOT=/tmp/nonoka-interview-user
-mkdir -p "$NONOKA_USER_ROOT/home" "$NONOKA_USER_ROOT/workspace"
+NONOKA_DEMO_ROOT="$(mktemp -d /tmp/nonoka-interview-XXXXXX)"
+mkdir -p "$NONOKA_DEMO_ROOT/artifacts"
+```
 
-uv venv "$NONOKA_USER_ROOT/.venv" --python 3.13
-export HOME="$NONOKA_USER_ROOT/home"
-export VIRTUAL_ENV="$NONOKA_USER_ROOT/.venv"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
+复制凭据时不要打印内容：
 
-cd "$NONOKA_USER_ROOT/workspace"
+```bash
+mkdir -p "$NONOKA_DEMO_ROOT/config"
+cp /安全位置/nonoka-demo.env "$NONOKA_DEMO_ROOT/config/.env"
+chmod 600 "$NONOKA_DEMO_ROOT/config/.env"
+```
+
+### 3.2 先下载再执行安装器
+
+```bash
 curl -fL \
   https://raw.githubusercontent.com/fyerfyer/Nonoka-cli/main/install.sh \
-  -o "$NONOKA_USER_ROOT/install.sh"
+  -o "$NONOKA_DEMO_ROOT/install.sh"
 
-bash "$NONOKA_USER_ROOT/install.sh" --help
-bash "$NONOKA_USER_ROOT/install.sh" \
-  --uv --yes \
-  --npm-opencode \
-  --opencode-version 1.18.9 \
-  --cli-version <已发布的 CLI 版本>
+bash "$NONOKA_DEMO_ROOT/install.sh" --help
+UV_CACHE_DIR="$NONOKA_DEMO_ROOT/uv-cache" \
+bash "$NONOKA_DEMO_ROOT/install.sh" \
+  --uv --yes --npm-opencode \
+  --install-dir "$NONOKA_DEMO_ROOT/install" \
+  --config-dir "$NONOKA_DEMO_ROOT/config" \
+  --npm-prefix "$NONOKA_DEMO_ROOT/npm" \
+  --opencode-version 1.18.10 \
+  --cli-version 0.2.13
 ```
 
-先下载、查看参数、再执行，比直接 `curl | bash` 更容易说明供应链边界。如果面试官希望看一行安装，可以补充展示：
+如果要在现场展示交互选择，去掉 `--yes` 和三个目录参数。安装器会逐项显示
+“这里存什么 + 示例 + 默认值”，输入自定义路径或直接按 Enter 即可。
+
+先落盘审阅比 `curl | bash` 更容易解释供应链边界。源码预览安装必须 clone 相邻的 `nonoka-agent` 与 `nonoka-cli` checkout 后使用 `--dev`，不能对 raw 脚本直接传 `--dev`。
+
+如果面试前的新修复尚未发布，在同一个 venv 中覆盖为相邻 checkout 的 editable 版本，并明确称为“源码候选版”：
 
 ```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/fyerfyer/Nonoka-cli/main/install.sh |
-  bash -s -- --uv --yes --cli-version <已发布的 CLI 版本>
+uv pip install --python "$NONOKA_DEMO_ROOT/install/.venv/bin/python" \
+  -e /home/fyerfyer/fyerfyer/Projects/nonoka-agent \
+  -e /home/fyerfyer/fyerfyer/Projects/nonoka-cli
 ```
 
-将预先准备的 key 文件复制到临时 HOME 时，不要输出文件内容：
+### 3.3 安装验收
+
+更新后的 editable 版本已经补齐统一入口。现场使用：
 
 ```bash
-mkdir -p "$HOME/.config/nonoka"
-cp /安全位置/nonoka-demo.env "$HOME/.config/nonoka/.env"
-chmod 600 "$HOME/.config/nonoka/.env"
+NONOKA="$NONOKA_DEMO_ROOT/install/bin/nonoka"
+NONOKA_PYTHON="$NONOKA_DEMO_ROOT/install/.venv/bin/python"
+OPENCODE="$NONOKA_DEMO_ROOT/install/npm/bin/opencode"
+
+"$NONOKA" --version
+"$OPENCODE" --version
+"$NONOKA" doctor
 ```
 
-### 4.2 尚未发布时的 GitHub 源码路径
+这三个只是当前 shell 的普通变量，不会污染子进程环境；也可以始终输入上面的
+绝对路径。launcher 会在内部设置 venv、配置目录、npm prefix 和 PATH。
 
-`--dev` 必须在完整 checkout 中运行；不能对 raw `install.sh` 使用 `--dev`。CLI 和 Agent 应保持相邻目录：
+旧版 0.2.11 的 `nonoka-cli --version` 会报 `unrecognized arguments: --version`；这是本次彩排发现并已在源码中修复的问题。
 
-```bash
-export NONOKA_SOURCE_ROOT=/tmp/nonoka-source-install
-mkdir -p "$NONOKA_SOURCE_ROOT"
-cd "$NONOKA_SOURCE_ROOT"
+## 4. 创建“已有项目”baseline
 
-git clone --depth 1 \
-  https://github.com/fyerfyer/Nonoka-agent.git nonoka-agent
-git clone --depth 1 \
-  https://github.com/fyerfyer/Nonoka-cli.git nonoka-cli
-
-uv venv "$NONOKA_SOURCE_ROOT/.venv" --python 3.13
-export VIRTUAL_ENV="$NONOKA_SOURCE_ROOT/.venv"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
-
-cd "$NONOKA_SOURCE_ROOT/nonoka-cli"
-NONOKA_AGENT_ROOT="$NONOKA_SOURCE_ROOT/nonoka-agent" \
-  bash ./install.sh --dev --uv --yes
-```
-
-### 4.3 安装验收
+从仓库复制的只是故意带 Bug 的业务项目，不复制预制 capabilities：
 
 ```bash
-nonoka-cli --version
-opencode --version
-nonoka-cli doctor
-```
-
-讲解重点：`doctor` 不只是检查二进制，还检查 framework/provider/bridge protocol/config/API key 和 OpenCode provider 配置。
-
-## 5. 第二幕：进入一个已有代码仓库
-
-获取只包含业务代码和故意失败测试的 ParcelWatch baseline。不要复制本目录的 `capabilities/`，因为这一幕要让 Agent 自己创建能力：
-
-```bash
-export NONOKA_ASSET_ROOT=/tmp/nonoka-demo-assets
-export NONOKA_PROJECT=/tmp/nonoka-live-project
-
-git clone --depth 1 \
-  https://github.com/fyerfyer/Nonoka-cli.git "$NONOKA_ASSET_ROOT"
+NONOKA_SOURCE=/home/fyerfyer/fyerfyer/Projects/nonoka-cli
+NONOKA_PROJECT="$NONOKA_DEMO_ROOT/project"
 mkdir -p "$NONOKA_PROJECT"
-cp -R "$NONOKA_ASSET_ROOT/examples/interview-demo/project/." "$NONOKA_PROJECT/"
+cp -R "$NONOKA_SOURCE/examples/interview-demo/project/." "$NONOKA_PROJECT/"
 
 cd "$NONOKA_PROJECT"
 git init -q
@@ -142,89 +134,196 @@ git add .
 git -c user.name='Nonoka Demo' -c user.email='demo@nonoka.local' \
   commit -qm 'parcelwatch baseline'
 
-uv pip install --python "$VIRTUAL_ENV/bin/python" -e .
-pytest -q
+uv pip install --python "$NONOKA_PYTHON" -e . pytest
+"${NONOKA_PYTHON%/python}/pytest" -q
 ```
 
-此时预期是稳定的 `3 failed`。这一步先向面试官证明 bug 已存在，而不是让 Agent 修改一个没有验收标准的空目录。
+预期输出必须是：
 
-### 5.1 创建项目本地配置
+```text
+3 failed
+```
 
-务必显式使用项目本地配置，不要依赖全局配置发现顺序：
+讲解话术：
+
+> 我先固定失败基线，避免演示变成“模型改了很多，但没有可验证验收标准”。这个仓库也已经提交 baseline，便于明确区分用户原有内容和 Agent 修改。
+
+## 5. 初始化项目配置
+
+当前查找顺序已经是：
+
+```text
+显式 --config > <cwd>/nonoka.yaml > ~/.config/nonoka/config.yaml
+```
+
+项目配置优先于全局配置是合理的；现场仍显式传路径，让命令、OpenCode provider 与 bridge 使用同一文件：
 
 ```bash
-nonoka-cli config init \
+"$NONOKA" config init \
   --config ./nonoka.yaml \
   --yes \
   --model deepseek/deepseek-v4-pro \
   --auto-approve
-
-nonoka-cli opencode init \
-  --config ./nonoka.yaml \
-  --cwd . \
-  --yes
-
-nonoka-cli doctor --config ./nonoka.yaml
 ```
 
-启动第一轮 TUI：
+### 5.1 sandbox 缺陷、源码修复与发布版兼容
 
-```bash
-nonoka-cli run --config ./nonoka.yaml --cwd .
-```
-
-## 6. 第三幕：用自然语言让 Agent 建立能力
-
-这一轮只创建项目能力，不修业务 bug。把下面整段作为第一条自然语言消息发送给 OpenCode：
+0.2.11 的默认配置是 `sandbox: auto`、`required: true`，但 `doctor` 与 `run` 对 `auto` 的解析不一致：doctor 会在无 SRT 时回退 Docker，而 `run` 只接受 SRT。因此 Docker 检查全绿时，启动仍可能报：
 
 ```text
-请先把当前已有仓库配置成一个可验证的 Nonoka 项目，但暂时不要修复 ParcelWatch 的业务代码和失败测试。
-
-请先检查仓库、现有 nonoka.yaml 和已安装的 Nonoka 配置格式，然后完成以下工作：
-
-1. 在 .nonoka/mcp/ 下创建一个轻量、无额外网络依赖的 stdio MCP Server。它必须实现 initialize、notifications/initialized、ping、tools/list 和 tools/call，并暴露 get_reconciliation_contract 工具，返回 carrier-feed 的权威约束。
-2. 在 .agents/skills/reconciliation-workflow/ 下创建一个标准 SKILL.md，以及一个可调用的 check_transition Skill Tool，用于检查 CREATED -> IN_TRANSIT -> DELIVERED 状态转换。
-3. 在 .nonoka/tools/ 下创建 profile_feed 自定义 Python Tool。它应只读分析 JSONL，返回行数、malformed 行号、重复 event_id 和时区后缀。
-4. 更新项目根目录的 nonoka.yaml：加入上述 mcp_servers、skills 和 tool_paths；使用相对项目根目录的路径；保留现有 model、预算、安全和 git 设置。
-5. 创建一个有界的 verify_capabilities.py。它必须真实启动 MCP 子进程、完成工具发现，并分别调用 MCP Tool、Skill Tool 和 custom Tool；不能只检查文件存在。
-6. 运行 Python 语法检查和 capability verifier。不要修改 src/parcelwatch 或 tests。
-7. 最后明确告诉我哪些能力需要重启 OpenCode/Nonoka 后才会进入下一次模型上下文。
-
-直接编辑工作区并验证，不要只给示例代码或补丁文本。
+Error: required SRT sandbox is unavailable.
 ```
 
-### 为什么需要人工重启
+安装 `@anthropic-ai/sandbox-runtime` 后又会出现第二个问题：外层 TUI 已由 SRT 包裹，bridge 初始化再次执行 required SRT smoke test，形成嵌套 sandbox，可能因 `/tmp/claude/srt-mux-*.sock` 的 `EPERM` 失败。
 
-当前 server 在初始化时启动 YAML 中的 MCP，并据当时的 `tool_paths` 和 `skills` 构建 Agent。虽然代码中存在显式 `reload_config()`/`reload_tools()` API，但 OpenCode bridge 当前没有把它们暴露为自然语言可调用的运行时控制命令，也不会自动重启新增 MCP。
+更新后的源码会由外层 launcher 标记 SRT process-tree ownership；bridge required preflight 和 custom command 识别该 owner 后不再嵌套启动 SRT。`auto` 模式的 standalone command 在没有 SRT 时也会正确回退 Docker。源码候选版可以保持：
 
-因此第一轮结束后，应由演示者执行：
+```yaml
+safety:
+  enabled: true
+  sandbox: auto
+  required: true
+  allowed_domains:
+    - api.deepseek.com
+    - models.opencode.ai
+    - registry.npmjs.org
+```
+
+并安装 process-tree backend：
 
 ```bash
-git diff -- nonoka.yaml .nonoka .agents
-python verify_capabilities.py
-nonoka-cli doctor --config ./nonoka.yaml
-nonoka-cli opencode init --config ./nonoka.yaml --cwd . --yes
+npm install -g --prefix "$NONOKA_DEMO_ROOT/npm" @anthropic-ai/sandbox-runtime
+"$NONOKA" doctor --config ./nonoka.yaml --check-sandbox
 ```
 
-然后退出并重新启动：
+只有继续演示未修复的 PyPI 0.2.11 时，才使用本次实测过的临时兼容配置：保留外层 SRT，但关闭 bridge required preflight：
+
+```yaml
+safety:
+  enabled: true
+  sandbox: auto
+  required: false  # 仅为绕过 0.2.11 的双重 preflight 缺陷
+  allowed_domains:
+    - api.deepseek.com
+    - models.opencode.ai
+    - registry.npmjs.org
+```
+
+`required: false` 不是建议的生产安全默认值。答辩时说明源码已修掉嵌套 ownership 和 standalone fallback；后续还应让 `doctor` 与 TUI process-tree readiness 共用同一份面向宿主工具的诊断语义。
+
+SRT 网络默认 deny；空 allowlist 会让 `models.opencode.ai`、npm registry 或模型 API 返回 403。Linux SRT 长运行时还可能在项目根创建临时只读 mount point（例如 `.bashrc`、`.env`、`.gitconfig`），导致 OpenCode Git snapshot 报“can only add regular files”；SRT 退出会清理它们。若现场看到这类日志，应说明是宿主 snapshot 与长运行 sandbox mount 的交互，不要把临时占位提交进仓库。
+
+初始化 OpenCode 并检查：
 
 ```bash
-nonoka-cli run --config ./nonoka.yaml --cwd .
+"$NONOKA" init --config ./nonoka.yaml --cwd . --yes
+"$NONOKA" doctor --config ./nonoka.yaml
 ```
 
-这不是演示失败，而是一个清晰的生命周期边界：Agent 可以通过自然语言安装项目能力；新能力在下一次 runtime 初始化时生效。
+本次彩排发现旧实现的 `cli.auto_approve: true` 没有覆盖 `glob/grep`，并且 `CLIConfig` 缺少 `permissions` 字段，导致 YAML 覆盖项被静默忽略。更新后的源码已把 `permissions` 纳入 schema 和 round-trip 测试，并默认允许这两个只读工具。仍可在 YAML 中显式收紧某项，然后重新生成：
 
-## 7. 第四幕：让 Agent 使用新能力修复已有项目
+```yaml
+permissions:
+  glob: deny
+  bash: ask
+```
 
-重启后发送第二条自然语言消息：
+## 6. 第一轮：只生成能力文件，不修改生效配置
+
+先启动 TUI：
+
+```bash
+tmux new-session -s nonoka-interview
+cd "$NONOKA_PROJECT"
+"$NONOKA" run --config ./nonoka.yaml --cwd .
+```
+
+将下面整段作为第一条自然语言指令发送给 OpenCode：
+
+```text
+请把当前已有 ParcelWatch 仓库准备成一个可验证的 Nonoka 能力项目，但这一轮不要修改 nonoka.yaml，也不要修复 src/parcelwatch 或 tests。
+
+先检查仓库和已安装的 Nonoka Python API，然后只创建这些业务文件：
+
+1. 在 .nonoka/mcp/server.py 创建一个只依赖 Python 标准库的 stdio MCP Server。它实现 initialize、notifications/initialized、ping、tools/list 和 tools/call，暴露 get_reconciliation_contract，返回状态值、合法转换、first-valid-wins 去重、时区排序和 source-line 审计约束。
+2. 在 .agents/skills/reconciliation-workflow/ 创建标准 SKILL.md 和 check_transition.py。SKILL.md 必须有 name、description、tools 的 YAML frontmatter，tool entry 指向 check_transition.py:check_transition；Python 函数必须使用 from nonoka import tool 和 @tool。
+3. 在 .nonoka/tools/profile_feed.py 创建只读 custom Tool，也使用 from nonoka import tool 和 @tool。它分析 JSONL 并返回总行数、malformed 行号、重复 event_id 和时区后缀分布。
+4. 在项目根创建 verify_capabilities.py，但先不要运行。它应通过 ConfigLoader 读取 nonoka.yaml，真实启动 MCPManager，使用 AgentFactory 和 ToolLoader 发现能力，再分别 invoke MCP Tool、Skill Tool 和 custom Tool，最后 stop_all；不能只检查文件存在。
+5. 运行 py_compile 检查你创建的 Python 文件。最后列出建议写入 nonoka.yaml 的配置片段，但不要亲自写入该文件，也不要重启 runtime。
+
+直接编辑工作区，不要只返回示例或补丁文本。
+```
+
+为何不让 Agent 同时改 YAML：实测第一轮曾写成 `type: stdio` 和 mapping 形式的 `skills`。下一条消息触发 bridge 重载后，Pydantic 因缺少 `transport`、`skills` 不是 list 而拒绝启动，模型把自己的当前会话写坏，无法再收到错误并自修复。这是典型的配置自举陷阱。
+
+第一轮结束后退出 TUI。先人工检查：
+
+```bash
+git diff -- .nonoka .agents verify_capabilities.py
+python -m py_compile \
+  .nonoka/mcp/server.py \
+  .nonoka/tools/profile_feed.py \
+  .agents/skills/reconciliation-workflow/check_transition.py \
+  verify_capabilities.py
+```
+
+## 7. 人工事务式接线与能力验收
+
+用编辑器把以下经过实测的 schema 添加到 `nonoka.yaml`；注意字段名是 `transport`，`skills` 是字符串列表：
+
+```yaml
+mcp_servers:
+  parcelwatch:
+    transport: stdio
+    command: python3
+    args:
+      - .nonoka/mcp/server.py
+
+skills:
+  - reconciliation-workflow
+
+tool_paths:
+  - .nonoka/tools
+```
+
+然后按顺序运行：
+
+```bash
+"$NONOKA_PYTHON" verify_capabilities.py
+"$NONOKA" doctor --config ./nonoka.yaml
+"$NONOKA" init --config ./nonoka.yaml --cwd . --yes
+```
+
+verifier 的通过标准应同时包含发现与真实调用：
+
+```text
+Capability wiring OK: custom__profile_feed, load_skill, mcp__parcelwatch__get_reconciliation_contract, skill__reconciliation-workflow__check_transition
+Capability invocation OK: MCP contract, Skill transition, custom profiler
+```
+
+建议讲解：
+
+> YAML 写入本身不等于能力可用。这里先启动协议子进程、发现 schema、逐个 invoke，再重启 runtime 让新的工具集合进入下一次模型上下文。未来 CLI 应提供 scaffold 和“临时文件写入 → validate → 原子替换”，避免活跃会话被无效配置破坏。
+
+当前 bridge 没有把 `reload_config()`/`reload_tools()` 暴露成安全的自然语言控制面，MCP 也有进程生命周期，所以重启是明确的产品边界，不应包装成热加载。
+
+## 8. 第二轮：调用三类能力并修复 Bug
+
+重新启动：
+
+```bash
+"$NONOKA" run --config ./nonoka.yaml --cwd .
+```
+
+发送本次实测成功的原始话术：
 
 ```text
 现在修复 ParcelWatch 的 carrier-feed reconciliation，并把这次运行作为能力集成审计。
 
 开始改代码前必须：
-1. load reconciliation-workflow Skill，并调用它的 check_transition 工具检查至少一个合法和一个非法状态转换；
-2. 调用 product_contract MCP 的 get_reconciliation_contract 获取 carrier-feed 契约；
-3. 调用 custom profile_feed 分析 fixtures/carrier_feed.jsonl。
+1. load reconciliation-workflow Skill，并调用 skill__reconciliation-workflow__check_transition 检查至少一个合法和一个非法状态转换；
+2. 调用 mcp__parcelwatch__get_reconciliation_contract 获取 carrier-feed 契约；
+3. 调用 custom__profile_feed 分析 fixtures/carrier_feed.jsonl。
 
 然后检查现有源码和失败测试，修复以下行为：重复 event_id 必须 first-valid-wins；时区时间戳按同一时间线排序；非法状态跳转不能改变当前状态；所有拒绝项保留原始 source line；CLI JSON 必须确定性输出并以换行结束。
 
@@ -235,94 +334,99 @@ NONOKA_VERIFY=focused ../.venv/bin/pytest -q
 只有看到真实收集的测试通过后才结束，并总结根因、修改行为和精确测试结果。
 ```
 
-演示者应在 TUI 中指出这些可见事件：
+TUI 中应依次指出：
 
 - `load_skill`
-- `skill__reconciliation-workflow__check_transition`
-- `mcp__product_contract__get_reconciliation_contract`
+- `mcp__parcelwatch__get_reconciliation_contract`
+- 两次 `skill__reconciliation-workflow__check_transition`
 - `custom__profile_feed`
-- OpenCode 原生 `read` / `edit` / `bash` / `todowrite`
-- 最后的 focused verification receipt 和纯文本总结
+- OpenCode 原生 `read/edit/bash/todowrite`
+- typed focused verification receipt 与 termination success
 
-## 8. 演示后的人工验收
+2026-07-31 冷启动实测为 15 个 framework turns、约 4 分 26 秒，最终 `3 passed in 0.01s`。因此不要承诺在 10–15 分钟内现场完成依赖下载、两轮能力生成和 Bug 修复的全部流程。
+
+## 9. 独立验收：不要照读模型总结
+
+另开 `audit` 窗口：
 
 ```bash
+tmux new-window -t nonoka-interview -n audit
+cd "$NONOKA_PROJECT"
 git status --short
 git diff --stat
 git diff
 NONOKA_VERIFY=focused ../.venv/bin/pytest -q
 ```
 
-如果启用了 trace：
+实测模型最终总结声称“新增了 targeted boundary tests”，但 `git diff` 显示它没有修改测试。因此应说：
 
-```bash
-jq -c \
-  'select(.event=="execution_trace" and .trace.termination.success==true)' \
-  /tmp/nonoka-trace/trace-$(date +%Y%m%d).jsonl |
-  tail -1 |
-  jq '{termination:.trace.termination,
-       verification:.trace.verifications[-1],
-       tools:([.trace.tool_calls[]?.name] | unique)}'
+> Agent 的总结是调查线索，不是审计记录。我以 diff、独立 pytest 和 trace receipt 为准。
+
+trace 中还应核对：
+
+- 真实 tool names，而非只看自然语言声明；
+- verification receipt 是否有 collected tests 和 exit code；
+- termination 是否 success；
+- workspace attestation 是否对应当前 cwd。
+
+当前 provider trace 的 usage 仍可能是 `{}`，token/cost 展示为零。这是 P1 instrumentation gap，不能把零解释为“没有成本”，也不要现场估算一个数字。
+
+## 10. 正式面试的 10–15 分钟剪辑版
+
+完整冷启动适合说明，不适合全部直播。推荐时间分配：
+
+| 时间 | 现场动作 | 要证明的能力 |
+| --- | --- | --- |
+| 0–2 分钟 | 展示安装命令、版本和 `doctor` 结果 | 可安装性、依赖边界 |
+| 2–4 分钟 | baseline `3 failed`，讲 YAML 和三类能力 | 已有项目理解、可组合能力 |
+| 4–6 分钟 | 运行 capability verifier | 协议/工具真实可调用 |
+| 6–11 分钟 | 在预热 TUI 发送第二轮话术并观察 tool calls | agent harness、任务执行 |
+| 11–13 分钟 | 展示 diff 与独立 `3 passed` | 验证纪律、可审计性 |
+| 13–15 分钟 | 主动讲 sandbox/LSP/usage 三个缺口 | 工程判断、诚实边界 |
+
+准备三层兜底：
+
+1. 主路径：已经接线但代码仍是 baseline 的预热项目。
+2. 备份：同版本的成功 trace、provider/server 日志和最终 diff。
+3. 最坏情况：不再请求模型，运行 verifier 和独立测试，沿 trace 讲解完整链路。
+
+## 11. 已有代码目录的逻辑审查
+
+### 当前合理的行为
+
+- 配置优先级是显式路径、项目本地、用户全局，符合 locality 原则。
+- `run` 会检查 cwd 存在且为目录，并校验 `--config` 与 `opencode.json` 中 `configPath` 的一致性。
+- readiness banner 会展示配置、MCP/Skill/tool path 数量和 dirty path 数量。
+- `opencode init` 合并现有 `opencode.json`，保留未知顶层字段和已有顶层 model；自定义 build agent 文件不会被无条件覆盖。
+- repo map、git status、workspace attestation 和 typed verification receipt 能为已有仓库提供基础审计闭环。
+
+### 建议按优先级打磨
+
+#### P0：统一 sandbox resolution 和 ownership
+
+`doctor` 的 `auto` 会选 SRT 或 Docker，`run` 的外层包装只认 SRT，standalone command 又有另一条路径。抽成同一个 resolver，并只让外层 TUI或 bridge 中的一层负责 preflight/隔离。加入无 SRT + Docker、SRT、嵌套启动三条回归测试。
+
+#### P0：配置更新必须是事务
+
+能力注册应由 CLI scaffold/template 生成，Agent 只填业务内容。写入流程采用临时文件、schema validate、capability smoke、atomic replace；失败时保持旧配置和当前会话可用。
+
+#### P0：bridge 必须绑定初始化时的 Python 环境
+
+本次 editable smoke 发现旧的生成值 `serverCommand: ["nonoka-cli", "--server"]` 会再次按宿主 PATH 查找 CLI：即使用户用 venv 里的绝对路径执行 `nonoka init`，OpenCode 仍可能启动另一份全局 CLI，最终表现为 provider 未收到 bridge protocol acknowledgement。源码现已生成：
+
+```json
+"serverCommand": ["/active/venv/bin/python", "-m", "nonoka_cli", "--server"]
 ```
 
-## 9. 可选：从空目录创建新项目
+这样 init、provider 和 bridge 使用同一个 editable/venv 环境；doctor 也会校验该绝对 executable 是否存在。
 
-不建议在同一场面试里同时演示“从零创建”和“已有项目修 bug”，因为模型和依赖下载会占用时间。如果面试官更关心 greenfield，可以在空仓库发送：
+#### P1：已有配置 merge 可预览、可恢复
 
-```text
-请在当前空仓库创建一个最小但完整的 Python 包 parcelwatch：使用 src layout、argparse CLI 和 pytest。先写 README 中的验收标准和失败测试，再实现 JSONL carrier event reconciliation。要求 first-valid-wins、UTC 时间线排序、状态机校验、带 source line 的拒绝记录和确定性 JSON 输出。创建 pyproject.toml，安装到当前虚拟环境，最后运行 NONOKA_VERIFY=focused pytest -q。不要引入 Web 框架或数据库。
-```
+为 `opencode init` 增加 `--dry-run`/diff preview、写前备份和 managed-fields 列表。用户已有 deny 规则被重建或冲突时明确警告。
 
-已有项目修 bug 更适合展示代码理解、约束保留和验证纪律；从空目录创建更适合展示自主规划。现场选择一个作为主任务即可。
+#### P1：dirty worktree 提示要诚实
 
-## 10. 已有代码目录的当前行为审查
-
-### 当前做得比较好的部分
-
-- `opencode init` 会解析并合并已有 `opencode.json`，不会直接覆盖未知顶层字段。
-- 已有顶层 model 会被保留。
-- 自定义 `.opencode/agents/build.md` 不会被覆盖；只有 Nonoka 管理的文件会刷新。
-- repo map 和 git status 会在执行前注入上下文，Agent 能先看到已有仓库结构与 dirty 状态。
-- OpenCode provider 会对宿主 edit/bash 生成 workspace mutation receipt，focused pytest 生成 typed verification receipt。
-- 路径工具和 workspace attestation 会限制任务工作区，减少误改外部文件。
-
-### 建议优先做的简单优化
-
-#### P0：项目配置优先级
-
-当前隐式查找顺序是：显式 `--config` > 全局配置 > `./nonoka.yaml`。对于已有项目，更符合直觉的顺序通常是：
-
-```text
-显式 --config > ./nonoka.yaml > 全局配置
-```
-
-否则用户在项目内创建了 MCP/Skill 配置，却可能继续使用全局配置。修改前要增加兼容提示或迁移期 warning。面试演示暂时始终显式传入 `--config ./nonoka.yaml`。
-
-#### P0：不能只判断 opencode.json 是否存在
-
-`nonoka-cli run` 当前看到已有 `opencode.json` 就跳过初始化。建议至少验证：
-
-- `provider.nonoka` 是否存在；
-- `serverCommand` 和 `configPath` 是否有效；
-- provider 版本是否兼容；
-- 当前 model 是否真的指向 `nonoka/default`。
-
-如果不是，应提示用户执行 merge，或者提供 `--repair-opencode-config`，而不是静默启动一个可能没使用 Nonoka 的 TUI。
-
-#### P1：已有权限配置的合并预览
-
-`opencode init` 会保留大部分未知字段，但会重建 permission block，并强制关闭 OpenCode 原生 Skill 以避免命名空间冲突。建议增加：
-
-- `--dry-run` 或 diff preview；
-- 写入前备份；
-- 明确列出被 Nonoka 管理的字段；
-- 对用户已有 deny 规则给出冲突提示。
-
-#### P1：dirty worktree 的诚实提示
-
-当前 git status 会进入 Agent 上下文，但 OpenCode 原生 `edit` 并不经过 CLI standalone file tool 的 `GitService` checkpoint。因此不要宣称 `git.auto_checkpoint` 已覆盖所有宿主编辑。
-
-建议启动时展示：
+OpenCode native `edit` 不经过 standalone file tool 的 `GitService` checkpoint，不能声称 `git.auto_checkpoint` 覆盖所有宿主编辑。启动时可显示：
 
 ```text
 Existing repository: dirty (3 paths)
@@ -330,94 +434,175 @@ Host edits are workspace-attested; automatic Git checkpoint is not active for ho
 Recommended: commit/stash or continue explicitly.
 ```
 
-不要自动提交或 stash 用户已有修改。
+不要自动 stash、commit 或覆盖用户已有修改。
 
-#### P2：目录与语言预检
+#### P1：权限语义对齐
 
-对不存在的 `--cwd`、无写权限目录、非 Git 大仓库、未安装测试依赖分别给出准确提示。目前不存在的 cwd 可能被错误归类成 OpenCode executable 消失。
+本次已修复配置模型缺少 `permissions`、覆盖项被静默忽略及 `glob/grep` 未自动允许的问题，并增加 YAML → Pydantic → `opencode.json` round-trip 测试。后续仍建议生成配置前展示最终 permission matrix，并把 auto-approve 的精确范围写进 help。
 
-## 11. LSP 到底有没有用
+#### P2：可诊断性
 
-### 当前真实状态
+本次已补充标准 `--version`，并修复 `doctor` 在 `opencode --version` 超时后直接抛 traceback 的问题；诊断子进程现在把 timeout/OS error 转换为结构化检查结果。后续补充 `doctor --check-lsp`、config validate/scaffold，以及 trace 中的真实 repo-map backend、token/cost。错误信息应继续区分 cwd、OpenCode executable、provider、bridge、sandbox 与模型 API。
 
-Nonoka Core 有两处 LSP 相关实现：
+## 12. LSP 功能评估与答辩
 
-1. `lsp_document_symbols`：通过 `multilspy` 请求单个文件的 document symbols。
-2. repo map：当配置了 `repo_map.lsp_languages` 且安装了可用后端时，批量使用 LSP 提取符号；失败或超时后降级到 tree-sitter、ctags、regex。
+### 当前事实
 
-但是在当前 OpenCode external-tools 路径中：
+- `nonoka/tools/lsp.py` 有 `lsp_document_symbols`，通过可选 `multilspy` 请求单文件 symbols。
+- repo map 可尝试 LSP，失败或超时后降级到 tree-sitter、ctags、regex。
+- 2026-07-31 的 PyPI 冷启动环境没有 `multilspy`、tree-sitter、Python/TypeScript language-server binary；TUI 日志明确显示 OpenCode 的 LSP 全部 disabled。
+- standalone 工具集合包含 `lsp_document_symbols`，当前 OpenCode external-tools Agent 没有把它暴露为模型可见 bridge tool。
+- OpenCode native LSP 与 Nonoka repo-map LSP 是两个层次。本次成功修复依靠 repo map fallback、search/read 和真实测试，不依赖 LSP。
 
-- 独立的 `lsp_document_symbols` 没有注册成 `nonoka__...` bridge tool；
-- TUI 侧显示的 `LSPs are disabled` 是 OpenCode 自己的 LSP 状态，不是 Nonoka repo map 状态；
-- 默认 demo venv 没有安装 `multilspy`、tree-sitter 或语言服务，因此这次成功演示实际使用的是 repo-map regex fallback；
-- 开发环境虽然安装了 `multilspy/tree-sitter`，当前 PATH 中没有 `jedi-language-server`、`pyright-langserver` 等独立 binary。
+推荐答辩话术：
 
-所以面试时最准确的说法是：
+> Nonoka 的 LSP 是可选的 symbol-indexing enhancement，不是默认安装保证。默认可用能力是 repo map，并降级到 tree-sitter、ctags 或 regex；OpenCode native LSP 是宿主层的另一套能力。本次演示不依赖 LSP，最终正确性由真实测试和 verification receipt 证明。当前需要改进的是安装契约和 backend 可观测性，而不是宣称“代码里有 LSP 就已经生效”。
 
-> Nonoka 有可选 LSP-backed symbol indexing，但它不是当前默认安装和 OpenCode bridge 的强保证。默认能力是带缓存的 repo map，并有 tree-sitter/ctags/regex 降级；OpenCode 自己的 LSP 是另一个宿主能力。当前 demo 不依赖 LSP 才能成功。
+面试官可能继续问：
 
-### 建议的最小产品优化
+**“那为什么保留 LSP 代码？”**
 
-1. 增加 `nonoka-cli doctor --check-lsp`，输出依赖、语言、binary 和一次 document-symbol smoke test。
-2. 在 repo-map trace/cache 中记录实际 backend：`lsp`、`tree_sitter`、`ctags` 或 `regex`，避免“配置了 LSP 就认为已经用了”。
-3. 给 installer 增加明确的 `--repo-map` 或 `--lsp` extra 安装选项，而不是默认配置开启、依赖却未安装。
-4. 二选一明确产品边界：要么在 external-tools Agent 中条件注册 `nonoka__lsp_document_symbols`；要么正式声明代码诊断交给 OpenCode native LSP，Nonoka 只负责 repo map。
-5. 为 Python/TypeScript 各增加一个真实集成测试，断言 symbol 坐标和 backend，而不只断言输出里出现函数名。
+> 对大型仓库，结构化 symbol、definition/reference 能降低搜索噪声和上下文成本；但它必须是可检测、可降级的加速层，不能成为正确性的单点依赖。
 
-如果时间只够做一个改动，优先实现 `doctor --check-lsp` 加 backend 可观测性。这比直接安装更多 language server 更容易解释，也更符合“能力必须可证明”的设计原则。
+**“你怎么证明它真的工作？”**
 
-## 12. 面试官常见追问
+> 目前还不能从默认 demo 证明。最小闭环是 `doctor --check-lsp` 输出依赖、binary、语言和 document-symbol smoke test，并在 trace/cache 标记实际 backend。然后为 Python 和 TypeScript 各做一个真实坐标集成测试。
 
-### “为什么新增 MCP 后要重启？”
+**“会把它暴露给模型吗？”**
 
-因为 MCP 是有生命周期的子进程，Agent 的工具 schema 也在 runtime 初始化时生成。当前 bridge 没有暴露安全的动态重载控制面；重启能保证旧进程关闭、配置重新校验、tool schema 一致。后续可以做显式 reload transaction，但不应该偷偷热更新。
+> 产品边界需要二选一：要么条件注册 `nonoka__lsp_document_symbols`；要么明确由 OpenCode native LSP 提供交互诊断，Nonoka 只做 repo map。当前状态介于两者之间，需要收敛。
 
-### “Skill 和 prompt 有什么区别？”
+## 13. 结合当前 Agent 岗位 JD 的演示侧重点
 
-Skill 不只是长 prompt。它有标准目录、惰性加载入口、可携带脚本/参考材料，并可暴露带 schema 的工具。模型先调用 `load_skill`，再通过 `skill__<skill>__<tool>` 使用能力。
+检索日期为 2026-07-31，优先使用官方在招页面：
 
-### “为什么 MCP 不直接用 bash 调脚本？”
+- [Anthropic — Research Engineer, Agents](https://job-boards.greenhouse.io/anthropic/jobs/4017544008)：强调完成复杂任务的 LLM 项目、agent harness、memory/context、量化 benchmark 和 roadblocks。
+- [Anthropic — Research Engineer, Model Evaluations](https://job-boards.greenhouse.io/anthropic/jobs/5198255008)：强调 agentic eval、可靠评测平台、observability、retry/regression，以及区分 model、harness、data、infrastructure 问题。
+- [Anthropic — Engineering Manager, Agent Runtime Platform](https://job-boards.greenhouse.io/anthropic/jobs/5316593008)：强调安全隔离、credential-managed runtime、可组合 primitives、可靠性与运营质量。
 
-MCP 提供标准初始化、工具发现、JSON Schema 和结构化调用边界。bash 只能证明脚本能运行，不能证明 Agent 通过协议发现并调用了它。
+因此这场演示不要只突出“模型会写代码”，而要主动映射：
 
-### “已有代码安全吗？”
+| JD 关注点 | 演示证据 |
+| --- | --- |
+| Agent harness / composability | OpenCode host + Nonoka bridge + MCP/Skill/custom Tool |
+| Complex task / roadblocks | ParcelWatch 多约束 Bug，以及配置自举和 sandbox 缺陷复盘 |
+| Rigorous eval | 固定 baseline、真实 capability invoke、focused pytest、独立复验 |
+| Observability | typed receipts、tool names、termination、workspace attestation；坦白 usage 缺口 |
+| Secure runtime | allowlist、sandbox ownership 分析、凭据不进入参数/产物 |
+| Context efficiency | repo map 与可选 LSP/fallback，Skill 惰性加载 |
 
-回答应限定在已经实现的边界：OpenCode 工具受工作目录和 permission 控制；provider 生成 workspace attestation；Nonoka 使用验证收据和 completion contract。对于用户已有 dirty changes，目前应先提示并由用户选择，不能声称宿主 edit 已有完整自动 Git checkpoint。
+如果被问“这个项目最能体现你的判断是什么”，推荐回答：
 
-### “为什么不用 LSP 也能做代码任务？”
+> 我没有把一次成功轨迹当成产品完成。我把模型、harness、配置、sandbox、provider 和 verifier 分层验证；例如模型说加了测试但 diff 并没有，我以独立测试和 trace 为准。这个区分能力比单次 demo 的成功更重要。
 
-repo map、精确搜索、文件读取和测试反馈已经构成可靠的基础闭环。LSP 能提高符号定位和诊断质量，但不是正确性的唯一来源；最终正确性仍由真实测试和 typed verification receipt 证明。
+## 14. 常见追问的短答
 
-## 13. 故障兜底
+**为什么 MCP 新增后要重启？**
 
-### 模型 API 或现场网络失败
+MCP 是有生命周期的子进程，Agent tool schema 在 runtime 初始化时构建。当前没有安全的动态 reload transaction；重启能确保旧进程关闭、配置重新校验和 schema 一致。
+
+**Skill 和 prompt 有什么不同？**
+
+Skill 有标准目录和 frontmatter，可惰性加载说明、携带参考资料，并暴露带 schema 的 namespaced Tool。模型先 `load_skill`，再调用 `skill__<skill>__<tool>`。
+
+**为什么 MCP 不直接用 bash 调脚本？**
+
+MCP 提供初始化、发现、JSON Schema 和结构化调用边界。bash 只能证明脚本能跑，不能证明 runtime 经协议发现并调用它。
+
+**已有代码安全吗？**
+
+现有边界包括 cwd/permission、workspace attestation、验证收据和 completion contract。对 dirty changes 只提示、不自动 stash；宿主 native edit 目前没有完整自动 Git checkpoint，不能过度承诺。
+
+**为什么失败测试命令写 `../.venv/bin/pytest`？**
+
+本次 venv 位于项目同级的临时根目录；精确路径让 trace 能判定 focused runner，也避免意外使用系统 pytest。若目录结构不同应按实际 venv 调整。
+
+## 15. 现场故障树
+
+### 启动报 required SRT unavailable
+
+确认 `doctor` 与 `run` 的 backend 不一致问题，使用第 5.1 节的已记录演示 workaround；不要临场反复安装组件。
+
+### 模型 API、npm 或 OpenCode metadata 返回 403
+
+检查 SRT `allowed_domains` 是否包含模型 API、`models.opencode.ai` 和 registry。不要打印 key。
+
+### MCP/Skill/custom Tool 不可见
+
+依次检查：
 
 ```bash
-cd /tmp/nonoka-interview-demo
-./verify-wiring.sh
-tmux attach -t nonoka-interview-final3
+"$NONOKA_PYTHON" verify_capabilities.py
+"$NONOKA" doctor --config ./nonoka.yaml
+"$NONOKA" init --config ./nonoka.yaml --cwd . --yes
 ```
 
-说明这是之前同版本的成功演练，然后展示 trace 中的实际工具名和 verification receipt。
+然后退出旧 session 并重新启动；不要在旧上下文里反复要求模型调用不存在的 Tool。
 
-### MCP 没有加载
+### YAML 写坏导致 bridge 起不来
 
-1. 确认使用的是项目配置：`nonoka-cli doctor --config ./nonoka.yaml`。
-2. 检查 MCP command 是否使用当前虚拟环境的 Python。
-3. 直接运行 `python verify_capabilities.py`。
-4. 退出并重新启动 OpenCode；不要在旧 session 中反复要求模型调用不存在的 tool。
+对照第 7 节 schema：`transport` 不是 `type`，`skills` 是 list。恢复上一个已验证配置，再运行 verifier；未来产品用 atomic config transaction 解决。
 
 ### TUI 显示 LSP disabled
 
-不要临时下载一套语言服务拖慢演示。说明 OpenCode native LSP 与 Nonoka repo map 是两个能力层；本任务通过 repo map/search/tests 完成，LSP 不属于本次验收前提。
+这是预期可解释状态。说明 OpenCode native LSP 与 Nonoka repo map 的边界，本次验收不依赖 LSP。
+
+### 模型超时或现场网络不稳定
+
+停止继续消耗时间，展示同版本成功 trace、provider/server 日志和最终 diff；现场再运行 capability verifier 与独立 pytest，仍可完整证明协议接线和结果。
 
 ### 恢复 baseline
+
+只在专用 demo 仓库内执行：
 
 ```bash
 cd "$NONOKA_PROJECT"
 git restore .
 git status --short
-pytest -q  # 应重新出现 3 failed
+"${NONOKA_PYTHON%/python}/pytest" -q  # 应重新出现 3 failed
 ```
 
-只恢复本次 demo 的已跟踪文件，不对包含用户资料的宽泛目录执行清理命令。
+不要对工作区根目录或包含个人资料的目录执行递归清理。
+
+## 16. 本次真实彩排记录
+
+隔离根目录：`/tmp/nonoka-interview-audit-5AZGUr`。
+
+冷启动结果：
+
+```text
+PyPI/npm install: success
+doctor after Docker access: all green
+baseline: 3 failed in 0.03s
+capability discovery and invocation: passed
+TUI framework turns: 15
+TUI duration: 4m 26s
+focused verification: 3 passed in 0.01s
+independent verification: 3 passed in 0.01s
+termination: success
+usage: {}  # 未采集，不解释为零成本
+```
+
+修复后的 editable smoke（Python 3.13.9）还验证了：
+
+```text
+nonoka --version: 0.2.13
+nonoka init: provider 0.2.17 installed and config generated
+generated serverCommand: <editable-venv>/bin/python -m nonoka_cli --server
+top/build permissions: glob + grep allowed; YAML override round-trip passed
+outer SRT -> provider -> interpreter-pinned bridge: handshake passed
+model response: NONOKA_EDITABLE_SMOKE_OK
+completion guard: correctly rejected the deliberately unverified no-tool response
+```
+
+保留的本机证据：
+
+```text
+/tmp/nonoka-interview-audit-5AZGUr/artifacts/provider-phase1.log
+/tmp/nonoka-interview-audit-5AZGUr/artifacts/provider-phase2.log
+/tmp/nonoka-interview-audit-5AZGUr/artifacts/server-phase1.log
+/tmp/nonoka-interview-audit-5AZGUr/artifacts/server-phase2.log
+/tmp/nonoka-interview-audit-5AZGUr/artifacts/traces-phase2/trace-20260731.jsonl
+```
+
+这些 `/tmp` 路径只适用于当前机器且可能被系统清理。正式面试前应把去敏后的 trace、版本清单、diff 和测试输出复制到受控的演示 artifacts 目录，并再次确认不含 API key、HOME 真实路径或其他个人信息。

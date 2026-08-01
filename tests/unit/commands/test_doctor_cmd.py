@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -73,6 +74,21 @@ class TestCheckNonokaCliVersion:
     result = check_nonoka_cli_version()
     assert result.status == "ok"
     assert "nonoka-cli" in result.message
+
+
+class TestCheckOpenCode:
+  def test_timeout_is_an_actionable_error(self):
+    with mock.patch(
+      "nonoka_cli.commands.doctor_cmd.shutil.which", return_value="/bin/opencode",
+    ), mock.patch(
+      "nonoka_cli.commands.doctor_cmd.subprocess.run",
+      side_effect=subprocess.TimeoutExpired(["opencode", "--version"], 5),
+    ):
+      result = check_opencode()
+
+    assert result.status == "error"
+    assert "timed out" in result.message
+    assert "opencode --version" in result.remedy
 
 
 class TestCheckConfig:

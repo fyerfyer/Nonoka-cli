@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -196,6 +196,7 @@ class CLIConfig(BaseModel):
   system_prompt: str = ""
   api_key: str = ""
   base_url: str = ""
+  permissions: dict[str, Literal["ask", "allow", "deny"]] = Field(default_factory=dict)
   mcp_servers: dict[str, MCPServerConfigModel] = Field(default_factory=dict)
   tool_paths: list[Path] = Field(default_factory=list)
   skills: list[str] = Field(default_factory=list)

@@ -508,10 +508,20 @@ async def execute_command(
   sandbox_mode = getattr(getattr(ctx.deps, "config", None), "safety", None)
   selected_sandbox = getattr(sandbox_mode, "sandbox", None)
   if selected_sandbox in {"docker", "srt", "auto"}:
+    from nonoka_cli.safety import active_process_sandbox
+    if active_process_sandbox():
+      # The entire OpenCode/bridge process tree is already isolated. Running
+      # another SRT inside it fails on the nested mux socket and adds no boundary.
+      selected_sandbox = None
+  if selected_sandbox in {"docker", "srt", "auto"}:
     from nonoka_cli.safety import DockerSandbox, SrtSandbox
     try:
-      backend = DockerSandbox() if selected_sandbox == "docker" else SrtSandbox(
-        getattr(sandbox_mode, "allowed_domains", []),
+      if selected_sandbox == "auto":
+        selected_sandbox = "srt" if SrtSandbox.executable() else "docker"
+      backend = (
+        DockerSandbox()
+        if selected_sandbox == "docker"
+        else SrtSandbox(getattr(sandbox_mode, "allowed_domains", []))
       )
       code, output = await backend.run(command, working_dir, timeout)
       status = "success" if code == 0 else "error"

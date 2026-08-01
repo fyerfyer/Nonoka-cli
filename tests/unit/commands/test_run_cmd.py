@@ -128,6 +128,27 @@ def test_run_one_shot_message_mode(tmp_path: Path, monkeypatch):
     )
 
 
+def test_run_marks_outer_srt_ownership_for_bridge(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    config = CLIConfig(safety=SafetyConfig(enabled=True, sandbox="srt", required=True))
+    monkeypatch.setattr(run_cmd.ConfigLoader, "load", lambda *_: config)
+    monkeypatch.setattr(run_cmd.SrtSandbox, "executable", lambda _self: "/bin/srt")
+    settings = tmp_path / "srt-settings.json"
+    settings.write_text("{}")
+    monkeypatch.setattr(run_cmd.SrtSandbox, "settings", lambda _self, _cwd: settings)
+    _write_ready_project(tmp_path)
+
+    args = argparse.Namespace(config=None, cwd=str(tmp_path), message="hello")
+    with patch.object(run_cmd, "subprocess") as mock_subprocess:
+        mock_subprocess.run.return_value.returncode = 0
+        assert run_cmd.launch_tui(args) == 0
+
+    call = mock_subprocess.run.call_args
+    assert call.args[0][:3] == ["/bin/srt", "--settings", str(settings)]
+    assert call.kwargs["env"][run_cmd.PROCESS_SANDBOX_ENV] == "srt"
+    assert not settings.exists()
+
+
 def test_run_propagates_init_failure(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
 
