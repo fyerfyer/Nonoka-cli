@@ -1767,9 +1767,10 @@ dev = [
 
 [[package]]
 name = "nonoka-cli"
-version = "0.2.29"
+version = "0.2.30"
 source = { editable = "." }
 dependencies = [
+    { name = "mcp" },
     { name = "nonoka" },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -1789,6 +1790,7 @@ repo-map = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mcp", specifier = ">=1.27.2,<2" },
     { name = "nonoka", editable = "../nonoka-agent" },
     { name = "nonoka", extras = ["repo-map"], marker = "extra == 'repo-map'", editable = "../nonoka-agent" },
     { name = "pydantic", specifier = ">=2.0" },

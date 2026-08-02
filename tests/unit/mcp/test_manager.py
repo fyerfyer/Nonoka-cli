@@ -56,3 +56,25 @@ async def test_start_all_bounds_a_slow_mcp_process(monkeypatch) -> None:
 async def test_start_all_returns_without_touching_manager_when_no_servers() -> None:
   manager = MCPManager()
   assert await manager.start_all({}) == []
+
+
+def test_stdio_config_forwards_only_required_srt_runtime_environment(monkeypatch) -> None:
+  from nonoka_cli.mcp.manager import _to_agent_config
+
+  monkeypatch.setenv("NPM_CONFIG_CACHE", "/workspace/.nonoka/npm-cache")
+  monkeypatch.setenv("HTTPS_PROXY", "http://sandbox-proxy.invalid:4444")
+  monkeypatch.setenv("SSL_CERT_FILE", "/tmp/srt-ca.pem")
+  monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-forwarded")
+  monkeypatch.setenv("UNRELATED_VALUE", "must-not-be-forwarded")
+
+  config = _to_agent_config(
+    MCPServerConfigModel(transport="stdio", command="npx")
+  )
+
+  assert {
+    "NPM_CONFIG_CACHE": "/workspace/.nonoka/npm-cache",
+    "HTTPS_PROXY": "http://sandbox-proxy.invalid:4444",
+    "SSL_CERT_FILE": "/tmp/srt-ca.pem",
+  }.items() <= (config.env or {}).items()
+  assert "OPENAI_API_KEY" not in (config.env or {})
+  assert "UNRELATED_VALUE" not in (config.env or {})

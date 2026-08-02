@@ -9,6 +9,7 @@ presents status in the CLI-specific ``MCPStatus`` format.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from nonoka.core.types import Capability
@@ -30,12 +31,47 @@ from nonoka_cli.mcp.models import MCPStatus
 from nonoka_cli.utils.errors import MCPConnectionError, MCPRestartExhaustedError
 
 
+_STDIO_RUNTIME_ENV_NAMES = (
+  # The MCP SDK intentionally starts stdio servers with a restricted default
+  # environment.  Keep the same safety property while preserving the routing,
+  # TLS, and npm-cache state that an outer SRT process-tree sandbox injects.
+  # Without these values, an `npx` MCP bypasses SRT's proxy and either retries
+  # DNS until its startup timeout or writes its cache under `~/.npm`.
+  "NPM_CONFIG_CACHE",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "NODE_EXTRA_CA_CERTS",
+)
+
+
+def _stdio_runtime_env() -> dict[str, str] | None:
+  """Return the minimal inherited environment required by stdio MCPs.
+
+  This deliberately does not forward provider keys or arbitrary user process
+  state.  MCP SDK merges this mapping with its own safe default environment.
+  """
+  env = {
+    name: value
+    for name in _STDIO_RUNTIME_ENV_NAMES
+    if (value := os.environ.get(name)) is not None
+  }
+  return env or None
+
+
 def _to_agent_config(config: MCPServerConfigModel) -> MCPServerConfig:
   """Convert CLI Pydantic config to nonoka-agent's dataclass."""
   return MCPServerConfig(
     transport=config.transport,  # type: ignore[arg-type]
     command=config.command,
     args=list(config.args),
+    env=_stdio_runtime_env() if config.transport == "stdio" else None,
   )
 
 
