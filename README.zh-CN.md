@@ -133,7 +133,7 @@ nonoka-cli doctor
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.22
+✓ nonoka-cli 0.2.23
 ✓ Python 3.11
 ✓ opencode 1.18.2
 ✓ provider nonoka-opencode-provider@0.2.20
