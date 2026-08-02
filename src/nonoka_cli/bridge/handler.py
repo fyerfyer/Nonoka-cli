@@ -552,14 +552,29 @@ class ChatRequestHandler:
     msg: ChatRequest,
     output_policy: ToolOutputPolicy | None = None,
   ) -> dict[str, Any] | None:
-    """Parse plain tool results from incoming role='tool' messages.
+    """Parse the current plain tool-result batch from a host request.
 
     OpenCode returns tool results as ``role='tool'`` messages with a
-    ``tool_call_id``. We skip approval-response parts (handled separately)
-    and collect the latest result for each tool_call_id. Results whose id
-    does not match a pending tool_call from the latest assistant message are
-    dropped to avoid misalignment.
+    ``tool_call_id``.  Only a trailing, contiguous batch is a resume signal:
+    a regular new user turn can contain a complete historical transcript,
+    including many old results.  Treating those old results as fresh caused a
+    restarted provider to resume a completed mutation and fail workspace
+    attestation checks.
+
+    We skip approval-response parts (handled separately) and collect the
+    latest result for each current tool_call_id. Results whose id does not
+    match a pending tool_call from the latest assistant message are dropped
+    to avoid misalignment.
     """
+    trailing_tool_messages: list[ChatMessage] = []
+    for message in reversed(msg.messages):
+      if message.role != "tool":
+        break
+      trailing_tool_messages.append(message)
+
+    if not trailing_tool_messages:
+      return None
+
     pending_ids = ChatRequestHandler._extract_pending_tool_call_ids(msg)
     tool_names: dict[str, str] = {}
     for message in reversed(msg.messages):
@@ -567,8 +582,8 @@ class ChatRequestHandler:
         tool_names = {tc.id: tc.name for tc in message.tool_calls}
         break
     results: dict[str, Any] = {}
-    for m in msg.messages:
-      if m.role != "tool" or not m.tool_call_id or (not m.content and m.result is None):
+    for m in reversed(trailing_tool_messages):
+      if not m.tool_call_id or (not m.content and m.result is None):
         continue
       # Skip approval-response payloads.
       try:

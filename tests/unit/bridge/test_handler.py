@@ -303,6 +303,43 @@ async def test_handle_with_external_tools_resumes(handler, sent):
       assert len(call_kwargs["tools"]) == 1
 
 
+async def test_handle_with_external_tools_ignores_historical_results(handler, sent):
+  """A new turn after a restart must not resume a historical tool call."""
+  with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
+    with patch.object(handler, "_apply_session", new=AsyncMock()):
+      orc = MagicMock()
+      orc.session_id = "sess-1"
+      orc.execute_with_external_tools = MagicMock(return_value=async_empty())
+      orc.resume_external_tools = MagicMock(return_value=async_empty())
+      handler._orchestrator = orc
+      handler._session_id = "sess-1"
+
+      msg = ChatRequest(
+        messages=[
+          ChatMessage(role="user", content="inspect the config"),
+          ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="call_old", name="edit", arguments="{}")],
+          ),
+          ChatMessage(role="tool", content="edited", tool_call_id="call_old"),
+          ChatMessage(role="user", content="continue with the next step"),
+        ],
+        tools=[
+          ExternalToolDefinition(
+            name="edit",
+            description="Edit a file",
+            parameters={"type": "object", "properties": {}},
+          )
+        ],
+      )
+      await handler.handle(msg)
+
+      orc.execute_with_external_tools.assert_called_once()
+      assert orc.execute_with_external_tools.call_args.kwargs["prompt"] == "continue with the next step"
+      orc.resume_external_tools.assert_not_called()
+
+
 async def test_handle_with_external_tools_passes_host_system_prompt(handler, sent):
   with patch.object(handler, "_ensure_orchestrator", new=AsyncMock()):
     with patch.object(handler, "_apply_session", new=AsyncMock()):
