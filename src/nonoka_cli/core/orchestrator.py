@@ -624,7 +624,6 @@ class Orchestrator:
 
     agent = self._agent_factory.build_with_external_tools(
       tools,
-      request_prompt=prompt,
       cwd=cwd,
       host_system_prompt=host_system_prompt,
       external_mcp_servers=external_mcp_servers,

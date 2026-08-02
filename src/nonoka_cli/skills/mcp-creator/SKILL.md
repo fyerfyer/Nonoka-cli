@@ -1,13 +1,6 @@
 ---
 name: mcp-creator
 description: Configure a project MCP server safely in Nonoka and validate it after reload.
-metadata:
-  activation:
-    mode: required
-    triggers:
-      - mcp
-      - model context protocol
-      - context7
 ---
 
 # MCP Creator
