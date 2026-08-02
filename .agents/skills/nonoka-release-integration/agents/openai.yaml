@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nonoka Release Integration"
+  short_description: "Validate a released installer in a real OpenCode TUI."
+  default_prompt: "Use $nonoka-release-integration to install the latest release and run this end-to-end task."

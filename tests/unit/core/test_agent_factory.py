@@ -297,7 +297,7 @@ def test_default_skill_registry_includes_builtin_configuration_skills(tmp_path):
   }
 
 
-def test_mcp_creator_skill_requires_complete_stdio_configuration():
+def test_mcp_creator_skill_requires_complete_stdio_and_srt_configuration():
   skill_path = (
     Path(__file__).resolve().parents[3]
     / "src"
@@ -311,6 +311,9 @@ def test_mcp_creator_skill_requires_complete_stdio_configuration():
 
   assert "transport: stdio" in contents
   assert "startup_timeout_seconds" in contents
+  assert "safety.network_profile" in contents
+  assert "package-registries" in contents
+  assert "safety.allowed_domains" in contents
 
 
 @pytest.mark.asyncio
