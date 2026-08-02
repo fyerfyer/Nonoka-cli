@@ -189,6 +189,24 @@ async def test_build_with_external_tools_injects_cwd():
 
 
 @pytest.mark.asyncio
+async def test_build_with_external_tools_injects_active_config_path():
+  config = CLIConfig(model="gpt-4o")
+  factory = AgentFactory(config, config_path="/tmp/workspace/nonoka/config/config.yaml")
+  tools = [
+    AgentFactory.create_external_tool_capability(
+      name="bash",
+      description="Run shell commands",
+      parameters={"type": "object", "properties": {}},
+    )
+  ]
+
+  agent = factory.build_with_external_tools(tools, cwd="/tmp/workspace")
+
+  assert "## Active Nonoka Configuration" in agent.system_prompt
+  assert "`/tmp/workspace/nonoka/config/config.yaml`" in agent.system_prompt
+
+
+@pytest.mark.asyncio
 async def test_build_with_external_tools_uses_host_system_prompt_fallback():
   config = CLIConfig(model="gpt-4o")
   factory = AgentFactory(config)

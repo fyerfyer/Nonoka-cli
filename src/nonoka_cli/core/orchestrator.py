@@ -207,6 +207,7 @@ class Orchestrator:
       tool_loader=self._tool_loader,
       allowed_tools=allowed_tools,
       project_agent_tools=self._project_agent_tools,
+      config_path=self._config_manager.config_path if self._config_manager else None,
     )
 
     # Build optional context blocks for the system prompt.

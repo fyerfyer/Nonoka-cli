@@ -65,6 +65,7 @@ class SystemPromptBuilder:
     base: str,
     model: str,
     cwd: str | Path | None = None,
+    config_path: str | Path | None = None,
     host_tools: list[str] | None = None,
     nonoka_tools: list[str] | None = None,
     external_mcp_tools: list[str] | None = None,
@@ -83,6 +84,7 @@ class SystemPromptBuilder:
     base: Base system prompt (config, host, or default).
     model: Model identifier injected as an identity line.
     cwd: Current working directory to inject path guidance.
+    config_path: Authoritative config file used by this running CLI instance.
     host_tools: Host native tool names available to the model.
     nonoka_tools: Local bridge capabilities executed directly by nonoka.
     external_mcp_tools: Prefixed external MCP tool names.
@@ -102,6 +104,7 @@ class SystemPromptBuilder:
     self._base = base
     self._model = model.strip()
     self._cwd = cwd
+    self._config_path = config_path
     self._host_tools = host_tools or []
     self._nonoka_tools = nonoka_tools or []
     self._external_mcp_tools = external_mcp_tools or []
@@ -127,6 +130,10 @@ class SystemPromptBuilder:
     cwd_block = self._build_cwd_block()
     if cwd_block:
       parts.append(cwd_block)
+
+    config_block = self._build_active_config_block()
+    if config_block:
+      parts.append(config_block)
 
     todo_block = self._build_todo_block()
     if todo_block:
@@ -202,6 +209,21 @@ class SystemPromptBuilder:
     if "Current working directory:" in self._base:
       return ""
     return block
+
+  def _build_active_config_block(self) -> str:
+    """Tell the model the exact config backing this running CLI instance."""
+    if self._config_path is None:
+      return ""
+
+    path = str(Path(self._config_path).expanduser().resolve())
+    return (
+      "## Active Nonoka Configuration\n"
+      f"This running Nonoka server is configured by: `{path}`\n"
+      "This is the authoritative file for configuration changes and `/reload`. "
+      "Inspect or edit this exact file instead of guessing `~/.config/nonoka/config.yaml`. "
+      "Its `skills` list enables workflow guidance such as `mcp-creator`; "
+      "an MCP server itself must be declared under `mcp_servers` in this file."
+    )
 
   def _build_todo_block(self) -> str:
     """Return the TODO workflow block if the base does not already contain it."""

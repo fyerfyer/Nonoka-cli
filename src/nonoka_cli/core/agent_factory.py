@@ -179,6 +179,7 @@ class AgentFactory:
     skill_registry: SkillRegistry | None = None,
     allowed_tools: list[str] | None = None,
     project_agent_tools: list[Capability] | None = None,
+    config_path: Path | str | None = None,
   ):
     """Args:
     config: Validated CLI configuration.
@@ -189,6 +190,7 @@ class AgentFactory:
      factory constructs one from ``config.skills`` at build time.
     allowed_tools: Optional whitelist of tool names that do not require
      human approval. Non-listed tools are marked as requiring approval.
+    config_path: The authoritative configuration file for this server.
     """
     self._config = config
     self._mcp_manager = mcp_manager
@@ -196,6 +198,7 @@ class AgentFactory:
     self._skill_registry = skill_registry
     self._allowed_tools = set(allowed_tools or [])
     self._project_agent_tools = list(project_agent_tools or [])
+    self._config_path = Path(config_path).expanduser() if config_path else None
     self._agent: Agent | None = None
     self._repo_map: str | None = None
     self._git_summary: str | None = None
@@ -483,6 +486,7 @@ class AgentFactory:
     return SystemPromptBuilder(
       base=base,
       model=self._config.model,
+      config_path=self._config_path,
       repo_map=repo_map,
       git_summary=git_summary,
       plugin_summary=plugin_summary,
@@ -652,6 +656,7 @@ class AgentFactory:
       base=base,
       model=self._config.model,
       cwd=cwd,
+      config_path=self._config_path,
       host_tools=host_tool_names,
       nonoka_tools=hosted_tool_names + local_tool_names,
       external_mcp_tools=external_mcp_tool_names,

@@ -13,3 +13,17 @@ def test_prompt_builder_injects_verification_discipline_once():
     model="test-model",
   ).build()
   assert existing.count("## Verification Discipline") == 1
+
+
+def test_prompt_builder_identifies_the_authoritative_config_file():
+  prompt = SystemPromptBuilder(
+    base="Build the requested change.",
+    model="test-model",
+    cwd="/tmp/workspace",
+    config_path="/tmp/workspace/nonoka/config/config.yaml",
+  ).build()
+
+  assert "## Active Nonoka Configuration" in prompt
+  assert "`/tmp/workspace/nonoka/config/config.yaml`" in prompt
+  assert "instead of guessing `~/.config/nonoka/config.yaml`" in prompt
+  assert "`mcp_servers`" in prompt
