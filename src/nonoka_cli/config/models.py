@@ -163,7 +163,9 @@ class AgentRoleConfig(BaseModel):
   """Compatibility configuration for the main executor role."""
 
   model: str = ""
-  max_turns: int = 5
+  # Long-lived interactive chats should not inherit a hidden five-turn cap.
+  # Set this explicitly when a project needs a cumulative model-turn guard.
+  max_turns: int | None = Field(default=None, ge=1)
   # Interactive OpenCode sessions are intentionally unbounded by default.
   # The framework otherwise applies its conservative legacy default (50),
   # which can terminate a long-lived chat after unrelated earlier work.

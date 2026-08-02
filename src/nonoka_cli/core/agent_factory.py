@@ -247,8 +247,19 @@ class AgentFactory:
     """Return the per-run override, including an explicit unlimited policy."""
     if self._generation_options_set:
       return self._generation_max_turns
-    configured = getattr(self._config.agents.executor, "max_turns", None)
-    return configured if configured else 20
+    executor = self._config.agents.executor
+    # ``max_turns: 5`` was written by older ``config init`` releases even
+    # though it was only intended as a framework compatibility default. It
+    # cannot complete ordinary MCP onboarding, so retain it only when the
+    # executor otherwise carries a user customization.
+    if (
+      executor.max_turns == 5
+      and not executor.model
+      and not executor.system_prompt
+      and getattr(executor, "max_steps", None) is None
+    ):
+      return None
+    return executor.max_turns
 
   def _executor_max_steps(self) -> int | None:
     """Return the cumulative tool-call limit for this interactive session."""
@@ -326,7 +337,7 @@ class AgentFactory:
       or self._require_observed_effect
       or self._require_focused_verification
     )
-    runtime_max_turns = self._generation_max_turns
+    runtime_max_turns = self._executor_max_turns()
     if runtime_max_turns is not None and requires_completion_evidence:
       # ``maxTurns`` is the work budget. A successful tool call on the last
       # work turn still needs one model call to report the result. The

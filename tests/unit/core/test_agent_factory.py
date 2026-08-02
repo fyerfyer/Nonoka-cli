@@ -610,7 +610,9 @@ def test_generation_options_can_explicitly_disable_cumulative_budgets():
 def test_interactive_factory_has_no_hidden_cumulative_tool_budget():
   agent = AgentFactory(CLIConfig(model="gpt-4o")).build_with_external_tools([])
 
+  assert agent.max_turns is None
   assert agent.max_steps is None
+  assert agent.runtime_limits.max_model_turns is None
   assert agent.runtime_limits.max_tool_calls is None
 
 
@@ -623,6 +625,28 @@ def test_interactive_factory_honors_explicit_cumulative_tool_budget():
 
   assert agent.max_steps == 75
   assert agent.runtime_limits.max_tool_calls == 75
+
+
+def test_legacy_default_executor_turn_limit_is_not_applied_to_interactive_chat():
+  config = CLIConfig.model_validate(
+    {"model": "gpt-4o", "agents": {"executor": {"max_turns": 5}}}
+  )
+
+  agent = AgentFactory(config).build_with_external_tools([])
+
+  assert agent.max_turns is None
+  assert agent.runtime_limits.max_model_turns is None
+
+
+def test_interactive_factory_honors_explicit_model_turn_limit():
+  config = CLIConfig.model_validate(
+    {"model": "gpt-4o", "agents": {"executor": {"max_turns": 12}}}
+  )
+
+  agent = AgentFactory(config).build_with_external_tools([])
+
+  assert agent.max_turns == 12
+  assert agent.runtime_limits.max_model_turns == 12
 
 
 def test_legacy_init_prompt_uses_current_opencode_guidance():
