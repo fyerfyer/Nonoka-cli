@@ -297,6 +297,22 @@ def test_default_skill_registry_includes_builtin_configuration_skills(tmp_path):
   }
 
 
+def test_mcp_creator_skill_requires_complete_stdio_configuration():
+  skill_path = (
+    Path(__file__).resolve().parents[3]
+    / "src"
+    / "nonoka_cli"
+    / "skills"
+    / "mcp-creator"
+    / "SKILL.md"
+  )
+
+  contents = skill_path.read_text(encoding="utf-8")
+
+  assert "transport: stdio" in contents
+  assert "startup_timeout_seconds" in contents
+
+
 @pytest.mark.asyncio
 async def test_build_with_external_tools_prefixes_mcp_tools():
   config = CLIConfig(model="gpt-4o")

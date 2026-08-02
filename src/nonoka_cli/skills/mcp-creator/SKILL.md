@@ -22,8 +22,24 @@ Use this skill when the user asks to add, remove, or change an MCP server.
    download hosts when the user explicitly selected it, but it never covers an
    MCP's runtime API. Do not change that profile without user approval, and do
    not leave a partially configured networked MCP for the next turn.
-   For a stdio server, use the exact timeout field name
-   `startup_timeout_seconds` (not `start_timeout_seconds` or another alias).
+   A stdio server entry must include every required field below. In particular,
+   `transport: stdio` is required; never infer or omit it. Use the exact
+   timeout field name `startup_timeout_seconds` (not `start_timeout_seconds`
+   or another alias):
+
+   ```yaml
+   mcp_servers:
+     example:
+       transport: stdio
+       command: npx
+       args:
+         - -y
+         - "@scope/server-package"
+       startup_timeout_seconds: 30
+   ```
+
+   Before saving, check every new stdio server entry against this structure so
+   the config remains loadable after the required restart.
 4. Explain any package installation or network access that would be required
    and obtain explicit approval before performing it.
 5. If only the MCP definition changed, ask the user to run `/reload`, then
