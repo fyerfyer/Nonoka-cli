@@ -68,7 +68,7 @@ describe('NonokaLanguageModel', () => {
     expect(request.protocol.version).toBe('1.1');
     expect(request.protocol.required_capabilities).toContain('persistent_runtime_limits');
     expect(request.protocol.required_capabilities).toContain('typed_verification_receipts');
-    expect(request.protocol.provider_version).toBe('0.2.19');
+    expect(request.protocol.provider_version).toBe('0.2.20');
   });
 
   it('constructs with the given model id and config', () => {
@@ -128,7 +128,7 @@ describe('NonokaLanguageModel', () => {
     const child2 = new FakeChild();
     const reader2 = model['createOutputStream'](child2 as any, false).getReader();
     child2.emit('error', new Error('spawn failed'));
-    await expect(reader2.read()).rejects.toThrow('nonoka-opencode-provider@0.2.19');
+    await expect(reader2.read()).rejects.toThrow('nonoka-opencode-provider@0.2.20');
   });
 
   it('detects title generation and merges consecutive user messages', () => {

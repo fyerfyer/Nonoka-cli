@@ -189,4 +189,23 @@ describe("createNonokaStreamTransformer", () => {
     expect((toolCall as any).metadata).toEqual({ kind: "skill", skill: "foo" });
   });
 
+  it("renders locally executed capabilities as provider-executed tool cards", async () => {
+    const transformer = createNonokaStreamTransformer({
+      allowedToolNames: new Set(["bash"]),
+    });
+    const input = createInputStream([
+      '{"type":"tool_call","tool_call_id":"local-1","tool_name":"mcp__context7__resolve","args":{"library":"next"},"metadata":{"kind":"mcp_tool"}}',
+      '{"type":"tool_result","tool_call_id":"local-1","tool_name":"mcp__context7__resolve","content":"docs found","result":"docs found"}',
+      '{"type":"finish","finish_reason":"stop"}',
+    ]);
+
+    const parts = await collectStream(input.pipeThrough(transformer));
+    const call = parts.find((part: any) => part.type === "tool-call") as any;
+    const result = parts.find((part: any) => part.type === "tool-result") as any;
+    expect(call.toolName).toBe("mcp__context7__resolve");
+    expect(call.providerExecuted).toBe(true);
+    expect(call.metadata).toMatchObject({ kind: "mcp_tool", nonoka_local: true });
+    expect(result.result).toBe("docs found");
+  });
+
 });

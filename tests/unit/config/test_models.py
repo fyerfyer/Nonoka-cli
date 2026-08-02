@@ -43,6 +43,7 @@ def test_mcp_server_config():
   assert cfg.transport == "stdio"
   assert cfg.command == "npx"
   assert cfg.args == ["-y", "server"]
+  assert cfg.startup_timeout_seconds == 20.0
 
 
 def test_cli_config_roundtrip():

@@ -68,10 +68,10 @@ export function createNonokaStreamTransformer(
   // Buffer used to glue trailing whitespace to the next token so that OpenCode
   // does not drop leading spaces between text-delta chunks.
   let pendingText = '';
-  // Tool calls that are not in OpenCode's native tool list are executed locally
-  // by nonoka-cli. We must not forward them as tool-call parts to OpenCode;
-  // instead we render their results as inline text.
-  const suppressedToolCalls = new Set<string>();
+  // Tool calls that are not in OpenCode's native tool list run locally in
+  // nonoka-cli. They are still emitted as *provider-executed* dynamic calls
+  // so OpenCode can render its normal tool card without attempting a second
+  // host-side execution.
   let protocolAcknowledged = !options.requireProtocolAck;
 
   function startTextBlock(controller: TransformStreamDefaultController<LanguageModelV3StreamPart>) {
@@ -178,21 +178,15 @@ export function createNonokaStreamTransformer(
             originalArgs,
           );
 
-          // Only forward tool calls for tools that OpenCode itself can execute.
-          // MCP / skill tools executed locally by nonoka-cli are suppressed here
-          // and their results are rendered as inline text instead.
-          if (
-            options.allowedToolNames &&
-            toolName &&
-            !options.allowedToolNames.has(toolName)
-          ) {
-            suppressedToolCalls.add(toolCallId);
-            break;
-          }
+          const locallyExecuted = Boolean(
+            options.allowedToolNames
+            && toolName
+            && !options.allowedToolNames.has(toolName),
+          );
 
-          // In deferred HITL mode the backend emits tool_call before the tool
-          // has actually executed; it is waiting for an approval decision.
-          // providerExecuted must be false so OpenCode renders the approval UI.
+          // Host tools await OpenCode's approval/execution. Local Nonoka
+          // capabilities have already been executed by the bridge, so the
+          // provider marks them as complete and OpenCode renders a card only.
           const part: LanguageModelV3StreamPart & {
             metadata?: Record<string, unknown>;
           } = {
@@ -200,9 +194,11 @@ export function createNonokaStreamTransformer(
             toolCallId,
             toolName,
             input: JSON.stringify(preparedArgs),
-            providerExecuted: false,
+            providerExecuted: locallyExecuted,
             dynamic: true,
-            metadata: event.metadata,
+            metadata: locallyExecuted
+              ? { ...event.metadata, nonoka_local: true }
+              : event.metadata,
           };
           logStreamPart(part);
           controller.enqueue(part as LanguageModelV3StreamPart);
@@ -213,17 +209,6 @@ export function createNonokaStreamTransformer(
           flushPendingText(controller);
           const rawResult = event.result ?? event.content ?? '';
           const toolCallId = event.tool_call_id ?? '';
-
-          // If the matching tool call was suppressed, render the locally
-          // executed result as inline text rather than a tool-result part.
-          if (suppressedToolCalls.has(toolCallId)) {
-            suppressedToolCalls.delete(toolCallId);
-            const text = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
-            const header = event.tool_name ? `[${event.tool_name} result]` : '[tool result]';
-            pendingText += `\n\n${header}\n${text}`;
-            flushPendingText(controller);
-            break;
-          }
 
           const part = {
             type: 'tool-result' as const,

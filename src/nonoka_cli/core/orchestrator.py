@@ -164,9 +164,6 @@ class Orchestrator:
       except MCPRestartExhaustedError as exc:
         logger.error("mcp_startup_partial_failure", error=str(exc))
 
-    if self._tool_loader is None:
-      self._tool_loader = ToolLoader(self._config.tool_paths)
-
     # Services that depend only on config/working_dir are created eagerly.
     self._git_service = build_git_service(
       working_dir=Path.cwd(),
@@ -181,6 +178,8 @@ class Orchestrator:
     manifest_loader = PluginManifestLoader(extra_paths=list(self._config.plugins.manifests))
     self._loaded_plugin_manifests = manifest_loader.load_with_sources(Path.cwd())
     self._plugin_manifests = [loaded.manifest for loaded in self._loaded_plugin_manifests]
+    if self._tool_loader is None:
+      self._tool_loader = ToolLoader(self._effective_tool_paths(self._config, Path.cwd()))
     allowed_tools = self._effective_allowed_tools()
     if os.getenv("NONOKA_DISABLE_PROJECT_AGENTS", "").strip().lower() in {"1", "true", "yes"}:
       logger.info("project_agents_disabled_by_environment")
@@ -463,6 +462,14 @@ class Orchestrator:
       return []
     merged = merge_manifests(self._plugin_manifests)
     return merged.allowed_tools
+
+  def _effective_tool_paths(self, config: CLIConfig, cwd: Path) -> list[Path]:
+    """Include conventional project-plugin tools without extra YAML wiring."""
+    paths = [Path(path).expanduser() for path in config.tool_paths]
+    project_plugin_tools = cwd / ".nonoka" / "tools"
+    if self._plugin_manifests and project_plugin_tools not in paths:
+      paths.append(project_plugin_tools)
+    return paths
 
   def _on_config_changed(self, config: CLIConfig) -> None:
     """ConfigManager hot-reload listener: update local reference only."""
@@ -823,10 +830,6 @@ class Orchestrator:
     self._config = new_config
 
     try:
-      if self._tool_loader is not None:
-        self._tool_loader.search_paths = [Path(p).expanduser() for p in new_config.tool_paths]
-        self._tool_loader.reload()
-
       # MCPs and project agents are runtime dependencies, not just prompt
       # text. Recreate them so `/reload` applies an edited mcp_servers block
       # and a newly-written .nonoka/plugin.json to the next turn.
@@ -839,6 +842,9 @@ class Orchestrator:
       manifest_loader = PluginManifestLoader(extra_paths=list(new_config.plugins.manifests))
       self._loaded_plugin_manifests = manifest_loader.load_with_sources(Path.cwd())
       self._plugin_manifests = [loaded.manifest for loaded in self._loaded_plugin_manifests]
+      if self._tool_loader is not None:
+        self._tool_loader.search_paths = self._effective_tool_paths(new_config, Path.cwd())
+        self._tool_loader.reload()
       if os.getenv("NONOKA_DISABLE_PROJECT_AGENTS", "").strip().lower() in {
         "1",
         "true",

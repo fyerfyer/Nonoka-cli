@@ -70,6 +70,7 @@ class MCPServerConfigModel(BaseModel):
   transport: str
   command: str
   args: list[str] = Field(default_factory=list)
+  startup_timeout_seconds: float = Field(default=20.0, ge=1.0, le=300.0)
 
 
 class ContextConfig(BaseModel):

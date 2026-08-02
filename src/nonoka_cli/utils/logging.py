@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import structlog
@@ -46,7 +47,17 @@ def setup_logging(
   # command before it can report useful work.
   try:
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
+    # A long-lived OpenCode bridge can be restarted hundreds of times during
+    # a debugging session.  Keep its diagnostics useful without allowing one
+    # forgotten log file to consume the user's home directory.
+    handlers: list[logging.Handler] = [
+      RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+      )
+    ]
   except OSError:
     handlers = [logging.StreamHandler(sys.stderr)]
 

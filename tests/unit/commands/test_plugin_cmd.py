@@ -3,7 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 
-from nonoka_cli.commands.plugin_cmd import run_validate
+from nonoka_cli.commands.plugin_cmd import run_init, run_validate
+
+
+def test_init_creates_lightweight_plugin_manifest(tmp_path, capsys) -> None:
+  manifest = tmp_path / ".nonoka" / "plugin.json"
+
+  exit_code = run_init(
+    argparse.Namespace(
+      manifest=str(manifest),
+      name="demo-tools",
+      description="Small demo plugin.",
+      force=False,
+    )
+  )
+
+  assert exit_code == 0
+  assert json.loads(manifest.read_text(encoding="utf-8")) == {
+    "schema_version": "1.0",
+    "name": "demo-tools",
+    "description": "Small demo plugin.",
+  }
+  assert "load automatically after /reload" in capsys.readouterr().out
 
 
 def test_validate_project_agents_success(tmp_path, capsys) -> None:

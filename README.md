@@ -135,10 +135,10 @@ Example output:
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.19
+✓ nonoka-cli 0.2.22
 ✓ Python 3.11
 ✓ opencode 1.18.2
-✓ provider nonoka-opencode-provider@0.2.19
+✓ provider nonoka-opencode-provider@0.2.20
 ✓ nonoka framework 1.3.8
 ✓ config ~/.config/nonoka/config.yaml
 ✓ API key DEEPSEEK_API_KEY set
@@ -532,6 +532,8 @@ mcp_servers:
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+    # Bound cold npx/network failures so OpenCode never appears frozen.
+    startup_timeout_seconds: 20
 
 tool_paths:
   - /home/user/.config/nonoka/tools
@@ -549,7 +551,11 @@ Store each skill at `.agents/skills/<name>/SKILL.md` in the project or at `~/.ag
 - **Custom Python tools** discovered from `tool_paths` are executed locally by
   nonoka-cli and exposed as `custom__<tool>` in OpenCode mode. Built-in CLI
   file/shell tools are omitted there because OpenCode already supplies native
-  equivalents. Standalone mode keeps the original unprefixed tool names.
+  equivalents. They are emitted as provider-executed dynamic calls, so
+  OpenCode renders its normal tool cards without executing them twice.
+  A project with `.nonoka/plugin.json` can instead put these files directly in
+  `.nonoka/tools/`; no `tool_paths` entry is required. Standalone mode keeps
+  the original unprefixed tool names.
 - **Skills** use nonoka-agent's lazy `SkillRegistry`. Discovery reads names and descriptions without importing skill tools; enabled skill tools are resolved when the runtime catalog is built, while full guidance, its root directory, and bundled resource paths are loaded on-demand via `load_skill` and protected from normal context compaction. Skill tools are prefixed with `skill__<skill>__<tool>` in external-tools mode.
 
 Both MCP tools and skill tools remain available in standalone mode without any
@@ -721,15 +727,20 @@ long-lived NDJSON bridge. Server stderr is redirected by the provider to a
 per-working-directory log file so it does not pollute OpenCode's TUI:
 
 ```text
-/tmp/nonoka-server-<cwd-hash>.log
+<project>/.nonoka/logs/server.log
 ```
 
 In addition, `nonoka-cli --server` writes a structured NDJSON trace of every
 request and stream event for debugging:
 
 ```text
-/tmp/nonoka-trace/trace-YYYYMMDD.jsonl
+<project>/.nonoka/traces/trace-YYYYMMDD.jsonl
 ```
+
+The same directory contains `logs/nonoka-cli.log` (rotated after 5 MiB),
+`logs/provider.log`, and any compacted tool output. Set `NONOKA_LOG_FILE`,
+`NONOKA_SERVER_LOG`, `NONOKA_PROVIDER_LOG_PATH`, or `NONOKA_TRACE_DIR` to
+override the corresponding location.
 
 You can override the trace directory with the `NONOKA_TRACE_DIR` environment
 variable.

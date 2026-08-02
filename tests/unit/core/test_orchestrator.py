@@ -53,6 +53,15 @@ def test_plugin_summary_hides_roles_disabled_by_validation() -> None:
   assert "agent__planner" not in summary
 
 
+def test_project_plugin_adds_conventional_tools_directory(tmp_path) -> None:
+  orchestrator = Orchestrator(config=CLIConfig(model="parent-model"))
+  orchestrator._plugin_manifests = [PluginManifest(name="demo")]
+
+  paths = orchestrator._effective_tool_paths(orchestrator.config, tmp_path)
+
+  assert paths == [tmp_path / ".nonoka" / "tools"]
+
+
 async def test_reload_config_reconfigures_agent_for_the_next_opencode_turn(
   tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

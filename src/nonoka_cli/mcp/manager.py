@@ -8,6 +8,7 @@ presents status in the CLI-specific ``MCPStatus`` format.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from nonoka.core.types import Capability
@@ -57,6 +58,7 @@ class MCPManager:
   def __init__(self):
     """Initialize an empty manager."""
     self._inner = _AgentMCPManager()
+    self._startup_errors: dict[str, str] = {}
 
   async def start_all(
     self,
@@ -70,11 +72,25 @@ class MCPManager:
     Raises:
       MCPRestartExhaustedError: If one or more servers fail to start.
     """
+    if not configs:
+      return []
     agent_configs = {
       name: _to_agent_config(cfg) for name, cfg in configs.items()
     }
+    timeout = min(config.startup_timeout_seconds for config in configs.values())
     try:
-      return await self._inner.start_all(agent_configs)
+      result = await asyncio.wait_for(self._inner.start_all(agent_configs), timeout=timeout)
+      for name in configs:
+        self._startup_errors.pop(name, None)
+      return result
+    except asyncio.TimeoutError as exc:
+      # `npx` can spend over a minute retrying DNS before it writes anything to
+      # stdio. A bounded timeout keeps `/reload` responsive and lets callers
+      # see a lifecycle error instead of a blank TUI.
+      await self._inner.stop_all()
+      error = f"MCP startup timed out after {timeout:g}s; check network/package logs."
+      self._startup_errors.update({name: error for name in configs})
+      raise MCPRestartExhaustedError(error) from exc
     except _AgentMCPRestartExhaustedError as exc:
       raise MCPRestartExhaustedError(str(exc)) from exc
 
@@ -85,7 +101,20 @@ class MCPManager:
   ) -> list[tuple[str, Capability]]:
     """Start a single MCP server and add it to the managed pool."""
     try:
-      return await self._inner.start_server(name, _to_agent_config(config))
+      result = await asyncio.wait_for(
+        self._inner.start_server(name, _to_agent_config(config)),
+        timeout=config.startup_timeout_seconds,
+      )
+      self._startup_errors.pop(name, None)
+      return result
+    except asyncio.TimeoutError as exc:
+      await self._inner.stop_all()
+      error = (
+        f"MCP server '{name}' startup timed out after {config.startup_timeout_seconds:g}s; "
+        "check network/package logs."
+      )
+      self._startup_errors[name] = error
+      raise MCPRestartExhaustedError(error) from exc
     except _AgentMCPRestartExhaustedError as exc:
       raise MCPRestartExhaustedError(str(exc)) from exc
 
@@ -109,7 +138,18 @@ class MCPManager:
 
   def list_status(self) -> dict[str, MCPStatus]:
     """Return a snapshot of all server statuses."""
-    return {name: _to_cli_status(s) for name, s in self._inner.list_status().items()}
+    statuses = {name: _to_cli_status(s) for name, s in self._inner.list_status().items()}
+    for name, error in self._startup_errors.items():
+      statuses[name] = MCPStatus(
+        name=name,
+        status="error",
+        transport="stdio",
+        tool_count=0,
+        last_ping=None,
+        restart_count=0,
+        error=error,
+      )
+    return statuses
 
   def get_tools(self) -> list[tuple[str, Capability]]:
     """Return all currently available MCP capabilities with server names."""

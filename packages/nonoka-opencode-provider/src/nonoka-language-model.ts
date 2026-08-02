@@ -31,12 +31,31 @@ import fs from 'fs';
 import { receiptForWorkspaceResult } from './workspace.js';
 import { appendRunEvidence } from './evidence.js';
 
-const PROVIDER_LOG_PATH = process.env.NONOKA_PROVIDER_LOG_PATH;
+type RuntimePaths = {
+  root: string;
+  logs: string;
+  traces: string;
+};
 
-function providerLog(message: string) {
-  if (!PROVIDER_LOG_PATH) return;
+function runtimePaths(cwd: string): RuntimePaths {
+  const root = path.join(path.resolve(cwd), '.nonoka');
+  return {
+    root,
+    logs: path.join(root, 'logs'),
+    traces: path.join(root, 'traces'),
+  };
+}
+
+function providerLogPath(cwd: string): string {
+  return process.env.NONOKA_PROVIDER_LOG_PATH
+    || path.join(runtimePaths(cwd).logs, 'provider.log');
+}
+
+function providerLog(message: string, cwd = process.cwd()) {
+  const logPath = providerLogPath(cwd);
   try {
-    fs.appendFileSync(PROVIDER_LOG_PATH, `${new Date().toISOString()} ${message}\n`);
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`);
   } catch {
     // ignore logging errors
   }
@@ -419,7 +438,7 @@ function renderObservation(
 
 function spillToolOutput(cwd: string, toolCallId: string, toolName: string, output: string): string | undefined {
   try {
-    const root = process.env.NONOKA_TRACE_DIR || path.join('/tmp', `nonoka-trace-${cwdHash(cwd)}`);
+    const root = process.env.NONOKA_TRACE_DIR || runtimePaths(cwd).traces;
     const directory = path.join(root, 'tool-output');
     fs.mkdirSync(directory, { recursive: true });
     const safeName = (toolName || 'tool').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -428,7 +447,7 @@ function spillToolOutput(cwd: string, toolCallId: string, toolName: string, outp
     fs.writeFileSync(artifact, output, 'utf8');
     return artifact;
   } catch (err) {
-    providerLog(`failed to spill tool output: ${err}`);
+    providerLog(`failed to spill tool output: ${err}`, cwd);
     return undefined;
   }
 }
@@ -543,7 +562,7 @@ function cwdHash(cwd: string): string {
 }
 
 export function getChatSessionIdFile(cwd: string): string {
-  return path.join('/tmp', `nonoka-chat-${cwdHash(cwd)}.id`);
+  return path.join(runtimePaths(cwd).root, 'provider-session.id');
 }
 
 export function loadChatSessionId(cwd: string): string | undefined {
@@ -563,6 +582,7 @@ export function saveChatSessionId(cwd: string, sessionId: string | undefined): v
     if (!sessionId) {
       return;
     }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, sessionId, 'utf-8');
   } catch {
     // ignore persistence errors
@@ -570,7 +590,8 @@ export function saveChatSessionId(cwd: string, sessionId: string | undefined): v
 }
 
 function getServerStderrLogPath(cwd: string): string {
-  return path.join('/tmp', `nonoka-server-${cwdHash(cwd)}.log`);
+  return process.env.NONOKA_SERVER_LOG
+    || path.join(runtimePaths(cwd).logs, 'server.log');
 }
 
 export interface NonokaLanguageModelConfig {
@@ -686,13 +707,13 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     const warnings: SharedV3Warning[] = [];
 
     const isTitle = this.isTitleGeneration(options);
-    providerLog(`doStream start isTitle=${isTitle}`);
-    providerLog(`options.tools count=${options.tools?.length ?? 0} names=${JSON.stringify(options.tools?.map((t: any) => t.name))}`);
+    providerLog(`doStream start isTitle=${isTitle}`, this.config.cwd);
+    providerLog(`options.tools count=${options.tools?.length ?? 0} names=${JSON.stringify(options.tools?.map((t: any) => t.name))}`, this.config.cwd);
     const request = this.buildChatRequest(options, isTitle);
     const requestLine = encodeRequestWithRetry(request);
     const child = this.spawnServer();
-    providerLog(`spawned child pid=${child.pid}`);
-    providerLog(`sending request bytes=${Buffer.byteLength(requestLine)}`);
+    providerLog(`spawned child pid=${child.pid}`, this.config.cwd);
+    providerLog(`sending request bytes=${Buffer.byteLength(requestLine)}`, this.config.cwd);
     await writeToStdin(child, requestLine);
 
     const allowedToolNames = new Set(
@@ -700,7 +721,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         .filter((t: any): t is { type: 'function'; name: string } => t.type === 'function')
         .map((t) => t.name),
     );
-    providerLog(`allowedToolNames count=${allowedToolNames.size} names=${JSON.stringify([...allowedToolNames])}`);
+    providerLog(`allowedToolNames count=${allowedToolNames.size} names=${JSON.stringify([...allowedToolNames])}`, this.config.cwd);
 
     const rawStream = this.createOutputStream(
       child,
@@ -720,7 +741,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         const closeOnce = () => {
           if (closed) return;
           closed = true;
-          providerLog('controller.close called');
+          providerLog('controller.close called', this.config.cwd);
           try { controller.close(); } catch {}
           try { reader.cancel(); } catch {}
           this.killChild(child);
@@ -729,20 +750,20 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         const pump = () => {
           reader.read().then(({ done, value }) => {
             if (done) {
-              providerLog('raw stream done');
+              providerLog('raw stream done', this.config.cwd);
               closeOnce();
               return;
             }
-            providerLog(`enqueuing part type=${value.type}`);
+            providerLog(`enqueuing part type=${value.type}`, this.config.cwd);
             controller.enqueue(value);
             if (value.type === 'finish' || value.type === 'error') {
-              providerLog('terminal part seen, closing controlled stream');
+              providerLog('terminal part seen, closing controlled stream', this.config.cwd);
               closeOnce();
               return;
             }
             pump();
           }).catch((err) => {
-            providerLog(`raw stream error: ${err}`);
+            providerLog(`raw stream error: ${err}`, this.config.cwd);
             controller.error(err);
             this.killChild(child);
           });
@@ -751,7 +772,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         pump();
       },
       cancel: () => {
-        providerLog('controlled stream cancelled');
+        providerLog('controlled stream cancelled', this.config.cwd);
         reader.cancel().catch(() => {});
         this.killChild(child);
       },
@@ -811,7 +832,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     }
     if (!isTitle && isResume && (!tools || tools.length === 0) && this.cachedChatTools) {
       tools = this.cachedChatTools;
-      providerLog(`buildChatRequest resumed with cached tools count=${tools.length}`);
+      providerLog(`buildChatRequest resumed with cached tools count=${tools.length}`, this.config.cwd);
     }
 
     // OpenCode 1.17.14 does not expose external MCP/skill definitions to
@@ -838,6 +859,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       `buildChatRequest isTitle=${isTitle} isResume=${isResume} `
       + `systemMessages=${systemMessages.length} hasProgressGuidance=${hasProgressGuidance} `
       + `tools count=${tools?.length ?? 0} names=${JSON.stringify(tools?.map((t) => t.name))}`,
+      this.config.cwd,
     );
     return {
       type: NONOKA_INBOUND_TYPES.chat,
@@ -931,6 +953,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
                 `tool result tool=${toolName} exitCode=${exitCode ?? 'unknown'} `
                 + `partKeys=${Object.keys(part as any).sort().join(',')} `
                 + `providerMetadataKeys=${Object.keys((part as any).providerMetadata ?? {}).sort().join(',')}`,
+                this.config.cwd,
               );
               const receipt = normalizeExternalToolOutput(
                 this.config.cwd,
@@ -1026,7 +1049,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         toolMessages.unshift(message);
       }
       const boundedToolMessages = compactToolBatch(toolMessages, PROVIDER_SOFT_REQUEST_BYTES);
-      providerLog(`resume message compaction: kept ${systemMessages.length} system + ${toolMessages.length} tool messages (dropped ${messages.length - systemMessages.length - toolMessages.length})`);
+      providerLog(`resume message compaction: kept ${systemMessages.length} system + ${toolMessages.length} tool messages (dropped ${messages.length - systemMessages.length - toolMessages.length})`, this.config.cwd);
       return [...systemMessages, ...boundedToolMessages];
     }
 
@@ -1039,7 +1062,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
         role: NONOKA_MESSAGE_ROLES.system,
         content: 'Generate a concise, plain-text title for the conversation. Do not call any tools.',
       };
-      providerLog(`title message compaction: kept 1 system + ${userMessages.length} user messages (dropped ${messages.length - userMessages.length - 1})`);
+      providerLog(`title message compaction: kept 1 system + ${userMessages.length} user messages (dropped ${messages.length - userMessages.length - 1})`, this.config.cwd);
       return [titleSystem, ...userMessages];
     }
 
@@ -1084,6 +1107,12 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       ...process.env,
       ...this.config.env,
     };
+    const diagnostics = runtimePaths(this.config.cwd);
+    // Keep all artifacts from an OpenCode session in the project. Explicit
+    // environment overrides remain useful for CI and centralized collectors.
+    env.NONOKA_LOG_FILE ??= path.join(diagnostics.logs, 'nonoka-cli.log');
+    env.NONOKA_TRACE_DIR ??= diagnostics.traces;
+    env.NONOKA_RUN_EVIDENCE_PATH ??= path.join(diagnostics.root, 'run-evidence.ndjson');
 
     const child = spawn(command, args, {
       cwd: this.config.cwd,
@@ -1098,14 +1127,14 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       const stderrStream = fs.createWriteStream(stderrLogPath, { flags: 'a' });
       child.stderr.pipe(stderrStream);
     } catch (err) {
-      providerLog(`failed to redirect stderr to ${stderrLogPath}: ${err}`);
+      providerLog(`failed to redirect stderr to ${stderrLogPath}: ${err}`, this.config.cwd);
     }
 
     return child;
   }
 
   private killChild(child: ChildProcessWithoutNullStreams): void {
-    providerLog(`killing child pid=${child.pid}`);
+    providerLog(`killing child pid=${child.pid}`, this.config.cwd);
     try { child.stdin?.destroy(); } catch {}
     const pid = child.pid;
     try {
@@ -1142,7 +1171,7 @@ export class NonokaLanguageModel implements LanguageModelV3 {
       `Config: ${this.config.configPath ?? '<auto-detect>'}`,
       `Server: ${this.config.serverCommand.join(' ')}`,
       `Provider: nonoka-opencode-provider@${NONOKA_PROVIDER_VERSION}`,
-      `Provider log: ${PROVIDER_LOG_PATH ?? '<set NONOKA_PROVIDER_LOG_PATH to persist>'}`,
+      `Provider log: ${providerLogPath(this.config.cwd)}`,
       `Nonoka server log: ${stderrLogPath}`,
       `Try: nonoka-cli doctor --cwd ${this.config.cwd}${this.config.configPath ? ` --config ${this.config.configPath}` : ''}`,
       stderrTail.trim() ? `Server stderr: ${stderrTail.trim()}` : '',
@@ -1212,14 +1241,14 @@ export class NonokaLanguageModel implements LanguageModelV3 {
     });
 
     child.once('error', (err) => {
-      providerLog(`child process error: ${err}`);
+      providerLog(`child process error: ${err}`, this.config.cwd);
       lifecycleController?.error(providerFailure(err.message));
       cleanup();
     });
 
     child.on('exit', (code) => {
       if (code && code !== 0) {
-        providerLog(`child exited with code ${code}`);
+        providerLog(`child exited with code ${code}`, this.config.cwd);
         lifecycleController?.error(providerFailure(`server exited with code ${code}`));
       }
       cleanup();

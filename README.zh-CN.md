@@ -133,10 +133,10 @@ nonoka-cli doctor
 
 ```
 nonoka-cli doctor
-✓ nonoka-cli 0.2.14
+✓ nonoka-cli 0.2.22
 ✓ Python 3.11
 ✓ opencode 1.18.2
-✓ provider nonoka-opencode-provider@0.2.18
+✓ provider nonoka-opencode-provider@0.2.20
 ✓ nonoka framework 1.3.8
 ✓ config ~/.config/nonoka/config.yaml
 ✓ API key DEEPSEEK_API_KEY set
@@ -203,6 +203,8 @@ mcp_servers:
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+    # 冷启动下载或网络失败最多等待 20 秒，避免 TUI 看起来卡住。
+    startup_timeout_seconds: 20
 
 skills:
   - code-review
@@ -544,6 +546,10 @@ skills:
 
 - **MCP 工具**由 nonoka-cli 在本地执行，并带有 `mcp__<server>__<tool>`
   命名空间前缀，因此不会与 OpenCode 原生工具冲突。
+- **自定义 Python Tool** 在 OpenCode 模式中会作为 provider 已执行的动态 Tool Call
+  发送，因此 OpenCode 渲染原生工具卡片但不会重复执行。项目存在
+  `.nonoka/plugin.json` 时，也可直接把 Tool 放在 `.nonoka/tools/`，无需额外配置
+  `tool_paths`。
 - **Skills** 使用 nonoka-agent 的懒加载 `SkillRegistry`。发现阶段只读取名称和描述，不导入 skill 工具；已启用 skill 的工具会在构建运行时目录时解析，而完整指南、skill 根目录和随附资源路径通过 `load_skill` 按需加载，并免受常规上下文压缩。在外部工具模式下，skill 工具带有 `skill__<skill>__<tool>` 前缀。
 
 MCP 工具和 skill 工具在独立模式下均保持可用，且不加任何前缀。
@@ -718,15 +724,19 @@ NDJSON 桥接派生。provider 会把服务器 stderr 重定向到一个按工�
 日志文件，以免污染 OpenCode 的 TUI：
 
 ```text
-/tmp/nonoka-server-<cwd-hash>.log
+<项目目录>/.nonoka/logs/server.log
 ```
 
 此外，`nonoka-cli --server` 会为调试写入每个请求和流事件的结构化 NDJSON
 trace：
 
 ```text
-/tmp/nonoka-trace/trace-YYYYMMDD.jsonl
+<项目目录>/.nonoka/traces/trace-YYYYMMDD.jsonl
 ```
+
+同一目录还会保留 `logs/nonoka-cli.log`（5 MiB 自动轮转）、
+`logs/provider.log` 及截断工具输出。可通过 `NONOKA_LOG_FILE`、
+`NONOKA_SERVER_LOG`、`NONOKA_PROVIDER_LOG_PATH` 或 `NONOKA_TRACE_DIR` 覆盖。
 
 你可以用 `NONOKA_TRACE_DIR` 环境变量覆盖 trace 目录。
 

@@ -25,6 +25,24 @@ from nonoka_cli.utils.errors import ConfigError
 logger = structlog.get_logger("nonoka_cli.commands.plugin")
 
 
+def run_init(args: argparse.Namespace) -> int:
+  """Create the smallest usable project plugin manifest."""
+  target = Path(args.manifest).expanduser()
+  if target.exists() and not args.force:
+    raise ConfigError(f"Plugin manifest already exists: {target}. Use --force to replace it.")
+  target.parent.mkdir(parents=True, exist_ok=True)
+  manifest = {
+    "schema_version": "1.0",
+    "name": args.name or target.parent.parent.name or "project-plugin",
+    "description": args.description or "Project-local Nonoka plugin.",
+  }
+  target.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+  print(f"Created {target}")
+  print(f"Add Python tools under {target.parent / 'tools'}; they load automatically after /reload.")
+  print(f"Validate with: nonoka plugin validate --manifest {target}")
+  return 0
+
+
 def _load_manifest(path: Path) -> Any:
   """Load the first plugin manifest found at *path*."""
   loader = PluginManifestLoader()
@@ -106,6 +124,20 @@ def add_subparser(subparsers: Any) -> None:
     help="Manage .nonoka/plugin.json manifests",
   )
   plugin_subparsers = plugin_parser.add_subparsers(dest="plugin_command", required=True)
+
+  init_parser = plugin_subparsers.add_parser(
+    "init",
+    help="Create a lightweight .nonoka/plugin.json manifest",
+  )
+  init_parser.add_argument(
+    "--manifest",
+    default=".nonoka/plugin.json",
+    help="Manifest path to create (default: .nonoka/plugin.json)",
+  )
+  init_parser.add_argument("--name", help="Plugin name (default: project directory name)")
+  init_parser.add_argument("--description", help="Short plugin description")
+  init_parser.add_argument("--force", action="store_true", help="Replace an existing manifest")
+  init_parser.set_defaults(func=run_init)
 
   convert_parser = plugin_subparsers.add_parser(
     "convert",

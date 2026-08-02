@@ -140,7 +140,13 @@ class ChatRequestHandler:
       await self._reload_config()
       return
 
-    trace_logger = TraceLogger(request_id=msg.request_id)
+    # Keep bridge evidence next to the project session database.  The
+    # provider also supplies this location, but setting it here makes a
+    # manually started `nonoka-cli --server` just as debuggable.
+    trace_logger = TraceLogger(
+      request_id=msg.request_id,
+      trace_dir=self._working_dir / ".nonoka" / "traces",
+    )
     trace_logger.log_request(
       session_id=self._session_id,
       cwd=str(self._working_dir),
@@ -303,16 +309,47 @@ class ChatRequestHandler:
       await self._send(FinishEvent(finish_reason="error"))
       return
 
+    statuses = self._orchestrator.list_mcp_status()
+    mcp_summary = self._format_mcp_reload_summary(config.mcp_servers, statuses)
     await self._send(
       TextDeltaEvent(
         text=(
           f"Nonoka configuration reloaded. Model: {config.model}. "
           f"Max turns: {config.agents.executor.max_turns}. "
-          "New settings apply to the next message."
+          f"{mcp_summary} New settings apply to the next message."
         )
       )
     )
     await self._send(FinishEvent(finish_reason="stop"))
+
+  @staticmethod
+  def _format_mcp_reload_summary(
+    configured: dict[str, Any],
+    statuses: dict[str, Any],
+  ) -> str:
+    """Render lifecycle state so YAML validation is not mistaken for MCP readiness."""
+    if not configured:
+      return "MCP: none configured."
+
+    entries: list[str] = []
+    for name in configured:
+      status = statuses.get(name)
+      if status is None:
+        entries.append(f"{name}=unknown (no lifecycle status)")
+        continue
+      state = getattr(status, "status", "unknown")
+      tools = getattr(status, "tool_count", 0)
+      error = getattr(status, "error", None)
+      detail = f"{name}={state} ({tools} tools"
+      if error:
+        detail += f"; {error}"
+      entries.append(detail + ")")
+
+    ready = all("=connected (" in entry for entry in entries)
+    suffix = ""
+    if not ready:
+      suffix = "; unavailable MCPs will not be offered to the model—see .nonoka/logs/server.log"
+    return "MCP: " + ", ".join(entries) + suffix + "."
 
   async def _ensure_orchestrator(self, msg: ChatRequest) -> None:
     """Initialize the orchestrator on first request."""

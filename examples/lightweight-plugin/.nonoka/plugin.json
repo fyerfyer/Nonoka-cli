@@ -1,0 +1,5 @@
+{
+  "schema_version": "1.0",
+  "name": "feed-summary",
+  "description": "A tiny project-local tool plugin for the Nonoka interview demo."
+}
