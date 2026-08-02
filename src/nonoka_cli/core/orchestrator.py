@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from collections.abc import AsyncIterator
@@ -49,12 +50,15 @@ from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.core.tool_service import ToolService
 from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.mcp.models import MCPStatus
-from nonoka_cli.safety import require_sandbox
+from nonoka_cli.safety import PROCESS_SANDBOX_ENV, require_sandbox
 from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import ConfigError, MCPRestartExhaustedError, OrchestratorError
 
 logger = structlog.get_logger("nonoka_cli.core")
+
+_SRT_ALLOWED_DOMAINS_ENV = "NONOKA_SRT_ALLOWED_DOMAINS"
+_NPX_REGISTRY_DOMAIN = "registry.npmjs.org"
 
 
 class _DeferredApprover(HumanApprover):
@@ -140,6 +144,39 @@ class Orchestrator:
     except Exception as touch_exc:
       logger.warning("session_touch_failed", error=str(touch_exc))
 
+  def _mcp_start_deferred_by_outer_srt(self) -> bool:
+    """Whether an MCP must wait for a full TUI restart under outer SRT.
+
+    A bridge request can be a fresh child process after an OpenCode tool result.
+    It therefore observes a just-edited config even though the process-tree SRT
+    policy still has the domains from the original ``nonoka run`` launch.
+    Starting an MCP in that state makes ``npx`` retry behind the old deny policy
+    until its startup timeout, which looks like a stuck agent.  Deferring is
+    both accurate and fast: a full TUI restart is required for the policy edit
+    to take effect anyway.
+    """
+    if os.getenv(PROCESS_SANDBOX_ENV) != "srt" or not self._config:
+      return False
+
+    try:
+      launch_domains = frozenset(json.loads(os.getenv(_SRT_ALLOWED_DOMAINS_ENV, "[]")))
+    except (TypeError, json.JSONDecodeError):
+      # A missing/corrupt snapshot should never weaken the outer boundary.
+      return bool(self._config.mcp_servers)
+
+    configured_domains = frozenset(self._config.safety.allowed_domains)
+    if configured_domains != launch_domains:
+      return True
+
+    # ``npx`` needs the npm registry for a first-run package resolution.  Even
+    # if the model wrote only ``mcp_servers`` in one edit and intends to add
+    # domains in the next, do not spend its next turn waiting for a request the
+    # outer SRT policy will reject.
+    return any(
+      server.command == "npx" and _NPX_REGISTRY_DOMAIN not in launch_domains
+      for server in self._config.mcp_servers.values()
+    )
+
   async def initialize(self, config_path: Path | str | None = None) -> None:
     """Load config, start MCP, build agent, create runner, and register session."""
     if self._config is None:
@@ -158,11 +195,17 @@ class Orchestrator:
       except RuntimeError as exc:
         raise ConfigError(f"Required sandbox preflight failed: {exc}") from exc
 
-    if self._config.mcp_servers:
+    if self._config.mcp_servers and not self._mcp_start_deferred_by_outer_srt():
       try:
         await self._mcp_manager.start_all(self._config.mcp_servers)
       except MCPRestartExhaustedError as exc:
         logger.error("mcp_startup_partial_failure", error=str(exc))
+    elif self._config.mcp_servers:
+      logger.info(
+        "mcp_start_deferred_for_srt_restart",
+        mcp_servers=list(self._config.mcp_servers),
+        message="Restart nonoka to apply the updated SRT network policy before starting MCPs.",
+      )
 
     # Services that depend only on config/working_dir are created eagerly.
     self._git_service = build_git_service(

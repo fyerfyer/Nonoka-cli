@@ -5,10 +5,48 @@ import pytest
 
 from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.config.manager import ConfigManager
-from nonoka_cli.config.models import CLIConfig
+from nonoka_cli.config.models import CLIConfig, MCPServerConfigModel, SafetyConfig
 from nonoka_cli.core.orchestrator import Orchestrator
 from nonoka_cli.core.plugin_manifest import PluginManifest
 from nonoka_cli.core.runner_service import RunnerService
+
+
+def test_npx_mcp_is_deferred_when_outer_srt_lacks_npm_registry(monkeypatch) -> None:
+  config = CLIConfig(
+    mcp_servers={"context7": MCPServerConfigModel(transport="stdio", command="npx")},
+    safety=SafetyConfig(allowed_domains=["api.deepseek.com"]),
+  )
+  orchestrator = Orchestrator(config=config)
+  monkeypatch.setenv("NONOKA_PROCESS_SANDBOX", "srt")
+  monkeypatch.setenv("NONOKA_SRT_ALLOWED_DOMAINS", '["api.deepseek.com"]')
+
+  assert orchestrator._mcp_start_deferred_by_outer_srt() is True
+
+
+def test_mcp_is_deferred_when_config_domains_differ_from_outer_srt(monkeypatch) -> None:
+  config = CLIConfig(
+    mcp_servers={"context7": MCPServerConfigModel(transport="stdio", command="npx")},
+    safety=SafetyConfig(allowed_domains=["api.deepseek.com", "registry.npmjs.org"]),
+  )
+  orchestrator = Orchestrator(config=config)
+  monkeypatch.setenv("NONOKA_PROCESS_SANDBOX", "srt")
+  monkeypatch.setenv("NONOKA_SRT_ALLOWED_DOMAINS", '["api.deepseek.com"]')
+
+  assert orchestrator._mcp_start_deferred_by_outer_srt() is True
+
+
+def test_mcp_is_not_deferred_when_outer_srt_matches_config(monkeypatch) -> None:
+  config = CLIConfig(
+    mcp_servers={"context7": MCPServerConfigModel(transport="stdio", command="npx")},
+    safety=SafetyConfig(allowed_domains=["api.deepseek.com", "registry.npmjs.org"]),
+  )
+  orchestrator = Orchestrator(config=config)
+  monkeypatch.setenv("NONOKA_PROCESS_SANDBOX", "srt")
+  monkeypatch.setenv(
+    "NONOKA_SRT_ALLOWED_DOMAINS", '["api.deepseek.com", "registry.npmjs.org"]',
+  )
+
+  assert orchestrator._mcp_start_deferred_by_outer_srt() is False
 
 
 def test_plugin_summary_lists_only_executable_project_agent_tools() -> None:

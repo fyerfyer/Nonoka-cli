@@ -16,6 +16,12 @@ from nonoka_cli.config.loader import ConfigLoader
 from nonoka_cli.safety import PROCESS_SANDBOX_ENV, SrtSandbox
 
 
+# The outer SRT policy is fixed for the lifetime of the OpenCode process tree.
+# Child bridge processes need this launch-time snapshot to avoid attempting to
+# start a newly configured networked MCP before the user has restarted TUI.
+SRT_ALLOWED_DOMAINS_ENV = "NONOKA_SRT_ALLOWED_DOMAINS"
+
+
 def _has_opencode() -> bool:
     """Return True if the opencode binary is available on PATH."""
     return shutil.which("opencode") is not None
@@ -189,6 +195,9 @@ def launch_tui(args: argparse.Namespace) -> int:
             # The bridge and its custom tools inherit the outer SRT boundary.
             # Mark ownership so they do not try to bootstrap a nested SRT.
             launch_env[PROCESS_SANDBOX_ENV] = "srt"
+            launch_env[SRT_ALLOWED_DOMAINS_ENV] = json.dumps(
+                sorted(set(config.safety.allowed_domains))
+            )
             # ``npx`` defaults to ``~/.npm``. That location is intentionally
             # outside the SRT write allowlist, which made first-run stdio MCPs
             # (such as Context7) fail before they could connect. Keep the
