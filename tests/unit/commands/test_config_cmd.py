@@ -76,6 +76,7 @@ def test_config_init_yes(tmp_path: Path):
   assert cfg.model == "deepseek-chat"
   assert cfg.cli.auto_approve is False
   assert cfg.hitl.policy == "interactive"
+  assert cfg.safety.network_profile == "strict"
   assert cfg.safety.allowed_domains == ["api.deepseek.com"]
   assert cfg.skills == list(BUILTIN_SKILL_NAMES)
 

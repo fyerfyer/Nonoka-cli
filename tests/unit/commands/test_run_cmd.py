@@ -174,6 +174,35 @@ def test_run_marks_outer_srt_ownership_for_bridge(tmp_path: Path, monkeypatch):
     assert not settings.exists()
 
 
+def test_run_expands_the_opt_in_package_registry_profile(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
+    config = CLIConfig(safety=SafetyConfig(
+        enabled=True,
+        sandbox="srt",
+        required=True,
+        network_profile="package-registries",
+        allowed_domains=["api.deepseek.com"],
+    ))
+    monkeypatch.setattr(run_cmd.ConfigLoader, "load", lambda *_: config)
+    monkeypatch.setattr(run_cmd.SrtSandbox, "executable", lambda _self: "/bin/srt")
+    settings = tmp_path / "srt-settings.json"
+    settings.write_text("{}")
+    monkeypatch.setattr(run_cmd.SrtSandbox, "settings", lambda _self, _cwd: settings)
+    _write_ready_project(tmp_path)
+
+    with patch.object(run_cmd, "subprocess") as mock_subprocess:
+        mock_subprocess.run.return_value.returncode = 0
+        assert run_cmd.launch_tui(argparse.Namespace(config=None, cwd=str(tmp_path), message=None)) == 0
+
+    domains = set(json.loads(mock_subprocess.run.call_args.kwargs["env"][run_cmd.SRT_ALLOWED_DOMAINS_ENV]))
+    assert domains == {
+        "api.deepseek.com",
+        "files.pythonhosted.org",
+        "pypi.org",
+        "registry.npmjs.org",
+    }
+
+
 def test_run_propagates_init_failure(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_has_opencode", lambda: True)
 

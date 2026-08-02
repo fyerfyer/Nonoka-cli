@@ -13,7 +13,7 @@ from typing import Any
 
 from nonoka_cli.commands.opencode_cmd import cmd_init
 from nonoka_cli.config.loader import ConfigLoader
-from nonoka_cli.safety import PROCESS_SANDBOX_ENV, SrtSandbox
+from nonoka_cli.safety import PROCESS_SANDBOX_ENV, SrtSandbox, resolved_srt_allowed_domains
 
 
 # The outer SRT policy is fixed for the lifetime of the OpenCode process tree.
@@ -165,8 +165,9 @@ def launch_tui(args: argparse.Namespace) -> int:
     # OpenCode-native bash/edit/write are descendants of this process, so the
     # only reliable boundary is wrapping the entire TUI process tree.
     settings = None
+    allowed_domains = resolved_srt_allowed_domains(config.safety)
     if config.safety.enabled and config.safety.sandbox in {"auto", "srt"}:
-        srt = SrtSandbox(config.safety.allowed_domains)
+        srt = SrtSandbox(allowed_domains)
         executable = srt.executable()
         if not executable:
             if config.safety.required:
@@ -196,7 +197,7 @@ def launch_tui(args: argparse.Namespace) -> int:
             # Mark ownership so they do not try to bootstrap a nested SRT.
             launch_env[PROCESS_SANDBOX_ENV] = "srt"
             launch_env[SRT_ALLOWED_DOMAINS_ENV] = json.dumps(
-                sorted(set(config.safety.allowed_domains))
+                allowed_domains
             )
             # ``npx`` defaults to ``~/.npm``. That location is intentionally
             # outside the SRT write allowlist, which made first-run stdio MCPs

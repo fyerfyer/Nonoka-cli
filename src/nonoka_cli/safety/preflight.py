@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nonoka_cli.safety.network_policy import resolved_srt_allowed_domains
 from nonoka_cli.safety.sandbox import DockerSandbox, SrtSandbox
 
 
@@ -53,7 +54,7 @@ async def inspect_sandbox(safety: Any, workspace: Path) -> SandboxPreflight:
         "Install @anthropic-ai/sandbox-runtime and ensure `srt` is on PATH.",
       )
     name = "SRT"
-    backend = SrtSandbox(list(getattr(safety, "allowed_domains", ()) or ()))
+    backend = SrtSandbox(resolved_srt_allowed_domains(safety))
   else:
     return SandboxPreflight("error", f"Unknown sandbox backend: {selected}")
 

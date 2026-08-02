@@ -50,7 +50,7 @@ from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.core.tool_service import ToolService
 from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.mcp.models import MCPStatus
-from nonoka_cli.safety import PROCESS_SANDBOX_ENV, require_sandbox
+from nonoka_cli.safety import PROCESS_SANDBOX_ENV, require_sandbox, resolved_srt_allowed_domains
 from nonoka_cli.sessions.models import SessionInfo
 from nonoka_cli.tools.loader import ToolLoader
 from nonoka_cli.utils.errors import ConfigError, MCPRestartExhaustedError, OrchestratorError
@@ -164,7 +164,7 @@ class Orchestrator:
       # A missing/corrupt snapshot should never weaken the outer boundary.
       return bool(self._config.mcp_servers)
 
-    configured_domains = frozenset(self._config.safety.allowed_domains)
+    configured_domains = frozenset(resolved_srt_allowed_domains(self._config.safety))
     if configured_domains != launch_domains:
       return True
 

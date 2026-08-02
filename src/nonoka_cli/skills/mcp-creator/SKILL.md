@@ -18,7 +18,10 @@ Use this skill when the user asks to add, remove, or change an MCP server.
 3. Make the smallest valid YAML edit under `mcp_servers`; preserve unrelated
    servers and permission settings. If the MCP needs new SRT domains, add its
    `mcp_servers` entry and all required `safety.allowed_domains` in the same
-   edit. Do not leave a partially configured networked MCP for the next turn.
+   edit. `safety.network_profile: package-registries` can cover npm and PyPI
+   download hosts when the user explicitly selected it, but it never covers an
+   MCP's runtime API. Do not change that profile without user approval, and do
+   not leave a partially configured networked MCP for the next turn.
    For a stdio server, use the exact timeout field name
    `startup_timeout_seconds` (not `start_timeout_seconds` or another alias).
 4. Explain any package installation or network access that would be required

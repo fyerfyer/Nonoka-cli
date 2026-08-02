@@ -158,6 +158,24 @@ Verify the Docker-backed command sandbox separately:
 nonoka-cli doctor --check-sandbox
 ```
 
+### SRT Network Profiles
+
+The default `strict` profile permits only the hosts listed in
+`safety.allowed_domains`. Select `package-registries` when the project needs
+the official npm and PyPI distribution hosts, then keep each MCP's runtime API
+host explicit:
+
+```yaml
+safety:
+  network_profile: package-registries
+  allowed_domains:
+    - api.deepseek.com
+    - context7.com
+```
+
+Changing either field requires exiting and restarting `nonoka`, because SRT
+owns the outer OpenCode process tree for the lifetime of the session.
+
 ## Execution Observability
 
 Every local runner session writes credential-redacted structured events to

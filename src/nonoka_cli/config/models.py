@@ -38,6 +38,9 @@ class SafetyConfig(BaseModel):
   allow_write: list[Path] = Field(default_factory=list)
   deny_read: list[Path] = Field(default_factory=list)
   deny_write: list[Path] = Field(default_factory=lambda: [Path(".env"), Path(".git/hooks")])
+  # ``strict`` only permits the project-specific allowlist. The opt-in
+  # package registry profile covers package installation, never an MCP's API.
+  network_profile: Literal["strict", "package-registries"] = "strict"
   allowed_domains: list[str] = Field(default_factory=list)
   command_timeout_seconds: int = Field(default=120, ge=1)
   max_output_bytes: int = Field(default=1_000_000, ge=1024)

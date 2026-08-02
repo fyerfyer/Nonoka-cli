@@ -514,14 +514,14 @@ async def execute_command(
       # another SRT inside it fails on the nested mux socket and adds no boundary.
       selected_sandbox = None
   if selected_sandbox in {"docker", "srt", "auto"}:
-    from nonoka_cli.safety import DockerSandbox, SrtSandbox
+    from nonoka_cli.safety import DockerSandbox, SrtSandbox, resolved_srt_allowed_domains
     try:
       if selected_sandbox == "auto":
         selected_sandbox = "srt" if SrtSandbox.executable() else "docker"
       backend = (
         DockerSandbox()
         if selected_sandbox == "docker"
-        else SrtSandbox(getattr(sandbox_mode, "allowed_domains", []))
+        else SrtSandbox(resolved_srt_allowed_domains(sandbox_mode))
       )
       code, output = await backend.run(command, working_dir, timeout)
       status = "success" if code == 0 else "error"
