@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CLIBehaviorConfig(BaseModel):
@@ -67,6 +67,7 @@ class BudgetConfig(BaseModel):
 class MCPServerConfigModel(BaseModel):
   """Single MCP server configuration."""
 
+  model_config = ConfigDict(extra="forbid")
   transport: str
   command: str
   args: list[str] = Field(default_factory=list)

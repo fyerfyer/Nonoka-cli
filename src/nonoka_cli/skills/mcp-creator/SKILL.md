@@ -12,6 +12,8 @@ Use this skill when the user asks to add, remove, or change an MCP server.
    environment variables. Never print secret values.
 3. Make the smallest valid YAML edit under `mcp_servers`; preserve unrelated
    servers and permission settings.
+   For a stdio server, use the exact timeout field name
+   `startup_timeout_seconds` (not `start_timeout_seconds` or another alias).
 4. Explain any package installation or network access that would be required
    and obtain explicit approval before performing it.
 5. If only the MCP definition changed, ask the user to run `/reload`, then

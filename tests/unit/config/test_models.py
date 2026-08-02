@@ -46,6 +46,15 @@ def test_mcp_server_config():
   assert cfg.startup_timeout_seconds == 20.0
 
 
+def test_mcp_server_config_rejects_unknown_timeout_alias():
+  with pytest.raises(ValidationError, match="start_timeout_seconds"):
+    MCPServerConfigModel(
+      transport="stdio",
+      command="npx",
+      start_timeout_seconds=60,
+    )
+
+
 def test_cli_config_roundtrip():
   data = {
     "model": "deepseek-chat",

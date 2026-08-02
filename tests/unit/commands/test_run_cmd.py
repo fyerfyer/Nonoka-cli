@@ -169,6 +169,7 @@ def test_run_marks_outer_srt_ownership_for_bridge(tmp_path: Path, monkeypatch):
     call = mock_subprocess.run.call_args
     assert call.args[0][:3] == ["/bin/srt", "--settings", str(settings)]
     assert call.kwargs["env"][run_cmd.PROCESS_SANDBOX_ENV] == "srt"
+    assert call.kwargs["env"]["NPM_CONFIG_CACHE"] == str(tmp_path / ".nonoka" / "npm-cache")
     assert not settings.exists()
 
 

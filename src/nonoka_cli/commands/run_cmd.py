@@ -189,6 +189,12 @@ def launch_tui(args: argparse.Namespace) -> int:
             # The bridge and its custom tools inherit the outer SRT boundary.
             # Mark ownership so they do not try to bootstrap a nested SRT.
             launch_env[PROCESS_SANDBOX_ENV] = "srt"
+            # ``npx`` defaults to ``~/.npm``. That location is intentionally
+            # outside the SRT write allowlist, which made first-run stdio MCPs
+            # (such as Context7) fail before they could connect. Keep the
+            # cache project-local where the outer sandbox already permits
+            # writes, while respecting an explicit user-provided cache path.
+            launch_env.setdefault("NPM_CONFIG_CACHE", str(cwd / ".nonoka" / "npm-cache"))
         result = subprocess.run(cmd, cwd=cwd, env=launch_env)
         return result.returncode
     except KeyboardInterrupt:
