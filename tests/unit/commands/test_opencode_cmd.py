@@ -62,7 +62,10 @@ def test_opencode_init_creates_file(tmp_path: Path):
   assert data["agent"]["plan"]["disable"] is True
   assert data["command"]["reload"] == {
     "template": "__NONOKA_RELOAD_CONFIG__",
-    "description": "Reload nonoka config.yaml and rebuild the active Nonoka agent.",
+    "description": (
+      "Reload nonoka config.yaml and rebuild the active Nonoka agent. "
+      "Restart `nonoka` after changing SRT sandbox/network settings."
+    ),
     "agent": "build",
     "model": "nonoka/default",
   }

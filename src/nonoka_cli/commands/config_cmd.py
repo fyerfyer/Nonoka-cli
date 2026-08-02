@@ -152,7 +152,8 @@ _DEFAULT_DANGEROUS_TOOLS = [
 _DEFAULT_SYSTEM_PROMPT = (
   "You are nonoka-cli, an autonomous coding assistant running inside OpenCode.\n"
   "Use the tools available to you proactively to complete tasks.\n"
-  "For multi-step tasks, always start by calling the todowrite tool to create a plan.\n"
+  "Use a task list only when it materially helps; do not create one for a small, "
+  "bounded task.\n"
   "Keep responses concise but thorough."
 )
 

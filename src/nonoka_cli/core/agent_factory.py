@@ -160,6 +160,16 @@ _OPENCODE_HOSTED_SYSTEM_PROMPT = (
   "You operate in the user's current working directory.\n"
 )
 
+# Older ``nonoka init`` versions persisted this as a project-level prompt.
+# Treat it as a built-in default so it does not override newer OpenCode
+# guidance forever. A genuinely custom ``system_prompt`` remains authoritative.
+_LEGACY_OPENCODE_INIT_SYSTEM_PROMPT = (
+  "You are nonoka-cli, an autonomous coding assistant running inside OpenCode.\n"
+  "Use the tools available to you proactively to complete tasks.\n"
+  "For multi-step tasks, always start by calling the todowrite tool to create a plan.\n"
+  "Keep responses concise but thorough."
+)
+
 
 class AgentFactory:
   """Builds nonoka Agent instances from CLI configuration.
@@ -240,6 +250,12 @@ class AgentFactory:
     configured = getattr(self._config.agents.executor, "max_turns", None)
     return configured if configured else 20
 
+  def _executor_max_steps(self) -> int | None:
+    """Return the cumulative tool-call limit for this interactive session."""
+    if self._generation_options_set:
+      return self._generation_tool_budget
+    return getattr(self._config.agents.executor, "max_steps", None)
+
   def _register_project_agents(
     self,
     builder: AgentBuilder,
@@ -294,8 +310,10 @@ class AgentFactory:
 
   def _apply_generation_options(self, builder: AgentBuilder) -> AgentBuilder:
     """Attach optional bridge generation settings with old-framework fallback."""
-    if self._generation_options_set and hasattr(builder, "max_steps"):
-      builder = builder.max_steps(self._generation_tool_budget)
+    if hasattr(builder, "max_steps"):
+      # Avoid the framework's hidden default of 50 for interactive sessions.
+      # Benchmarks pass an explicit ``toolBudget`` through generation options.
+      builder = builder.max_steps(self._executor_max_steps())
     if self._generation_timeout_seconds is not None and hasattr(builder, "timeout"):
       builder = builder.timeout(self._generation_timeout_seconds)
     return builder
@@ -320,7 +338,7 @@ class AgentFactory:
     if RuntimeLimits is not None:
       updates["runtime_limits"] = RuntimeLimits(
         max_model_turns=runtime_max_turns,
-        max_tool_calls=self._generation_tool_budget,
+        max_tool_calls=self._executor_max_steps(),
         wall_timeout_seconds=self._generation_wall_timeout_seconds,
         model_timeout_seconds=self._generation_timeout_seconds,
         max_context_bytes=self._generation_max_context_bytes,
@@ -482,7 +500,10 @@ class AgentFactory:
     execution_plan: str | None = None,
   ) -> str:
     """Build the effective system prompt, injecting the current model name."""
-    base = self._config.system_prompt or _DEFAULT_CODING_SYSTEM_PROMPT
+    configured_prompt = self._config.system_prompt
+    if configured_prompt.strip() == _LEGACY_OPENCODE_INIT_SYSTEM_PROMPT:
+      configured_prompt = ""
+    base = configured_prompt or _DEFAULT_CODING_SYSTEM_PROMPT
     return SystemPromptBuilder(
       base=base,
       model=self._config.model,
@@ -542,7 +563,10 @@ class AgentFactory:
     if execution_plan is not None:
       self._execution_plan = execution_plan
 
-    base = self._config.system_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT
+    configured_prompt = self._config.system_prompt
+    if configured_prompt.strip() == _LEGACY_OPENCODE_INIT_SYSTEM_PROMPT:
+      configured_prompt = ""
+    base = configured_prompt or host_system_prompt or _OPENCODE_HOSTED_SYSTEM_PROMPT
     opencode_native_skill_enabled = self._is_opencode_native_skill_enabled(cwd)
     if opencode_native_skill_enabled:
       logger.warning("opencode_native_skill_enabled", cwd=str(cwd) if cwd else None)

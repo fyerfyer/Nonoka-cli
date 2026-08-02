@@ -164,6 +164,10 @@ class AgentRoleConfig(BaseModel):
 
   model: str = ""
   max_turns: int = 5
+  # Interactive OpenCode sessions are intentionally unbounded by default.
+  # The framework otherwise applies its conservative legacy default (50),
+  # which can terminate a long-lived chat after unrelated earlier work.
+  max_steps: int | None = Field(default=None, ge=1)
   system_prompt: str = ""
 
 

@@ -607,6 +607,38 @@ def test_generation_options_can_explicitly_disable_cumulative_budgets():
   assert agent.runtime_limits.wall_timeout_seconds == 3600
 
 
+def test_interactive_factory_has_no_hidden_cumulative_tool_budget():
+  agent = AgentFactory(CLIConfig(model="gpt-4o")).build_with_external_tools([])
+
+  assert agent.max_steps is None
+  assert agent.runtime_limits.max_tool_calls is None
+
+
+def test_interactive_factory_honors_explicit_cumulative_tool_budget():
+  config = CLIConfig.model_validate(
+    {"model": "gpt-4o", "agents": {"executor": {"max_steps": 75}}}
+  )
+
+  agent = AgentFactory(config).build_with_external_tools([])
+
+  assert agent.max_steps == 75
+  assert agent.runtime_limits.max_tool_calls == 75
+
+
+def test_legacy_init_prompt_uses_current_opencode_guidance():
+  legacy_prompt = (
+    "You are nonoka-cli, an autonomous coding assistant running inside OpenCode.\n"
+    "Use the tools available to you proactively to complete tasks.\n"
+    "For multi-step tasks, always start by calling the todowrite tool to create a plan.\n"
+    "Keep responses concise but thorough."
+  )
+
+  agent = AgentFactory(CLIConfig(model="gpt-4o", system_prompt=legacy_prompt)).build_with_external_tools([])
+
+  assert "Do not explore the workspace" in agent.system_prompt
+  assert "always start by calling the todowrite" not in agent.system_prompt
+
+
 def _project_agent_tools():
   definition = ProjectAgentDefinition(
     entry=AgentEntry(

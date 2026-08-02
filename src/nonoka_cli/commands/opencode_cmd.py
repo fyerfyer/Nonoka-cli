@@ -82,7 +82,10 @@ _OPENCODE_AUTO_APPROVED_TOOLS = [
 
 _NONOKA_RELOAD_COMMAND = {
   "template": "__NONOKA_RELOAD_CONFIG__",
-  "description": "Reload nonoka config.yaml and rebuild the active Nonoka agent.",
+  "description": (
+    "Reload nonoka config.yaml and rebuild the active Nonoka agent. "
+    "Restart `nonoka` after changing SRT sandbox/network settings."
+  ),
   "agent": "build",
   "model": "nonoka/default",
 }
