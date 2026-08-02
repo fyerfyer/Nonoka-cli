@@ -27,3 +27,15 @@ def test_prompt_builder_identifies_the_authoritative_config_file():
   assert "`/tmp/workspace/nonoka/config/config.yaml`" in prompt
   assert "instead of guessing `~/.config/nonoka/config.yaml`" in prompt
   assert "`mcp_servers`" in prompt
+
+
+def test_prompt_builder_requires_metadata_matched_skills_before_work_tools():
+  prompt = SystemPromptBuilder(
+    base="Build the requested change.",
+    model="test-model",
+    required_skills=["example-skill"],
+  ).build()
+
+  assert "## Required Skill Activation" in prompt
+  assert "`example-skill`" in prompt
+  assert "Before any non-todowrite tool call" in prompt

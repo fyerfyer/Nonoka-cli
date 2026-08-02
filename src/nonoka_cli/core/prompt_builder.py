@@ -72,6 +72,7 @@ class SystemPromptBuilder:
     external_skill_tools: list[str] | None = None,
     internal_mcp_tools: list[str] | None = None,
     internal_skill_tools: list[str] | None = None,
+    required_skills: list[str] | None = None,
     project_agent_tools: list[str] | None = None,
     opencode_native_skill_enabled: bool = False,
     repo_map: str | None = None,
@@ -91,6 +92,7 @@ class SystemPromptBuilder:
     external_skill_tools: Prefixed external skill tool names.
     internal_mcp_tools: Prefixed internal MCP tool names.
     internal_skill_tools: Prefixed internal skill tool names.
+    required_skills: Lazy skills selected by declarative request metadata.
     project_agent_tools: Manifest-defined advisory agent tools.
     opencode_native_skill_enabled: If True, add a warning about the
       conflicting OpenCode native ``skill:<name>`` syntax.
@@ -111,6 +113,7 @@ class SystemPromptBuilder:
     self._external_skill_tools = external_skill_tools or []
     self._internal_mcp_tools = internal_mcp_tools or []
     self._internal_skill_tools = internal_skill_tools or []
+    self._required_skills = required_skills or []
     self._project_agent_tools = project_agent_tools or []
     self._opencode_native_skill_enabled = opencode_native_skill_enabled
     self._repo_map = repo_map
@@ -134,6 +137,10 @@ class SystemPromptBuilder:
     config_block = self._build_active_config_block()
     if config_block:
       parts.append(config_block)
+
+    required_skills_block = self._build_required_skills_block()
+    if required_skills_block:
+      parts.append(required_skills_block)
 
     todo_block = self._build_todo_block()
     if todo_block:
@@ -223,6 +230,18 @@ class SystemPromptBuilder:
       "Inspect or edit this exact file instead of guessing `~/.config/nonoka/config.yaml`. "
       "Its `skills` list enables workflow guidance such as `mcp-creator`; "
       "an MCP server itself must be declared under `mcp_servers` in this file."
+    )
+
+  def _build_required_skills_block(self) -> str:
+    """Tell the model which skills matched declarative activation metadata."""
+    if not self._required_skills:
+      return ""
+    names = ", ".join(f"`{name}`" for name in self._required_skills)
+    return (
+      "## Required Skill Activation\n"
+      f"This request matches the activation metadata for: {names}. "
+      "Before any non-todowrite tool call, call `load_skill` for each listed skill and "
+      "follow its loaded workflow."
     )
 
   def _build_todo_block(self) -> str:

@@ -52,6 +52,16 @@ async def test_build_with_external_tools_injects_execution_plan(factory):
   assert "1. Read foo.py" in agent.system_prompt
 
 
+def test_build_with_external_tools_routes_declared_skill_metadata(factory):
+  agent = factory.build_with_external_tools(
+    [],
+    request_prompt="Please connect the Context7 MCP server.",
+  )
+
+  assert "## Required Skill Activation" in agent.system_prompt
+  assert "`mcp-creator`" in agent.system_prompt
+
+
 def test_create_external_tool_capability():
   cap = AgentFactory.create_external_tool_capability(
     name="bash",

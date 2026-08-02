@@ -63,6 +63,7 @@ from nonoka_cli.core.namespaces import (
   mcp_tool_name,
   skill_tool_name,
 )
+from nonoka_cli.core.skill_routing import required_skill_names
 from nonoka_cli.core.prompt_builder import SystemPromptBuilder
 from nonoka_cli.mcp.manager import MCPManager
 from nonoka_cli.tools.loader import ToolLoader
@@ -503,6 +504,7 @@ class AgentFactory:
     external_mcp_servers: list[Any] | None = None,
     external_skills: list[Any] | None = None,
     *,
+    request_prompt: str = "",
     repo_map: str | None = None,
     git_summary: str | None = None,
     plugin_summary: str | None = None,
@@ -652,6 +654,8 @@ class AgentFactory:
         for tool in skill.tools:
           skill_tool_names.append(skill_tool_name(skill.name, tool.name))
 
+    matched_required_skills = required_skill_names(request_prompt, skill_registry)
+
     system_prompt = SystemPromptBuilder(
       base=base,
       model=self._config.model,
@@ -663,6 +667,7 @@ class AgentFactory:
       external_skill_tools=external_skill_tool_names,
       internal_mcp_tools=mcp_tool_names,
       internal_skill_tools=skill_tool_names,
+      required_skills=matched_required_skills,
       project_agent_tools=[tool.name for tool in self._project_agent_tools],
       opencode_native_skill_enabled=opencode_native_skill_enabled,
       repo_map=self._repo_map,
