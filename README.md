@@ -333,8 +333,8 @@ explicit Aider or native OpenCode comparison after a healthy bridge run fails.
 
 The current verification-contract and bounded multi-agent implementation has passed the following checks against the local sibling `nonoka-agent` checkout:
 
-- `543` deterministic nonoka-agent tests passed (`45` opt-in live tests were deselected).
-- `280` nonoka-cli unit, integration, and bridge tests passed.
+- `579` deterministic nonoka-agent tests passed (`45` opt-in live tests were deselected).
+- `353` nonoka-cli unit, integration, and bridge tests passed.
 - `62` OpenCode provider tests passed, followed by a successful TypeScript build.
 - A clean OpenCode TUI multi-agent run used `agent__spawn` for both planning and review, recovered two intentionally partial file observations with bounded follow-up reads, completed a real workspace change, and passed all `16` focused acceptance tests. Its final response turn exposed no tools and made no host tool calls.
 - Official SWE-bench Lite verification for eight distinct instances: `astropy__astropy-12907`, `django__django-10914`, `django__django-10924`, `django__django-11001`, `django__django-11099`, `pytest-dev__pytest-11143`, `pallets__flask-4045`, and `sympy__sympy-11400`.
