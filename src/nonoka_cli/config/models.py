@@ -81,8 +81,10 @@ class ContextConfig(BaseModel):
   """In-context memory management configuration."""
 
   enabled: bool = True
-  max_turns: int = 8
   max_tokens: int | None = None
+  reserve_output_tokens: int | None = None
+  compaction_buffer_tokens: int | None = None
+  summary_enabled: bool = False
 
 
 class ToolOutputRuleConfig(BaseModel):

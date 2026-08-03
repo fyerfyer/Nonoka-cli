@@ -356,6 +356,17 @@ class AgentFactory:
         max_context_tokens=(
           self._config.context.max_tokens if self._config.context.enabled else None
         ),
+        reserve_output_tokens=(
+          self._config.context.reserve_output_tokens
+          if self._config.context.enabled else None
+        ),
+        compaction_buffer_tokens=(
+          self._config.context.compaction_buffer_tokens
+          if self._config.context.enabled else None
+        ),
+        summary_enabled=(
+          self._config.context.summary_enabled and self._config.context.enabled
+        ),
         max_external_result_bytes=self._generation_max_external_result_bytes,
         max_total_tokens=self._config.budget.max_total_tokens,
         max_cost_usd=self._config.budget.max_cost_usd,

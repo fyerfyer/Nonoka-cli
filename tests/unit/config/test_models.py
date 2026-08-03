@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from nonoka_cli.config.models import (
   CLIBehaviorConfig,
   CLIConfig,
+  ContextConfig,
   HITLConfigModel,
   MCPServerConfigModel,
 )
@@ -53,6 +54,28 @@ def test_mcp_server_config_rejects_unknown_timeout_alias():
       command="npx",
       start_timeout_seconds=60,
     )
+
+
+def test_context_config_defaults():
+  cfg = ContextConfig()
+  assert cfg.enabled is True
+  assert cfg.max_tokens is None
+  assert cfg.reserve_output_tokens is None
+  assert cfg.compaction_buffer_tokens is None
+  assert cfg.summary_enabled is False
+
+
+def test_context_config_parses_compaction_fields():
+  cfg = ContextConfig.model_validate({
+    "max_tokens": 60000,
+    "reserve_output_tokens": 8192,
+    "compaction_buffer_tokens": 4096,
+    "summary_enabled": True,
+  })
+  assert cfg.max_tokens == 60000
+  assert cfg.reserve_output_tokens == 8192
+  assert cfg.compaction_buffer_tokens == 4096
+  assert cfg.summary_enabled is True
 
 
 def test_cli_config_roundtrip():
