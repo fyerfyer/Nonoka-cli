@@ -1767,7 +1767,7 @@ dev = [
 
 [[package]]
 name = "nonoka-cli"
-version = "0.2.31"
+version = "0.2.33"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
