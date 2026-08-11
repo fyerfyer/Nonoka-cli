@@ -697,7 +697,7 @@ Projects can declare their own Nonoka plugins via `.nonoka/plugin.json`:
 {
   "schema_version": "1.0",
   "name": "my-plugin",
-  "skills": [{"name": "code-review"}],
+  "skills": [{ "name": "code-review" }],
   "agents": [],
   "mcp_servers": {},
   "allowed_tools": ["read", "edit", "bash"]
@@ -715,27 +715,51 @@ here because they affect the TUI/HITL experience but cannot be fixed inside
 `nonoka-cli` or `nonoka-opencode-provider`.
 
 - [x] **OpenCode native `skill` tool conflicts with nonoka skills**: the
-  generated `opencode.json` disables it with `"tools": {"skill": false}`, and
-  the adapter prompt tells the model to use only `load_skill` and
-  `skill__<name>__<tool>`.
+      generated `opencode.json` disables it with `"tools": {"skill": false}`, and
+      the adapter prompt tells the model to use only `load_skill` and
+      `skill__<name>__<tool>`.
 - [x] **External directory rejection crashes OpenCode**: the adapter now injects
-  the current working directory into the system prompt and instructs the model
-  to use paths relative to it, so requests outside the workspace are rare. If
-  one still occurs and you select **Reject**, OpenCode may still exit. Keep
-  requests scoped to the current working directory, or approve if the path is
-  safe.
+      the current working directory into the system prompt and instructs the model
+      to use paths relative to it, so requests outside the workspace are rare. If
+      one still occurs and you select **Reject**, OpenCode may still exit. Keep
+      requests scoped to the current working directory, or approve if the path is
+      safe.
 - [ ] **`write` is auto-approved inside the workspace**: even with `"*": "ask"`
-  in `opencode.json`, OpenCode does not show an approval dialog for `write`
-  operations within the workspace root. `bash`, `read`, and `edit` do ask.
+      in `opencode.json`, OpenCode does not show an approval dialog for `write`
+      operations within the workspace root. `bash`, `read`, and `edit` do ask.
 - [ ] **Code blocks render as plain indented text**: OpenCode renders Python and
-  other code as plain indented output rather than fenced code blocks with syntax
-  highlighting. This is an OpenCode TUI rendering choice.
+      other code as plain indented output rather than fenced code blocks with syntax
+      highlighting. This is an OpenCode TUI rendering choice.
 - [ ] **Short replies leave empty vertical space**: the OpenCode TUI uses a flex
-  layout, so short assistant replies appear at the top with visible empty space
-  above the status bar. This is normal OpenCode layout behavior.
+      layout, so short assistant replies appear at the top with visible empty space
+      above the status bar. This is normal OpenCode layout behavior.
 - [ ] **Model may skip tools for ambiguous requests**: the adapter prompt
-  mitigates this, but a vague request can still cause the model to answer
-  directly instead of calling `read`/`edit`. Make file/tool requests explicit.
+      mitigates this, but a vague request can still cause the model to answer
+      directly instead of calling `read`/`edit`. Make file/tool requests explicit.
+
+## Known issues / TODO
+
+- [ ] **Continuations silently start a fresh session when `provider-session.id`
+      is lost**: OpenCode recreates the model instance every turn, and each
+      instance loads the chat session id from `<project>/.nonoka/provider-session.id`
+      at construction. If that file disappears between turns (tmp cleaning,
+      `git clean`, manual deletion), the provider still treats the request as a
+      continuation (`isNewConversation` looks at message history, not the file),
+      but sends no `session_id`. The CLI then silently starts a fresh session
+      (`_apply_session(None)` falls back to a new uuid and `SessionService` creates
+      a new `cli_sessions` row), so the previous session becomes an orphan: its
+      checkpoint still exists in `<project>/.nonoka/sessions.db`, but there is no
+      warning and no supported way to recover it (`nonoka sessions list` reads the
+      default `~/.local/share/nonoka/nonoka.db`, not the project database).
+
+  Planned fix:
+  - In `ChatRequestHandler._apply_session`, when no `session_id` is supplied but
+    the request messages already contain assistant/tool messages (a
+    continuation), log a `session_id_missing_starting_fresh` warning instead of
+    silently creating a new session.
+  - Surface the most recent sessions from the project database in that warning,
+    and/or add a `--db` flag to `nonoka sessions list/show` so orphans in the
+    project database are inspectable.
 
 ## Server logs and request traces
 
@@ -765,11 +789,11 @@ variable.
 
 ### Debug environment variables
 
-| Variable | Effect |
-| --- | --- |
-| `NONOKA_DEBUG=1` | Emit `debug` NDJSON events from the bridge for every request and stream transition. |
-| `NONOKA_TRACE_DIR=/path` | Directory for NDJSON request/event traces (default: `/tmp/nonoka-trace`). |
-| `NONOKA_SERVER_LOG=/path` | Override the server stderr log path when running the bridge manually. |
+| Variable                  | Effect                                                                              |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `NONOKA_DEBUG=1`          | Emit `debug` NDJSON events from the bridge for every request and stream transition. |
+| `NONOKA_TRACE_DIR=/path`  | Directory for NDJSON request/event traces (default: `/tmp/nonoka-trace`).           |
+| `NONOKA_SERVER_LOG=/path` | Override the server stderr log path when running the bridge manually.               |
 
 ## Development
 
