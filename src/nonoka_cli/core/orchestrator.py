@@ -40,7 +40,6 @@ from nonoka_cli.core.plugin_manifest import (
 from nonoka_cli.core.project_agents import (
   compile_project_agents,
   effective_agent_definitions,
-  effective_dynamic_agent_definition,
 )
 from nonoka_cli.core.repo_map_service import RepoMapService, build_repo_map_service
 from nonoka_cli.core.runner_service import RunnerService
@@ -231,7 +230,6 @@ class Orchestrator:
       compilation = compile_project_agents(
         effective_agent_definitions(self._loaded_plugin_manifests),
         ToolOutputPolicy.from_config(self._config.tool_output.model_dump()),
-        effective_dynamic_agent_definition(self._loaded_plugin_manifests),
       )
       for diagnostic in compilation.diagnostics:
         log = logger.warning if diagnostic.level == "warning" else logger.error
@@ -899,7 +897,6 @@ class Orchestrator:
         compilation = compile_project_agents(
           effective_agent_definitions(self._loaded_plugin_manifests),
           ToolOutputPolicy.from_config(new_config.tool_output.model_dump()),
-          effective_dynamic_agent_definition(self._loaded_plugin_manifests),
         )
         self._project_agent_tools = compilation.tools
         for diagnostic in compilation.diagnostics:

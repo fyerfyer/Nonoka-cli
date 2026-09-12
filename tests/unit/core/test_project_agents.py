@@ -1,19 +1,41 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nonoka import Agent, Runner
+from nonoka import Agent, ExternalCapability, Runner
 from nonoka.core.context import RunContext
 
-from nonoka_cli.core.plugin_manifest import AgentEntry, DynamicAgentEntry
+from nonoka_cli.core.plugin_manifest import AgentEntry
 from nonoka_cli.core.project_agents import (
-  DynamicAgentDefinition,
   ProjectAgentDefinition,
   compile_project_agents,
 )
 from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
+
+
+class _LocalCapability:
+  """Minimal in-process capability standing in for a parent read-only tool."""
+
+  name = "read_file"
+  description = "Read a file."
+  parameters: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
+  external = False
+
+  async def invoke(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
+    return "file content"
+
+  def to_json_schema(self) -> dict[str, Any]:
+    return {
+      "type": "function",
+      "function": {
+        "name": self.name,
+        "description": self.description,
+        "parameters": self.parameters,
+      },
+    }
 
 
 def _definition(**overrides) -> ProjectAgentDefinition:
@@ -34,6 +56,23 @@ def _definition(**overrides) -> ProjectAgentDefinition:
   )
 
 
+def _make_tool(**overrides):
+  return compile_project_agents([_definition(**overrides)], ToolOutputPolicy()).tools[0]
+
+
+async def _invoke(tool, parent: Agent, arguments: dict[str, Any]) -> Any:
+  runner = Runner(checkpoint="memory", memory="in_memory")
+  provider = MagicMock()
+  provider.chat = AsyncMock(
+    return_value=MagicMock(content="bounded plan", tool_calls=None, usage={})
+  )
+  runner._create_llm = lambda agent: provider  # type: ignore[method-assign]
+  runner.llm = provider
+  session = await runner._create_session(parent, deps=None)
+  result = await tool.invoke(RunContext(session), arguments)
+  return session, result
+
+
 def test_compile_project_agent_is_bounded_and_tool_free() -> None:
   compiled = compile_project_agents([_definition()], ToolOutputPolicy())
 
@@ -47,7 +86,10 @@ def test_compile_project_agent_is_bounded_and_tool_free() -> None:
   assert tool.agent.max_steps == 0
   assert list(tool.agent.tools) == []
   assert tool.max_depth == 1
-  assert tool.execution.parallel_safe is False
+  # Model-slot races are fixed in the framework (Runner.current_llm), so
+  # read-only child agents may run in the scheduler's parallel wave.
+  assert tool.execution.read_only is True
+  assert tool.execution.parallel_safe is True
   assert tool.metadata["source"].endswith(".nonoka/plugin.json")
 
 
@@ -61,15 +103,80 @@ def test_compile_errors_disable_all_project_agents() -> None:
   assert compiled.tools == []
 
 
-def test_allowed_tools_warns_but_never_grants_child_tools() -> None:
-  compiled = compile_project_agents(
-    [_definition(allowed_tools=["read", "bash"])],
-    ToolOutputPolicy(),
-  )
+def test_allowed_tools_empty_keeps_child_tool_free_and_says_so() -> None:
+  tool = _make_tool(description="")
+  assert list(tool.agent.tools) == []
+  assert tool.agent.max_steps == 0
+  assert "tool-free" in tool.description
 
-  assert not compiled.errors
-  assert any(item.level == "warning" for item in compiled.diagnostics)
-  assert list(compiled.tools[0].agent.tools) == []
+
+def test_allowed_tools_description_lists_declared_tools() -> None:
+  tool = _make_tool(description="", allowed_tools=["read_file", "grep"])
+  assert "read_file" in tool.description
+  assert "grep" in tool.description
+  assert tool.agent.max_steps == 8  # default tool_budget
+
+
+def test_allowed_tools_with_custom_tool_budget() -> None:
+  tool = _make_tool(allowed_tools=["read_file"], tool_budget=3)
+  assert tool.agent.max_steps == 3
+
+
+def test_invalid_allowed_tools_or_tool_budget_disable_role() -> None:
+  bad_name = compile_project_agents(
+    [_definition(allowed_tools=["bad name!"])], ToolOutputPolicy(),
+  )
+  assert bad_name.errors
+
+  bad_budget = compile_project_agents(
+    [_definition(allowed_tools=["read_file"], tool_budget=0)], ToolOutputPolicy(),
+  )
+  assert bad_budget.errors
+
+
+@pytest.mark.asyncio
+async def test_allowed_tools_grants_parent_tools_to_child() -> None:
+  tool = _make_tool(allowed_tools=["read_file"])
+  parent = Agent(model="parent", tools=[_LocalCapability()])
+
+  _session, result = await _invoke(tool, parent, {"task": "inspect"})
+
+  assert result["success"] is True
+  assert [cap.name for cap in tool.agent.tools] == ["read_file"]
+  assert tool.agent.max_steps == 8
+
+
+@pytest.mark.asyncio
+async def test_allowed_tools_unknown_names_warn_without_failing() -> None:
+  tool = _make_tool(allowed_tools=["read_file", "nope"])
+  parent = Agent(model="parent", tools=[_LocalCapability()])
+
+  _session, result = await _invoke(tool, parent, {"task": "inspect"})
+
+  assert result["success"] is True
+  assert result["unknown_allowed_tools"] == ["nope"]
+  assert [cap.name for cap in tool.agent.tools] == ["read_file"]
+
+
+@pytest.mark.asyncio
+async def test_allowed_tools_external_capability_degrades_with_structured_error() -> None:
+  """Host-native tools pause the issuing session, but the bridge only resumes
+  the top-level session, so a child can never receive their results."""
+  tool = _make_tool(allowed_tools=["read"])
+  host_tool = ExternalCapability(
+    name="read",
+    description="Host-native read.",
+    parameters={"type": "object", "properties": {}, "required": []},
+  )
+  parent = Agent(model="parent", tools=[host_tool])
+
+  session, result = await _invoke(tool, parent, {"task": "inspect"})
+
+  assert result["success"] is False
+  assert result["error_type"] == "unsupported_sub_agent_tools"
+  assert "read" in result["error"]
+  # The degraded call must not spend an invocation.
+  assert session.extension_state.get("project_agents", {}) == {}
 
 
 @pytest.mark.asyncio
@@ -130,103 +237,3 @@ async def test_project_agent_returns_structured_success() -> None:
   assert result["success"] is True
   assert result["result"] == "bounded plan"
   assert result["session_id"] != parent.session_id
-
-
-def _dynamic_definition(**overrides) -> DynamicAgentDefinition:
-  values = {
-    "enabled": True,
-    "model": "approved-child-model",
-    "base_system_prompt": "You are a bounded advisor.",
-    "max_turns": 2,
-    "max_invocations": 1,
-  }
-  values.update(overrides)
-  return DynamicAgentDefinition(
-    entry=DynamicAgentEntry(**values),
-    source=Path("/workspace/.nonoka/plugin.json"),
-  )
-
-
-def test_dynamic_agent_schema_exposes_no_authority_bearing_arguments() -> None:
-  compiled = compile_project_agents([], ToolOutputPolicy(), _dynamic_definition())
-
-  assert not compiled.errors
-  tool = compiled.tools[0]
-  assert tool.name == "agent__spawn"
-  assert set(tool.parameters["properties"]) == {"role", "instructions", "task", "context"}
-  assert "model" not in tool.parameters["properties"]
-  assert "tools" not in tool.parameters["properties"]
-  assert tool.execution.parallel_safe is False
-
-
-@pytest.mark.asyncio
-async def test_dynamic_agent_is_fixed_model_tool_free_and_limited() -> None:
-  tool = compile_project_agents([], ToolOutputPolicy(), _dynamic_definition()).tools[0]
-  provider = MagicMock()
-  captured_agents = []
-  provider.chat = AsyncMock(
-    return_value=MagicMock(content="bounded advice", tool_calls=None, usage={})
-  )
-  runner = Runner(checkpoint="memory", memory="in_memory")
-
-  def create_provider(agent):
-    captured_agents.append(agent)
-    return provider
-
-  runner._create_llm = create_provider  # type: ignore[method-assign]
-  parent = await runner._create_session(Agent(model="parent", tools=[]), deps=None)
-  arguments = {
-    "role": "reviewer",
-    "instructions": "Check the explicit requirement.",
-    "task": "Review this result.",
-    "context": "Requirement: complete is accepted once.",
-  }
-
-  result = await tool.invoke(RunContext(parent), arguments)
-  limited = await tool.invoke(RunContext(parent), arguments)
-
-  child = captured_agents[-1]
-  assert child.model == "approved-child-model"
-  assert child.max_turns == 2
-  assert child.max_steps == 0
-  assert list(child.tools) == []
-  assert result["success"] is True
-  assert result["result"] == "bounded advice"
-  assert limited["error_type"] == "invocation_limit"
-
-
-@pytest.mark.asyncio
-async def test_dynamic_agent_rejects_oversized_input_without_spending_invocation() -> None:
-  tool = compile_project_agents(
-    [], ToolOutputPolicy(), _dynamic_definition(max_task_chars=5)
-  ).tools[0]
-  runner = Runner(checkpoint="memory", memory="in_memory")
-  parent = await runner._create_session(Agent(model="parent", tools=[]), deps=None)
-
-  result = await tool.invoke(RunContext(parent), {"role": "reviewer", "task": "too long"})
-
-  assert result["error_type"] == "invalid_arguments"
-  assert parent.extension_state.get("project_agents", {}) == {}
-
-
-def test_invalid_dynamic_policy_disables_all_agent_tools() -> None:
-  compiled = compile_project_agents(
-    [_definition()],
-    ToolOutputPolicy(),
-    _dynamic_definition(model="", max_turns=20),
-  )
-
-  assert compiled.errors
-  assert compiled.tools == []
-
-
-def test_dynamic_agent_rejects_static_spawn_name_collision() -> None:
-  compiled = compile_project_agents(
-    [_definition(name="spawn")],
-    ToolOutputPolicy(),
-    _dynamic_definition(),
-  )
-
-  assert compiled.errors
-  assert compiled.tools == []
-  assert "collides" in compiled.errors[0].message

@@ -711,6 +711,16 @@ def test_project_agents_are_registered_in_both_build_modes():
   assert "`agent__planner`" in external.system_prompt
 
 
+def test_project_agent_tools_are_read_only_and_parallel_safe():
+  """Child model selection is context-local in the framework, so project
+  agents may join the scheduler's read-only parallel wave."""
+  (tool,) = _project_agent_tools()
+
+  assert tool.execution.read_only is True
+  assert tool.execution.stateful_action is False
+  assert tool.execution.parallel_safe is True
+
+
 def test_project_agent_collision_with_host_tool_is_rejected():
   factory = AgentFactory(
     CLIConfig(model="parent-model"),

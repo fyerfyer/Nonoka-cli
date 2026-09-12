@@ -17,7 +17,6 @@ from nonoka_cli.core.plugin_manifest_converter import (
 from nonoka_cli.core.project_agents import (
   compile_project_agents,
   effective_agent_definitions,
-  effective_dynamic_agent_definition,
 )
 from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 from nonoka_cli.utils.errors import ConfigError
@@ -91,25 +90,17 @@ def run_validate(args: argparse.Namespace) -> int:
   compilation = compile_project_agents(
     effective_agent_definitions([loaded]),
     ToolOutputPolicy(),
-    effective_dynamic_agent_definition([loaded]),
   )
   for diagnostic in compilation.diagnostics:
     location = f" ({diagnostic.source})" if diagnostic.source else ""
     role = f" [{diagnostic.role}]" if diagnostic.role else ""
     print(f"{diagnostic.level.upper()}{role}: {diagnostic.message}{location}")
   for tool in compilation.tools:
-    if tool.name == "agent__spawn":
-      print(
-        f"OK [dynamic]: {tool.name} model={tool.config.model} "
-        f"max_turns={tool.config.max_turns} "
-        f"max_invocations={tool.config.max_invocations}"
-      )
-    else:
-      print(
-        f"OK [{tool.metadata['role']}]: {tool.name} "
-        f"model={tool.agent.model} max_turns={tool.agent.max_turns} "
-        f"max_invocations={tool.max_invocations}"
-      )
+    print(
+      f"OK [{tool.metadata['role']}]: {tool.name} "
+      f"model={tool.agent.model} max_turns={tool.agent.max_turns} "
+      f"max_invocations={tool.max_invocations}"
+    )
   if compilation.errors:
     return 1
   if not compilation.tools:

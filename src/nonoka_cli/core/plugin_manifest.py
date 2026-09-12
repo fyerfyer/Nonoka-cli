@@ -45,30 +45,8 @@ class AgentEntry(BaseModel):
   max_turns: int = 3
   max_invocations: int = 2
   allowed_tools: list[str] = Field(default_factory=list)
+  tool_budget: int = 8
   output_contract: Literal["text", "review"] = "text"
-
-
-class DynamicAgentEntry(BaseModel):
-  """Policy for the bounded dynamic advisory-agent tool.
-
-  The caller may describe a role and task, but cannot select a model, grant
-  tools, or change execution budgets.  Those authority-bearing choices remain
-  project configuration.
-  """
-
-  enabled: bool = False
-  model: str = ""
-  base_system_prompt: str = (
-    "You are a temporary advisory sub-agent. Work only from the supplied task "
-    "and context. Return a concise, actionable answer to the parent agent."
-  )
-  description: str = "Create a temporary, tool-free advisory sub-agent."
-  max_turns: int = 2
-  max_invocations: int = 2
-  max_role_chars: int = 80
-  max_instruction_chars: int = 2000
-  max_task_chars: int = 8000
-  max_context_chars: int = 16000
 
 
 class CommandEntry(BaseModel):
@@ -99,7 +77,6 @@ class PluginManifest(BaseModel):
   description: str = ""
   skills: list[SkillEntry] = Field(default_factory=list)
   agents: list[AgentEntry] = Field(default_factory=list)
-  dynamic_agent: DynamicAgentEntry | None = None
   mcp_servers: dict[str, MCPServerConfigModel] = Field(default_factory=dict)
   commands: list[CommandEntry] = Field(default_factory=list)
   hooks: list[HookEntry] = Field(default_factory=list)
@@ -195,8 +172,6 @@ def merge_manifests(manifests: list[PluginManifest]) -> PluginManifest:
         merged.agents.append(agent)
 
     merged.mcp_servers.update(manifest.mcp_servers)
-    if manifest.dynamic_agent is not None:
-      merged.dynamic_agent = manifest.dynamic_agent
 
   return merged
 
@@ -226,9 +201,6 @@ def format_manifest_summary(
     lines.append("\nProject advisory agent tools:")
     for name in agent_tool_names:
       lines.append(f"  - {name}")
-
-  if manifest.dynamic_agent and manifest.dynamic_agent.enabled:
-    lines.append("\nDynamic advisory agent: enabled as agent__spawn")
 
   if manifest.mcp_servers:
     lines.append("\nMCP servers:")

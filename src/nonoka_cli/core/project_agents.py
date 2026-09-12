@@ -15,24 +15,18 @@ from nonoka.core.types import Capability, RunResult
 
 from nonoka_cli.core.plugin_manifest import (
   AgentEntry,
-  DynamicAgentEntry,
   LoadedPluginManifest,
 )
 from nonoka_cli.core.tool_output_policy import ToolOutputPolicy
 
 _ROLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 _MAX_PROJECT_AGENTS = 8
 
 
 @dataclass(frozen=True)
 class ProjectAgentDefinition:
   entry: AgentEntry
-  source: Path
-
-
-@dataclass(frozen=True)
-class DynamicAgentDefinition:
-  entry: DynamicAgentEntry
   source: Path
 
 
@@ -68,22 +62,17 @@ def effective_agent_definitions(
   return [effective[name] for name in order]
 
 
-def effective_dynamic_agent_definition(
-  manifests: list[LoadedPluginManifest],
-) -> DynamicAgentDefinition | None:
-  """Return the last explicitly configured dynamic-agent policy."""
-  effective: DynamicAgentDefinition | None = None
-  for loaded in manifests:
-    if loaded.manifest.dynamic_agent is not None:
-      effective = DynamicAgentDefinition(
-        entry=loaded.manifest.dynamic_agent,
-        source=loaded.path,
-      )
-  return effective
-
-
 class ProjectAgentTool(AgentTool):
-  """AgentTool with per-parent invocation limits and structured results."""
+  """AgentTool with per-parent invocation limits and structured results.
+
+  ``entry.allowed_tools`` is the authorization ceiling: at invoke time the
+  declared names are resolved against the *parent* agent's tool set and the
+  matching capabilities are attached to the child agent so it can explore
+  autonomously within that ceiling.  Names that resolve to host-external
+  capabilities cannot be routed back from a child session (the bridge
+  resumes only the top-level session), so they degrade the invocation to a
+  structured error instead of failing silently mid-run.
+  """
 
   def __init__(
     self,
@@ -149,7 +138,7 @@ class ProjectAgentTool(AgentTool):
       .model(entry.model.strip())
       .system_prompt(system_prompt)
       .max_turns(entry.max_turns)
-      .max_steps(0)
+      .max_steps(entry.tool_budget if entry.allowed_tools else 0)
       .metadata(
         project_agent_role=entry.name,
         project_agent_source=str(definition.source),
@@ -157,18 +146,32 @@ class ProjectAgentTool(AgentTool):
       .tag("subagent", "project-defined")
       .build()
     )
+    if entry.allowed_tools:
+      description = entry.description or (
+        f"Delegate advisory work to the {entry.name} role. The child agent can "
+        f"explore autonomously using these declared tools: "
+        f"{', '.join(entry.allowed_tools)}."
+      )
+    else:
+      description = entry.description or (
+        f"Delegate advisory work to the {entry.name} role. The child agent is "
+        "tool-free; embed file content in the task/context argument."
+      )
     super().__init__(
       agent=child,
       name=tool_name,
-      description=entry.description or f"Delegate advisory work to the {entry.name} role.",
+      description=description,
       memory_strategy=MemoryStrategy.ISOLATE,
       max_depth=1,
       result_extractor=extract,
     )
     self.max_invocations = entry.max_invocations
-    # Child calls are workspace-read-only, but they temporarily select their
-    # model on the shared Runner. Keep them serial within a parent turn.
-    self._execution = ToolExecution(read_only=True, stateful_action=True)
+    self._entry = entry
+    self._allowed_tool_names = list(entry.allowed_tools)
+    # Child calls are workspace-read-only. Model selection races on the
+    # shared Runner slot were fixed in the framework (Runner.current_llm),
+    # so child agents may run in the scheduler's read-only parallel wave.
+    self._execution = ToolExecution(read_only=True)
     self.metadata = {
       "kind": "project_agent",
       "role": entry.name,
@@ -192,179 +195,74 @@ class ProjectAgentTool(AgentTool):
         ),
         "error_type": "invocation_limit",
       }
-    state[self.name] = count + 1
-    return await super().invoke(ctx, arguments)
 
-
-class DynamicProjectAgentTool(Capability):
-  """Create one policy-bounded, tool-free advisory child per invocation."""
-
-  def __init__(
-    self,
-    *,
-    definition: DynamicAgentDefinition,
-    output_policy: ToolOutputPolicy,
-  ) -> None:
-    self.definition = definition
-    self.config = definition.entry
-    self.output_policy = output_policy
-    self.metadata = {
-      "kind": "dynamic_project_agent",
-      "source": str(definition.source),
-    }
-    self._execution = ToolExecution(read_only=True, stateful_action=True)
-
-  @property
-  def name(self) -> str:
-    return "agent__spawn"
-
-  @property
-  def description(self) -> str:
-    return self.config.description
-
-  @property
-  def execution(self) -> ToolExecution:
-    return self._execution
-
-  @property
-  def parameters(self) -> dict[str, Any]:
-    return {
-      "type": "object",
-      "properties": {
-        "role": {
-          "type": "string",
-          "maxLength": self.config.max_role_chars,
-          "description": "Short advisory role name, such as api-reviewer.",
-        },
-        "instructions": {
-          "type": "string",
-          "maxLength": self.config.max_instruction_chars,
-          "description": (
-            "Bounded role-specific guidance. It cannot grant tools or change the model."
+    unknown_tools: list[str] = []
+    if self._allowed_tool_names:
+      matched, unknown_tools, external_tools = self._resolve_allowed_tools(ctx)
+      if external_tools:
+        # Host-native / host-managed capabilities pause the *issuing* session
+        # for the host to execute, but the bridge only resumes the top-level
+        # session — a child-issued external call could never receive its
+        # result. Degrade before spending an invocation.
+        return {
+          "role": self.metadata["role"],
+          "success": False,
+          "error": (
+            f"This host does not support sub-agent tool execution; remove "
+            f"these names from allowed_tools: {', '.join(external_tools)}."
           ),
-        },
-        "task": {
-          "type": "string",
-          "maxLength": self.config.max_task_chars,
-          "description": "The concrete question or task to delegate.",
-        },
-        "context": {
-          "type": "string",
-          "maxLength": self.config.max_context_chars,
-          "description": "Optional self-contained context needed to answer the task.",
-        },
-      },
-      "required": ["role", "task"],
-      "additionalProperties": False,
-    }
+          "error_type": "unsupported_sub_agent_tools",
+        }
+      self._apply_child_tools(matched)
 
-  def to_json_schema(self) -> dict[str, Any]:
-    return {
-      "type": "function",
-      "function": {
-        "name": self.name,
-        "description": self.description,
-        "parameters": self.parameters,
-      },
-    }
-
-  def _invalid_arguments(self, arguments: dict[str, Any]) -> str | None:
-    limits = {
-      "role": self.config.max_role_chars,
-      "instructions": self.config.max_instruction_chars,
-      "task": self.config.max_task_chars,
-      "context": self.config.max_context_chars,
-    }
-    for key, limit in limits.items():
-      value = arguments.get(key, "")
-      if not isinstance(value, str):
-        return f"{key} must be a string."
-      if len(value) > limit:
-        return f"{key} exceeds the configured limit of {limit} characters."
-    if not arguments.get("role", "").strip():
-      return "role must not be empty."
-    if not _ROLE_NAME.fullmatch(arguments["role"].strip()):
-      return "role must match [A-Za-z0-9][A-Za-z0-9_-]*."
-    if not arguments.get("task", "").strip():
-      return "task must not be empty."
-    return None
-
-  async def invoke(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
-    invalid = self._invalid_arguments(arguments)
-    if invalid:
-      return {"success": False, "error": invalid, "error_type": "invalid_arguments"}
-
-    state = ctx.session.extension_state.setdefault("project_agents", {})
-    count = int(state.get(self.name, 0))
-    if count >= self.config.max_invocations:
-      return {
-        "success": False,
-        "error": (
-          f"Dynamic agent invocation limit reached: "
-          f"{self.config.max_invocations} per parent session."
-        ),
-        "error_type": "invocation_limit",
-      }
     state[self.name] = count + 1
+    result = await super().invoke(ctx, arguments)
+    if unknown_tools and isinstance(result, dict):
+      result["unknown_allowed_tools"] = unknown_tools
+    return result
 
-    role = arguments["role"].strip()
-    instructions = arguments.get("instructions", "").strip()
-    system_prompt = self.config.base_system_prompt.strip()
-    if instructions:
-      system_prompt += f"\n\nRole: {role}\nRole-specific instructions:\n{instructions}"
-    else:
-      system_prompt += f"\n\nRole: {role}"
-    child = (
-      AgentBuilder()
-      .model(self.config.model.strip())
-      .system_prompt(system_prompt)
-      .max_turns(self.config.max_turns)
-      .max_steps(0)
-      .metadata(
-        project_agent_role=role,
-        project_agent_source=str(self.definition.source),
-        project_agent_dynamic=True,
-      )
-      .tag("subagent", "project-defined", "dynamic")
-      .build()
-    )
+  def _resolve_allowed_tools(
+    self, ctx: RunContext,
+  ) -> tuple[list[Capability], list[str], list[str]]:
+    """Resolve declared allowed_tools against the parent agent's tool set.
 
-    def extract(result: RunResult) -> dict[str, Any]:
-      session = result.session
-      termination = None
-      if session is not None and session.runtime_state.termination is not None:
-        termination = session.runtime_state.termination.model_dump(mode="json")
-      payload: dict[str, Any] = {
-        "role": role,
-        "session_id": session.session_id if session is not None else None,
-        "success": result.success,
-        "termination": termination,
-      }
-      if result.success:
-        payload["result"] = self.output_policy.apply(self.name, result.data)
+    Returns ``(matched, unknown, external)`` name lists: matched local
+    capabilities are granted to the child, unknown names are reported back
+    without failing the call, and external (host-executed) names degrade the
+    invocation.
+    """
+    parent_tools = {
+      tool.name: tool for tool in (getattr(ctx.session.agent, "tools", None) or [])
+    }
+    matched: list[Capability] = []
+    unknown: list[str] = []
+    external: list[str] = []
+    for name in self._allowed_tool_names:
+      tool = parent_tools.get(name)
+      if tool is None:
+        unknown.append(name)
+      elif getattr(tool, "external", False):
+        external.append(name)
       else:
-        payload["error"] = result.error or "Dynamic sub-agent execution failed."
-        payload["error_type"] = result.error_type or "unknown"
-      return payload
+        matched.append(tool)
+    return matched, unknown, external
 
-    delegate = AgentTool(
-      agent=child,
-      name=self.name,
-      description=self.description,
-      memory_strategy=MemoryStrategy.ISOLATE,
-      max_depth=1,
-      result_extractor=extract,
-    )
-    return await delegate.invoke(
-      ctx,
-      {"task": arguments["task"].strip(), "context": arguments.get("context", "")},
+  def _apply_child_tools(self, matched: list[Capability]) -> None:
+    """Attach the resolved ceiling to the immutable child agent configuration.
+
+    Parallel invokes from one parent session resolve to the same capability
+    objects, so the write is idempotent; sequential requests re-resolve, so a
+    host switch always converges to the current parent's tool set.
+    """
+    object.__setattr__(self.agent, "tools", list(matched))
+    object.__setattr__(
+      self.agent, "max_steps", self._entry.tool_budget if matched else 0,
     )
 
 
 def compile_project_agents(
   definitions: list[ProjectAgentDefinition],
   output_policy: ToolOutputPolicy,
-  dynamic_definition: DynamicAgentDefinition | None = None,
 ) -> ProjectAgentCompilation:
   """Validate and compile project roles; errors disable the whole role set."""
   compilation = ProjectAgentCompilation()
@@ -421,14 +319,22 @@ def compile_project_agents(
           **context,
         )
       )
-    if entry.allowed_tools:
+    for tool_name in entry.allowed_tools:
+      if not isinstance(tool_name, str) or not _TOOL_NAME.fullmatch(tool_name):
+        compilation.diagnostics.append(
+          ProjectAgentDiagnostic(
+            level="error",
+            message=(
+              f"allowed_tools entry {tool_name!r} must match [A-Za-z0-9_-]+."
+            ),
+            **context,
+          )
+        )
+    if not 1 <= entry.tool_budget <= 32:
       compilation.diagnostics.append(
         ProjectAgentDiagnostic(
-          level="warning",
-          message=(
-            "allowed_tools is ignored in the first project-agent release; "
-            "child agents remain tool-free."
-          ),
+          level="error",
+          message="Role tool_budget must be between 1 and 32.",
           **context,
         )
       )
@@ -449,54 +355,4 @@ def compile_project_agents(
   compilation.tools = [
     ProjectAgentTool(definition=definition, output_policy=output_policy) for definition in valid
   ]
-  if dynamic_definition is not None and dynamic_definition.entry.enabled:
-    dynamic = dynamic_definition.entry
-    context = {"role": "dynamic", "source": dynamic_definition.source}
-    checks = [
-      (not dynamic.model.strip(), "Dynamic agent model must be configured explicitly."),
-      (
-        not dynamic.base_system_prompt.strip(),
-        "Dynamic agent base_system_prompt must not be empty.",
-      ),
-      (not 1 <= dynamic.max_turns <= 5, "Dynamic agent max_turns must be between 1 and 5."),
-      (
-        not 1 <= dynamic.max_invocations <= 5,
-        "Dynamic agent max_invocations must be between 1 and 5.",
-      ),
-      (not 1 <= dynamic.max_role_chars <= 200, "max_role_chars must be between 1 and 200."),
-      (
-        not 1 <= dynamic.max_instruction_chars <= 8000,
-        "max_instruction_chars must be between 1 and 8000.",
-      ),
-      (not 1 <= dynamic.max_task_chars <= 32000, "max_task_chars must be between 1 and 32000."),
-      (
-        not 1 <= dynamic.max_context_chars <= 64000,
-        "max_context_chars must be between 1 and 64000.",
-      ),
-    ]
-    for failed, message in checks:
-      if failed:
-        compilation.diagnostics.append(
-          ProjectAgentDiagnostic(level="error", message=message, **context)
-        )
-    if "agent__spawn" in seen_tools:
-      compilation.diagnostics.append(
-        ProjectAgentDiagnostic(
-          level="error",
-          message=(
-            "Dynamic agent tool name agent__spawn collides with the static "
-            "project role named spawn."
-          ),
-          **context,
-        )
-      )
-    if compilation.errors:
-      compilation.tools = []
-      return compilation
-    compilation.tools.append(
-      DynamicProjectAgentTool(
-        definition=dynamic_definition,
-        output_policy=output_policy,
-      )
-    )
   return compilation
